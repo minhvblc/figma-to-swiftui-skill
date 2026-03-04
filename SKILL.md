@@ -1,13 +1,6 @@
 ---
 name: figma-to-swiftui
-description: >
-  Translate Figma designs into production-ready SwiftUI code with 1:1 visual fidelity
-  using the Figma MCP workflow. Trigger when the user provides Figma URLs or node IDs
-  and wants iOS/SwiftUI implementation, asks to implement a design or component from Figma
-  for an iOS app, or references Figma selections in the context of an Xcode/SwiftUI project.
-  Also trigger when user asks to inspect Figma designs for iOS planning, fetch design tokens
-  for SwiftUI, or convert Figma assets for Xcode. Requires a working Figma MCP server connection.
-  Do NOT trigger for web/React implementations.
+description: "Translate Figma designs into production-ready SwiftUI code with 1:1 visual fidelity using the Figma MCP workflow. Trigger when the user provides Figma URLs or node IDs and wants iOS/SwiftUI implementation, asks to implement a design or component from Figma for an iOS app, or references Figma selections in the context of an Xcode/SwiftUI project. Also trigger when user asks to inspect Figma designs for iOS planning, fetch design tokens for SwiftUI, or convert Figma assets for Xcode. Requires a working Figma MCP server connection. Do NOT trigger for web/React implementations."
 ---
 
 # Figma to SwiftUI Implementation Skill
