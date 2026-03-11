@@ -27,6 +27,8 @@ If any MCP call fails because Figma MCP is not connected, pause and ask the user
 
 Follow these steps in order. Do not skip steps.
 
+**Two modes:** If the user wants to build a new screen from scratch, follow all steps sequentially. If the user wants to adapt/update an existing screen to match a Figma design, follow Steps 1–5, then do Step 5b (Adaptation Audit) before Step 6. Step 5b ensures every difference between the existing code and the design is identified and addressed — this is where most mistakes happen during adaptation.
+
 ### Step 1 — Parse the Figma URL
 
 Extract fileKey and nodeId from the URL.
@@ -82,6 +84,17 @@ Asset rules:
 - Do NOT create placeholder images — always download actual assets
 - Raster images: Asset Catalog (*.xcassets) with @1x/@2x/@3x variants
 - Vector assets: SVG in Asset Catalog with Preserve Vector Data, or convert to SwiftUI Shape if simple
+
+### Step 5b — Adaptation Audit (when modifying an existing screen)
+
+When the user asks to adapt/update an existing screen to match a Figma design, perform a full element-by-element audit before writing any code. See **references/adaptation-workflow.md** for the complete process.
+
+Key steps:
+1. Read the existing code and all its subcomponents
+2. Build a categorized diff checklist (ADD / UPDATE / REMOVE) with exact old → new values
+3. Pay special attention to spacing — it's the most commonly missed difference
+4. Present the checklist to the user and clarify unknowns before implementing
+5. Apply all changes — do not skip items that seem minor
 
 ### Step 6 — Implement in SwiftUI
 
