@@ -46,6 +46,14 @@ This skill handles visual translation only. It does not enforce MV, MVVM, or any
 
 ## How to Use This Skill
 
+### Quick Install
+
+```bash
+npx skills add https://github.com/daetojemax/figma-to-swiftui-skill --skill figma-to-swiftui
+```
+
+### Manual Install
+
 1. **Clone** this repository
 2. **Install or symlink** the `figma-to-swiftui/` folder following your tool's skills installation docs
 3. **Ensure Figma MCP server is connected** — see `references/figma-mcp-setup.md` for troubleshooting
