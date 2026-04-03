@@ -49,7 +49,7 @@ This skill handles visual translation only. It does not enforce MV, MVVM, or any
 ### Quick Install
 
 ```bash
-npx skills add https://github.com/daetojemax/figma-to-swiftui-skill --skill figma-to-swiftui
+npx skills add https://github.com/minhvblc/figma-to-swiftui-skill --skill figma-to-swiftui
 ```
 
 ### Manual Install
