@@ -63,8 +63,11 @@ If an asset has no download URL in the `get_design_context` response (e.g., a cu
 
 ### Naming convention:
 - Use kebab-case or camelCase matching project convention
-- Prefix with context: "onboarding-hero", "profile-placeholder"
+- Prefix every Figma-derived asset with the screen name or source node name, then the asset purpose
+- Prefer screen/node prefixes that already match nearby code and asset naming
+- Examples: `onboardingHero`, `profileHeaderPlaceholder`, `checkout-summary-illustration`
 - Do not use spaces or special characters
+- Before creating a new asset entry, search the existing Asset Catalog and project resources for a matching asset and reuse it if possible
 
 ### Asset Catalog structure:
 ```
@@ -147,9 +150,11 @@ Do NOT download remote images as local assets.
 ## Asset Rules Summary
 
 1. SF Symbols first for standard UI icons
-2. Download from MCP localhost URLs directly (no placeholders ever)
-3. Raster images: @1x/@2x/@3x in Asset Catalog
-4. Vector icons: SVG in Asset Catalog with Preserve Vector Data
-5. Remote images: use project's image loading library, ask user if none found
-6. Do NOT add new icon library dependencies
-7. Match project naming conventions for all assets
+2. Reuse existing project assets before adding new ones
+3. Download from MCP localhost URLs directly (no placeholders ever)
+4. Raster images: @1x/@2x/@3x in Asset Catalog
+5. Vector icons: SVG in Asset Catalog with Preserve Vector Data
+6. Remote images: use project's image loading library, ask user if none found
+7. Do NOT add new icon library dependencies
+8. Prefix Figma-derived asset names with the screen or source node name
+9. Match project naming conventions for all assets

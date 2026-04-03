@@ -82,6 +82,8 @@ The `get_design_context` response includes download URLs (localhost) for image a
 Asset rules:
 - Do NOT import new icon packages unless the project already uses them
 - Do NOT create placeholder images — always download actual assets
+- Before adding a new asset, search the project's existing Asset Catalog and resources first. Reuse an existing asset if it already matches the design closely enough.
+- Name downloaded/exported assets with a prefix based on the screen name or the source Figma node name, then the asset purpose. Match the project's existing case style. Examples: `homeHeroBanner`, `profileHeaderAvatarBg`, `checkoutSummaryIllustration`
 - Raster images: Asset Catalog (*.xcassets) with @1x/@2x/@3x variants
 - Vector assets: SVG in Asset Catalog with Preserve Vector Data, or convert to SwiftUI Shape if simple
 
@@ -107,8 +109,14 @@ Before writing any code:
 - UI components: custom design system, SnapKit for layout, etc.
 - Networking + image caching: Alamofire, custom image cache
 - Charts: Charts library instead of Swift Charts
+3. Inspect the project for reusable UI building blocks before creating anything new:
+- Shared SwiftUI views and UIKit wrappers
+- Shared `ViewModifier`s, button styles, text styles, and layout helpers
+- Typography and theme helpers such as `IKFont`, `IKCoreApp`, or equivalent internal design-system modules
+- Existing named colors, image assets, and token wrappers already used by nearby screens
 
 Use whatever the project already uses. Do not introduce native SwiftUI alternatives if the project has an established library for that purpose. If the design requires something the project has no dependency for, ask the user before choosing an approach.
+Prefer existing project components, modifiers, assets, colors, and typography helpers over creating new ones. Only add a new component, modifier, asset, or token when no suitable project-native option exists.
 
 Critical rule: MCP output (React + Tailwind) is a representation of design intent. Do NOT port React to SwiftUI. Read design properties and build native SwiftUI views from scratch.
 
@@ -153,6 +161,7 @@ Figma line height -> .lineSpacing(lineHeight - fontSize)
 Figma letter spacing -> .tracking() (Figma px = SwiftUI points, 1:1 on iOS)
 
 If the project has a typography system (Typography.headline), prefer project tokens over raw values.
+If the project uses typography helpers such as `IKFont`, prefer them over direct `Font.system` or ad-hoc font extensions.
 
 #### 6.3 — Color Translation
 
@@ -164,10 +173,11 @@ Figma color variables -> Map to project tokens (Color.primaryText, Color.surface
 Figma dark mode variants -> Adaptive colors in Asset Catalog or @Environment(\.colorScheme)
 
 When conflicts arise between project tokens and Figma specs, prefer project tokens but adjust minimally to match visuals.
+Always check for an existing named color, semantic token, or Asset Catalog color before introducing a new color value. Avoid hardcoded colors when the project already has a close semantic match.
 
 #### 6.4 — Component Translation
 
-Figma component instance -> Check for existing view in project. Reuse over creating new.
+Figma component instance -> Check for an existing view, modifier, style, or shared wrapper in project. Reuse over creating new.
 Figma button -> Button + project .buttonStyle()
 Figma text input -> TextField or TextEditor
 Figma toggle -> Toggle with custom style if design differs from system

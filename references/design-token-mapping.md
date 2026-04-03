@@ -11,6 +11,7 @@ Figma color variables map to SwiftUI Color extensions or Asset Catalog named col
 1. Check if project already has a color system (Color+Extensions.swift, Theme.swift, or Asset Catalog named colors)
 2. If yes: map Figma variable names to existing project colors by matching values
 3. If no: create Color extensions or Asset Catalog entries from Figma variables
+4. Prefer semantic colors and named assets already used by adjacent screens before introducing a new token
 
 ### Mapping Rules
 
@@ -75,6 +76,8 @@ If Figma uses a custom font (e.g., Inter, SF Pro Rounded):
 2. If not, download and add the font files
 3. Use Font.custom("FontName", size:) instead of .system()
 
+If the project already provides typography helpers or wrappers such as `IKFont`, use those first instead of introducing raw font declarations or a parallel typography layer.
+
 ### Dynamic Type Support
 
 Always consider Dynamic Type. Prefer .font(.headline) or .font(.body) when Figma typography maps closely to iOS text styles. For custom sizes, use @ScaledMetric:
@@ -123,4 +126,5 @@ extension View {
 2. Match by value first (hex color, px value), then by semantic name
 3. If project tokens exist but names differ from Figma, use project names
 4. Do not duplicate: one source of truth for each token
-5. Group tokens logically (Color, Spacing, Typography, Radius, Shadow)
+5. Prefer existing shared modules and helpers such as `IKFont`, `IKCoreApp`, theme wrappers, and Asset Catalog colors when they already express the same intent
+6. Group tokens logically (Color, Spacing, Typography, Radius, Shadow)
