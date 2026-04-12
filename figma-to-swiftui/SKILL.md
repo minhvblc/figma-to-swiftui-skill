@@ -27,7 +27,7 @@ If any MCP call fails because Figma MCP is not connected, pause and ask the user
 
 Follow these steps in order. Do not skip steps.
 
-**Two modes:** If the user wants to build a new screen from scratch, follow all steps sequentially. If the user wants to adapt/update an existing screen to match a Figma design, follow Steps 1–5, then do Step 5b (Adaptation Audit) before Step 6. Step 5b ensures every difference between the existing code and the design is identified and addressed — this is where most mistakes happen during adaptation.
+**Three modes:** If the user wants to build a new screen from scratch, follow all steps sequentially. If the user wants to adapt/update an existing screen to match a Figma design, follow Steps 1–5, then do Step 5b (Adaptation Audit) before Step 6. If the user provides a root node, page node, or a frame that may contain multiple screens, do Step 1b (Screen Discovery) before Step 2. Step 5b ensures every difference between the existing code and the design is identified and addressed — this is where most mistakes happen during adaptation.
 
 ### Step 1 — Parse the Figma URL
 
@@ -45,6 +45,21 @@ Parsing rules:
 
 When using figma-desktop MCP without a URL, tools automatically use the currently selected node. Only nodeId is needed; fileKey is inferred.
 
+### Step 1b — Screen Discovery (for root or ambiguous nodes)
+
+If the provided node might contain multiple screens, flows, or variants:
+- Run `get_metadata` first to inspect the child tree
+- Identify candidate screen frames and notable child nodes
+- Build a short mapping table before fetching full design context
+- Stop and ask the user if the mapping is ambiguous enough to change implementation scope
+
+Use this mode when the user gives:
+- a root node such as `0:1`
+- a page-level frame
+- a large container that appears to hold multiple screens or steps
+
+See references/screen-discovery.md for the required output format and confidence rules.
+
 ### Step 2 — Fetch Design Context
 
 get_design_context(fileKey=":fileKey", nodeId="1-2", prompt="generate for iOS using SwiftUI")
@@ -53,7 +68,7 @@ The `prompt` parameter steers the default code output toward SwiftUI. You can al
 
 Returns structured design data: layout, typography, colors, spacing, and a code representation. Even with an iOS prompt, treat the output as a design specification, not code to port.
 
-For large/complex designs: If the response is truncated, first run get_metadata to get a node map, identify sections and child IDs, then fetch each section individually.
+For large/complex designs: If the response is truncated, first run get_metadata to get a node map, identify sections and child IDs, then fetch each section individually. If the node tree suggests multiple possible screen boundaries, go back to Step 1b and produce a discovery table before continuing.
 
 For multi-device designs: If Figma contains frames for different screen sizes (iPhone + iPad), fetch all device-specific frames, not just one. See references/responsive-layout.md for merging them into adaptive SwiftUI views.
 
@@ -114,6 +129,13 @@ Before writing any code:
 - Shared `ViewModifier`s, button styles, text styles, and layout helpers
 - Typography and theme helpers such as `IKFont`, `IKCoreApp`, or equivalent internal design-system modules
 - Existing named colors, image assets, and token wrappers already used by nearby screens
+
+Before creating any new screen-specific implementation, prefer this reuse order:
+1. Code Connect mapped component
+2. Existing shared design-system component or internal UI library wrapper
+3. Nearby feature component with the same role
+4. Existing modifier, style, token, or helper
+5. New component or helper only when no suitable project-native option exists
 
 Use whatever the project already uses. Do not introduce native SwiftUI alternatives if the project has an established library for that purpose. If the design requires something the project has no dependency for, ask the user before choosing an approach.
 Prefer existing project components, modifiers, assets, colors, and typography helpers over creating new ones. Only add a new component, modifier, asset, or token when no suitable project-native option exists.
