@@ -103,6 +103,7 @@ If the request is still ambiguous after the schema pass, stop here and ask inste
 
 For each screen:
 - Use `figma-to-swiftui` if available for the node-level translation
+- `figma-to-swiftui` uses a two-phase workflow: Phase A (Fetch & Cache) batches all MCP data locally, Phase B (Implement) works offline from cache. When orchestrating multiple screens, run Phase A for all screens first, then Phase B for each — this minimizes MCP exposure time and avoids mid-implementation timeouts.
 - Reuse existing project components, modifiers, styles, assets, and colors before creating new ones
 - Prefer `IKFont`, `IKCoreApp`, and project-native helpers over raw implementations
 - Name any new Figma-derived assets with a screen or source-node prefix

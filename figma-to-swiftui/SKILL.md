@@ -5,7 +5,7 @@ description: "Translate Figma designs into production-ready SwiftUI code with 1:
 
 # Figma to SwiftUI Implementation Skill
 
-Translate Figma nodes into production-ready SwiftUI views with pixel-perfect accuracy. Combines MCP integration rules with a structured implementation workflow for iOS projects.
+Translate Figma nodes into production-ready SwiftUI views with pixel-perfect accuracy. Uses a two-phase workflow: **Phase A** fetches and caches all Figma data locally, **Phase B** implements SwiftUI from the cache without further MCP calls.
 
 ## Prerequisites
 
@@ -19,15 +19,15 @@ Translate Figma nodes into production-ready SwiftUI views with pixel-perfect acc
 
 ## MCP Connection
 
-If any MCP call fails because Figma MCP is not connected, pause and ask the user to configure it. See references/figma-mcp-setup.md for troubleshooting.
+If any MCP call fails because Figma MCP is not connected, pause and ask the user to configure it.
 
 ---
 
-## Workflow
+## Phase A — Fetch & Cache (MCP-dependent)
 
-Follow these steps in order. Do not skip steps.
+Goal: gather all Figma data in one burst, save locally, minimize MCP exposure time. If any call fails, the manifest tracks progress so you can retry only what's missing.
 
-**Three modes:** If the user wants to build a new screen from scratch, follow all steps sequentially. If the user wants to adapt/update an existing screen to match a Figma design, follow Steps 1–5, then do Step 5b (Adaptation Audit) before Step 6. If the user provides a root node, page node, or a frame that may contain multiple screens, do Step 1b (Screen Discovery) before Step 2. Step 5b ensures every difference between the existing code and the design is identified and addressed — this is where most mistakes happen during adaptation.
+**Three modes:** If the user wants to build a new screen from scratch, follow all steps sequentially. If the user wants to adapt/update an existing screen to match a Figma design, follow Steps 1–5, then do Step 5b (Adaptation Audit in Phase B). If the user provides a root node, page node, or a frame that may contain multiple screens, do Step 1b (Screen Discovery) before Step 2.
 
 ### Step 1 — Parse the Figma URL
 
@@ -53,58 +53,98 @@ If the provided node might contain multiple screens, flows, or variants:
 - Build a short mapping table before fetching full design context
 - Stop and ask the user if the mapping is ambiguous enough to change implementation scope
 
-Use this mode when the user gives:
-- a root node such as `0:1`
-- a page-level frame
-- a large container that appears to hold multiple screens or steps
-
 See references/screen-discovery.md for the required output format and confidence rules.
 
-### Step 2 — Fetch Design Context
+### Step 2 — Batch Fetch All MCP Data
 
-get_design_context(fileKey=":fileKey", nodeId="1-2", prompt="generate for iOS using SwiftUI")
+Run all MCP calls and save results to `.figma-cache/<nodeId>/`. Create the cache directory first.
 
-The `prompt` parameter steers the default code output toward SwiftUI. You can also pass project-specific hints: `"use components from Components/"`, `"generate using my design system tokens"`.
+**Calls to make (in parallel where possible):**
 
-Returns structured design data: layout, typography, colors, spacing, and a code representation. Even with an iOS prompt, treat the output as a design specification, not code to port.
+1. `get_design_context(fileKey, nodeId, prompt="generate for iOS using SwiftUI")`
+   → Save response to `.figma-cache/<nodeId>/design-context.md`
 
-For large/complex designs: If the response is truncated, first run get_metadata to get a node map, identify sections and child IDs, then fetch each section individually. If the node tree suggests multiple possible screen boundaries, go back to Step 1b and produce a discovery table before continuing.
+2. `get_screenshot(fileKey, nodeId)`
+   → Save to `.figma-cache/<nodeId>/screenshot.png`
 
-For multi-device designs: If Figma contains frames for different screen sizes (iPhone + iPad), fetch all device-specific frames, not just one. See references/responsive-layout.md for merging them into adaptive SwiftUI views.
+3. `get_variable_defs(fileKey, nodeId)`
+   → Save to `.figma-cache/<nodeId>/tokens.json`
 
-### Step 3 — Capture Screenshot
+4. `get_code_connect_map(fileKey, nodeId)`
+   → Save to `.figma-cache/<nodeId>/code-connect.json`
 
-get_screenshot(fileKey=":fileKey", nodeId="1-2")
+5. For complex/large designs only: `get_metadata(fileKey, nodeId)`
+   → Save to `.figma-cache/<nodeId>/metadata.json`
 
-This screenshot is the source of truth for visual validation throughout implementation.
+For large/complex designs: If get_design_context is truncated, use get_metadata to find child IDs, then fetch each section individually into separate cache files (e.g., `design-context-section1.md`).
 
-### Step 4 — Fetch Design Tokens (if available)
+For multi-device designs: If Figma contains frames for different screen sizes (iPhone + iPad), fetch all device-specific frames. See references/responsive-layout.md.
 
-get_variable_defs(fileKey=":fileKey", nodeId="1-2")
+### Step 3 — Download Assets
 
-Returns colors, spacing, typography tokens. Map to the project's SwiftUI design system. See references/design-token-mapping.md.
+The `get_design_context` response includes download URLs (localhost) for image assets. These URLs are ephemeral — download immediately.
 
-### Step 5 — Download Assets
-
-The `get_design_context` response includes download URLs (localhost) for image assets in the design. Download them during the active MCP session — URLs are ephemeral.
-
-1. Identify assets in the `get_design_context` response (image fills, icons, illustrations)
-2. For each asset, check SF Symbols first (see references/asset-handling.md)
-3. Download remaining: `curl -o <filename> "<localhost-url>"`
-4. For icons/nodes without download URLs, use `get_screenshot(fileKey, nodeId)` to export as PNG
-5. Add to Asset Catalog — see references/asset-handling.md for Contents.json, scale variants, SVG setup
+1. Identify assets in the cached design-context response
+2. Download ALL icons and images from Figma MCP — do NOT substitute with SF Symbols
+3. Prefer `download_figma_images` MCP tool when available (handles format correctly). Otherwise: `curl -o .figma-cache/<nodeId>/assets/<filename> "<localhost-url>"`
+4. **Validate file format after every download:** run `file <downloaded>` to check actual content type. If SVG/XML was saved as .png, discard and re-export with `get_screenshot(fileKey, nodeId)` as PNG
+5. For icons/nodes without download URLs, use `get_screenshot(fileKey, childNodeId)` to export as PNG
+6. Record each asset in the manifest
 
 Asset rules:
+- **PNG only** — never use SVG files. Always export/download as PNG
+- Do NOT substitute icons with SF Symbols — download the exact Figma asset
 - Do NOT import new icon packages unless the project already uses them
 - Do NOT create placeholder images — always download actual assets
-- Before adding a new asset, search the project's existing Asset Catalog and resources first. Reuse an existing asset if it already matches the design closely enough.
-- Name downloaded/exported assets with a prefix based on the screen name or the source Figma node name, then the asset purpose. Match the project's existing case style. Examples: `homeHeroBanner`, `profileHeaderAvatarBg`, `checkoutSummaryIllustration`
-- Raster images: Asset Catalog (*.xcassets) with @1x/@2x/@3x variants
-- Vector assets: SVG in Asset Catalog with Preserve Vector Data, or convert to SwiftUI Shape if simple
+- Before adding a new asset, search the project's existing Asset Catalog first
+- Name assets with screen/node prefix + purpose, matching project case style
+- All images and icons: @1x/@2x/@3x PNG variants in Asset Catalog
+
+See references/asset-handling.md for full details.
+
+### Step 4 — Write Manifest
+
+Create `.figma-cache/<nodeId>/manifest.json` tracking all fetch results:
+
+```json
+{
+  "fileKey": "abc123",
+  "nodeId": "3166:70147",
+  "fetchedAt": "2026-04-13T10:00:00Z",
+  "status": {
+    "design_context": "done",
+    "screenshot": "done",
+    "tokens": "done",
+    "code_connect": "done",
+    "metadata": "skipped",
+    "assets": "done"
+  },
+  "assetList": [
+    {"name": "heroImage.png", "status": "done"},
+    {"name": "icon-star.svg", "status": "done"}
+  ]
+}
+```
+
+Update manifest status as each call completes. If a call fails, set status to "failed" and continue with the next call. Tell the user which calls failed.
+
+---
+
+## Phase B — Implement SwiftUI (offline from cache)
+
+All data comes from `.figma-cache/<nodeId>/`. No MCP calls needed. This phase can run in a separate conversation, can be retried without re-fetching, and is not affected by MCP timeouts.
+
+### Step 5 — Audit & Prepare
+
+Read the cached data:
+- `design-context.md` for layout, typography, colors, spacing
+- `screenshot.png` as visual source of truth
+- `tokens.json` for design token mapping
+- `code-connect.json` for existing code mappings
 
 ### Step 5b — Adaptation Audit (when modifying an existing screen)
 
-When the user asks to adapt/update an existing screen to match a Figma design, perform a full element-by-element audit before writing any code. See **references/adaptation-workflow.md** for the complete process.
+When the user asks to adapt/update an existing screen, perform a full element-by-element audit before writing any code. See **references/adaptation-workflow.md** for the complete process.
 
 Key steps:
 1. Read the existing code and all its subcomponents
@@ -117,101 +157,33 @@ Key steps:
 
 Before writing any code:
 
-1. Run `get_code_connect_map(fileKey, nodeId)` to check if Figma components in the design already have mapped code components. If a mapping exists — use that code directly instead of building from scratch.
-2. Inspect the project's dependencies (Package.swift, Podfile, .xcodeproj) and existing codebase for UI-related libraries and patterns. The project may use third-party solutions for things you would otherwise implement with native SwiftUI. Examples:
-- Image loading: Kingfisher, SDWebImage, Nuke instead of AsyncImage
-- Animations: Lottie instead of SwiftUI animations
-- UI components: custom design system, SnapKit for layout, etc.
-- Networking + image caching: Alamofire, custom image cache
-- Charts: Charts library instead of Swift Charts
-3. Inspect the project for reusable UI building blocks before creating anything new:
-- Shared SwiftUI views and UIKit wrappers
-- Shared `ViewModifier`s, button styles, text styles, and layout helpers
-- Typography and theme helpers such as `IKFont`, `IKCoreApp`, or equivalent internal design-system modules
-- Existing named colors, image assets, and token wrappers already used by nearby screens
+1. Check `code-connect.json` — if Figma components have mapped code components, use that code directly.
+2. Inspect the project's dependencies (Package.swift, Podfile, .xcodeproj) and existing codebase for UI-related libraries and patterns. Examples:
+   - Image loading: Kingfisher, SDWebImage, Nuke instead of AsyncImage
+   - Animations: Lottie instead of SwiftUI animations
+   - UI components: custom design system, SnapKit, etc.
+3. Inspect the project for reusable UI building blocks: shared views, ViewModifiers, button styles, text styles, typography helpers (IKFont, IKCoreApp), named colors, image assets, and token wrappers.
 
-Before creating any new screen-specific implementation, prefer this reuse order:
+Reuse order:
 1. Code Connect mapped component
 2. Existing shared design-system component or internal UI library wrapper
 3. Nearby feature component with the same role
 4. Existing modifier, style, token, or helper
-5. New component or helper only when no suitable project-native option exists
-
-Use whatever the project already uses. Do not introduce native SwiftUI alternatives if the project has an established library for that purpose. If the design requires something the project has no dependency for, ask the user before choosing an approach.
-Prefer existing project components, modifiers, assets, colors, and typography helpers over creating new ones. Only add a new component, modifier, asset, or token when no suitable project-native option exists.
+5. New component only when no suitable project-native option exists
 
 Critical rule: MCP output (React + Tailwind) is a representation of design intent. Do NOT port React to SwiftUI. Read design properties and build native SwiftUI views from scratch.
 
-Do NOT implement system-provided elements that appear in Figma mockups. Designers often include them for context, but they are rendered by iOS automatically. Skip these:
-- Keyboard (system keyboard, emoji picker)
-- Status bar (time, battery, signal)
-- Home indicator bar
-- Navigation bar back button (provided by NavigationStack)
-- Tab bar if using native TabView (only implement custom tab bars)
-- System alerts and action sheets (use .alert() / .confirmationDialog())
-- Share sheet (use ShareLink or UIActivityViewController)
-- System search bar (use .searchable())
-- Pull-to-refresh indicator (use .refreshable())
-- Page indicator dots for native TabView with .page style
+Do NOT implement system-provided elements that appear in Figma mockups: keyboard, status bar, home indicator, system nav bar back button, system tab bar, system alerts/action sheets, system search bar, pull-to-refresh indicator, page indicator dots. If unsure whether an element is system-provided or custom, ask.
 
-If unsure whether an element is system-provided or custom, ask the user.
+#### Translation References
 
-#### 6.1 — Layout Translation
+For detailed translation rules, see:
+- **Layout** (Auto Layout, stacks, sizing, scroll, absolute positioning): references/layout-translation.md
+- **Typography & Colors** (font mapping, color tokens, spacing tokens, shadows): references/design-token-mapping.md
+- **Components** (variants, state/size/style, content toggles): references/component-variants.md
+- **Responsive** (size classes, iPhone+iPad merging, adaptive layouts): references/responsive-layout.md
 
-See references/layout-translation.md for the complete mapping. Key rules:
-
-Figma Auto Layout (vertical) -> VStack(spacing:) with matching alignment
-Figma Auto Layout (horizontal) -> HStack(spacing:) with matching alignment
-Figma Auto Layout with wrap -> LazyVGrid or custom FlowLayout
-Figma Frame with absolute children -> ZStack + .offset() (avoid when possible)
-Figma padding -> .padding(.horizontal, 16) edge-specific
-Figma gap -> spacing parameter in stack initializer
-Figma fill container -> .frame(maxWidth: .infinity)
-Figma hug contents -> No frame modifier (intrinsic sizing, SwiftUI default)
-Figma fixed size -> .frame(width:, height:)
-Figma aspect ratio -> .aspectRatio(ratio, contentMode:)
-Figma scroll -> ScrollView(.vertical) or .horizontal
-Figma constraints (pin to edges) -> .frame() + alignment in parent
-Figma frame sized for specific device -> Check if project supports multiple devices, adapt with size classes. See references/responsive-layout.md
-
-#### 6.2 — Typography Translation
-
-Figma font family -> Closest iOS system font or project custom font
-Figma font weight -> Font.Weight (.regular, .medium, .semibold, .bold)
-Figma font size -> .font(.system(size:, weight:, design:)) or custom Font extension
-Figma line height -> .lineSpacing(lineHeight - fontSize)
-Figma letter spacing -> .tracking() (Figma px = SwiftUI points, 1:1 on iOS)
-
-If the project has a typography system (Typography.headline), prefer project tokens over raw values.
-If the project uses typography helpers such as `IKFont`, prefer them over direct `Font.system` or ad-hoc font extensions.
-
-#### 6.3 — Color Translation
-
-Figma hex color -> Color from Asset Catalog or Color(hex:) extension
-Figma color + opacity -> .opacity() modifier or color with alpha
-Figma linear gradient -> LinearGradient(colors:, startPoint:, endPoint:)
-Figma radial gradient -> RadialGradient(colors:, center:, startRadius:, endRadius:)
-Figma color variables -> Map to project tokens (Color.primaryText, Color.surface)
-Figma dark mode variants -> Adaptive colors in Asset Catalog or @Environment(\.colorScheme)
-
-When conflicts arise between project tokens and Figma specs, prefer project tokens but adjust minimally to match visuals.
-Always check for an existing named color, semantic token, or Asset Catalog color before introducing a new color value. Avoid hardcoded colors when the project already has a close semantic match.
-
-#### 6.4 — Component Translation
-
-Figma component instance -> Check for an existing view, modifier, style, or shared wrapper in project. Reuse over creating new.
-Figma button -> Button + project .buttonStyle()
-Figma text input -> TextField or TextEditor
-Figma toggle -> Toggle with custom style if design differs from system
-Figma image -> Image from Asset Catalog for local. For remote URLs, use the project's image loading library; if none exists, ask the user.
-Figma list/collection -> List or LazyVStack / LazyVGrid
-Figma tab bar -> TabView or custom tab bar if non-standard
-Figma navigation bar -> .navigationTitle() + .toolbar {} or custom header
-Figma sheet/modal -> .sheet() / .fullScreenCover() — sheet manages own dismiss
-Figma card -> Custom view + .background() + .clipShape(.rect(cornerRadius:)) + .shadow()
-Figma component with variants -> Check variant properties, summarize detected variants, ask user which style approach to use, then implement. See references/component-variants.md for translating Figma variant properties (state, size, style, content toggles) into SwiftUI. Always ask the user which implementation approach they prefer before writing variant code.
-
-#### 6.5 — Effects and Decorations
+#### Effects and Decorations
 
 Figma drop shadow -> .shadow(color:, radius:, x:, y:)
 Figma inner shadow -> .overlay() with shadow or custom shape stroke
@@ -225,87 +197,77 @@ Figma mask -> .mask { ... }
 Figma blend mode -> .blendMode()
 Figma Liquid Glass (iOS 26+) -> .glassEffect() with appropriate shape
 
-#### 6.6 — Animations and Transitions
+#### Animations and Transitions
 
-Figma prototype connections define transitions between frames. Interpret them as navigation or state-change animations — not as literal animation specs.
+Figma prototype connections define transitions between frames — interpret as navigation or state-change animations, not literal animation specs.
 
 Figma dissolve -> .opacity() + withAnimation(.easeInOut)
 Figma move in / slide in -> .transition(.move(edge:)) or .offset()
 Figma push -> NavigationStack push (system transition)
-Figma smart animate -> withAnimation { } on state change, match property diffs (position, size, opacity)
-Figma scroll animate -> ScrollView with .scrollTransition() or .animation() on offset
-
-Common SwiftUI patterns:
-- State-driven: `withAnimation(.spring) { showDetail = true }` + `.transition(.move(edge: .trailing))`
-- Matched geometry: `matchedGeometryEffect(id:in:)` for shared element transitions between views
-- Implicit: `.animation(.default, value: someState)` on the animating view
+Figma smart animate -> withAnimation { } on state change
+Figma scroll animate -> ScrollView with .scrollTransition()
 
 Rules:
 - Check project dependencies for Lottie or other animation libraries — use them if present
-- Do not over-animate. If Figma shows a transition only between screens (prototype link), implement it as navigation, not a custom animation
-- If the design includes complex choreographed animations (multiple elements, sequenced timing), ask the user whether to implement fully or simplify
-- Figma prototype delays and durations are hints, not exact specs — use standard iOS timing (.default, .spring) unless the user specifies otherwise
+- Do not over-animate. Prototype links = navigation, not custom animation
+- If complex choreographed animations, ask user whether to implement fully or simplify
 
-### Step 7 — Validate (on user request only)
+### Step 7 — Copy Assets to Project
 
-Do NOT auto-validate. Before starting implementation (after Step 5), ask the user how they want to validate the result. Examples:
-- Compare screenshot side-by-side in Xcode preview
-- Run on simulator and compare manually
-- Use snapshot testing
-- No validation needed, trust the implementation
+Move downloaded assets from `.figma-cache/<nodeId>/assets/` to the project's Asset Catalog:
+- Add to Assets.xcassets with proper Contents.json
+- See references/asset-handling.md for imageset structure and scale variants
 
-Proceed with whichever method the user chooses. If the user does not specify, skip validation entirely.
+### Step 8 — Validate (on user request only)
 
-Reference checklist (share with user if they ask what to check):
-- Layout: spacing, alignment, sizing
-- Typography: font, size, weight, line height
-- Colors: fills, strokes, backgrounds, text
-- Assets: all icons/images present, no placeholders
-- Interactive states: press, focus, disabled
-- Dark mode (if Figma provides variants)
-- Dynamic Type: text scales appropriately
-- Safe areas: no content behind notch / home indicator
-- Scroll behavior correct if design implies scrollable content
+Do NOT auto-validate. Ask the user how they want to validate. If the user does not specify, skip validation entirely.
 
-If deviating from Figma (accessibility, platform conventions, technical constraints), document why in comments.
+### Step 9 — Register Code Connect Mappings
 
-### Step 8 — Register Code Connect Mappings
+After creating reusable SwiftUI components that correspond to Figma components:
 
-After creating reusable SwiftUI components that correspond to Figma components, register them:
+`add_code_connect_map(fileKey, nodeId, componentPath, componentName)`
 
-add_code_connect_map(fileKey, nodeId, componentPath, componentName)
-
-This links the Figma component to your code so future designs using the same component will reference the existing implementation instead of generating new code.
-
-Only register components that are:
-- Reusable (used in multiple places or likely to be reused)
-- Stable (not a one-off screen-specific view)
+Only register components that are reusable and stable (not one-off screen-specific views).
 
 ---
 
+## Resume & Retry
+
+If the workflow is interrupted (MCP timeout, conversation ended, context limit):
+
+1. Check `.figma-cache/<nodeId>/manifest.json`
+2. If manifest exists and all statuses are "done" → skip Phase A, go directly to Phase B
+3. If manifest exists with some "failed" items → retry only the failed MCP calls, update manifest
+4. If no manifest → start Phase A from scratch
+5. Cache is considered fresh for 24 hours. After that, suggest re-fetching.
+
+User can say "tiếp tục fetch" or "continue" to resume Phase A, or "implement from cache" to skip to Phase B.
+
 ## Handling Complex Designs
 
-1. get_metadata to get the node tree
+1. get_metadata to get the node tree → save to cache
 2. Identify major sections and child node IDs
 3. Implement top-down: container first, then sections
-4. get_design_context + get_screenshot per section
+4. Fetch each section into separate cache files
 5. If user requested validation, validate per section, then full composition
 
 ## MCP Tools Reference
 
-get_design_context: Design data + default code + asset download URLs. Use always, primary source.
+get_design_context: Design data + default code + asset download URLs. Primary source.
 get_metadata: Sparse node tree. Use for large designs, structure first.
-get_screenshot: Visual reference PNG. Use always, validation truth.
+get_screenshot: Visual reference PNG. Validation truth.
 get_variable_defs: Design tokens. Use when project has design system tokens.
-get_code_connect_map: Existing code mappings. Use before creating components.
-add_code_connect_map: Register new mappings. Use after creating reusable components.
+get_code_connect_map: Existing code mappings. Check before creating components.
+add_code_connect_map: Register new mappings. After creating reusable components.
 
 ## Key Principles
 
 1. Never implement from assumptions. Always fetch context + screenshot first.
 2. MCP output is a spec, not code. Read properties, build native SwiftUI.
-3. Use what the project uses. Check dependencies and existing patterns before implementing anything. Do not introduce native alternatives if the project already has a library for that purpose.
+3. Use what the project uses. Check dependencies and existing patterns first.
 4. Project tokens win. Prefer project tokens, adjust minimally for visual match.
-5. Validate only when asked. Ask the user how they want to validate before implementing.
-6. Prefer SF Symbols. Check before downloading custom icons. For cross-platform projects, list all icons with proposed matches and confirm each one with the user.
-7. Platform conventions matter. iOS navigation, safe areas, Dynamic Type, accessibility are more important than pixel-perfect Figma replication.
+5. Validate only when asked. Ask the user how they want to validate.
+6. Always download from Figma. Never substitute with SF Symbols — use exact assets from the design. PNG only, validate format after download.
+7. Platform conventions matter. iOS navigation, safe areas, Dynamic Type, accessibility > pixel-perfect Figma replication.
+8. Cache first. All MCP data cached locally — implement offline, retry without re-fetching.
