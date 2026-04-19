@@ -8,6 +8,8 @@ This repository contains two companion skills:
 
 The base `figma-to-swiftui` skill provides a structured workflow that guides AI agents through screen discovery, fetching design context, downloading assets, and implementing native SwiftUI views — without blindly porting React + Tailwind output.
 
+For how the two skills compose, how a source document (`.txt` / `.md`) drives Figma fetching, and how the fetch discipline avoids MCP timeouts and wasted tokens, see **[docs/workflow.md](docs/workflow.md)**.
+
 ## Who this is for
 
 * iOS developers who receive designs in Figma and want to speed up implementation
@@ -99,8 +101,10 @@ For end-to-end feature work:
 ```text
 repo-root/
   figma-to-swiftui/
-    SKILL.md                              — Main workflow (8 steps)
+    SKILL.md                              — Main workflow (Step 0 doc → Step 8)
     references/
+      source-document.md                  — Read .txt/.md brief before Figma; single vs flow routing
+      fetch-strategy.md                   — Metadata-first, lazy fetch, circuit breaker, call budget
       adaptation-workflow.md              — Existing screen adaptation and diff audit
       screen-discovery.md                 — Root node and multi-screen candidate mapping
       layout-translation.md               — Auto Layout → Stacks, sizing, scroll, common patterns

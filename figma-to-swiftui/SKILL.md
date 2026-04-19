@@ -1,6 +1,6 @@
 ---
 name: figma-to-swiftui
-description: "Translate Figma designs into production-ready SwiftUI code with 1:1 visual fidelity using the Figma MCP workflow. Trigger when the user provides Figma URLs or node IDs and wants iOS/SwiftUI implementation, asks to implement a design or component from Figma for an iOS app, or references Figma selections in the context of an Xcode/SwiftUI project. Also trigger when user asks to inspect Figma designs for iOS planning, fetch design tokens for SwiftUI, or convert Figma assets for Xcode. Requires a working Figma MCP server connection. Do NOT trigger for web/React implementations."
+description: "Translate Figma designs into production-ready SwiftUI code with 1:1 visual fidelity using the Figma MCP workflow. Trigger when the user provides Figma URLs or node IDs and wants iOS/SwiftUI implementation, asks to implement a design or component from Figma for an iOS app, or references Figma selections in the context of an Xcode/SwiftUI project. Also trigger when user attaches a .txt/.md source document plus one or more Figma nodes for iOS work. Requires a working Figma MCP server connection. Do NOT trigger for web/React implementations."
 ---
 
 # Figma to SwiftUI Implementation Skill
@@ -16,10 +16,23 @@ Translate Figma nodes into production-ready SwiftUI views with pixel-perfect acc
   - node-id value — the specific component or frame to implement
 - OR when using figma-desktop MCP: select a node directly in the Figma desktop app (no URL required)
 - Xcode project with an established SwiftUI codebase (preferred)
+- Optional: a `.txt` / `.md` source document (PM brief, spec, ticket) describing the feature. If present, it is read **before** any Figma call.
 
 ## MCP Connection
 
 If any MCP call fails because Figma MCP is not connected, pause and ask the user to configure it.
+
+## Route Between This Skill and the Flow Skill
+
+Before starting the workflow, decide scope from the inputs:
+
+| Input shape | Use |
+|---|---|
+| 1 Figma node, no document (or doc describes 1 screen only) | This skill only. |
+| Multiple Figma nodes OR a root/page node that contains multiple screens OR a document describing a journey/flow with transitions | Hand off to `figma-flow-to-swiftui-feature`. That skill orchestrates and delegates back here for each screen. |
+| Ambiguous — user gave 1 URL but doc suggests multiple screens | Run Step 0 + Step 1b (screen discovery) first, then decide. |
+
+Full decision table in **references/source-document.md**. Do not start fetching Figma context until scope is settled.
 
 ---
 
@@ -27,7 +40,20 @@ If any MCP call fails because Figma MCP is not connected, pause and ask the user
 
 Goal: gather all Figma data in one burst, save locally, minimize MCP exposure time. If any call fails, the manifest tracks progress so you can retry only what's missing.
 
-**Three modes:** If the user wants to build a new screen from scratch, follow all steps sequentially. If the user wants to adapt/update an existing screen to match a Figma design, follow Steps 1–5, then do Step 5b (Adaptation Audit in Phase B). If the user provides a root node, page node, or a frame that may contain multiple screens, do Step 1b (Screen Discovery) before Step 2.
+**Modes:**
+- Build a new screen from scratch → all steps sequentially.
+- Adapt/update an existing screen to match a Figma design → Steps 0–4, then Step 5b (Adaptation Audit) in Phase B before Step 6. Step 5b ensures every difference is identified — most adaptation mistakes happen here.
+- Provided a root/page node that may contain multiple screens → Step 0, then Step 1b (Screen Discovery) before Step 2.
+
+**Fetch discipline:** `get_design_context` is the expensive, timeout-prone call. Never call it on a node whose scope you are not already confident about. Phase A only starts batch-fetching after Step 1b has confirmed the target is a single implementable unit. See **references/fetch-strategy.md** for thresholds, circuit breaker, and the per-feature call budget.
+
+### Step 0 — Read Source Document (if provided)
+
+If the user attached or pasted a `.txt` / `.md` / spec document, read it **before** any Figma MCP call. Extract a short contract: feature goal, expected screens, actions, async work, required states, constraints, out-of-scope items.
+
+The extract drives every later step: which Figma nodes to fetch (and which to skip), which actions to wire, which states to implement beyond the happy path. Skip this step only when no document was provided.
+
+See **references/source-document.md** for the extraction template and conflict rules (doc vs Figma).
 
 ### Step 1 — Parse the Figma URL
 
@@ -45,15 +71,24 @@ Parsing rules:
 
 When using figma-desktop MCP without a URL, tools automatically use the currently selected node. Only nodeId is needed; fileKey is inferred.
 
-### Step 1b — Screen Discovery (for root or ambiguous nodes)
+### Step 1b — Screen Discovery (metadata-first, default for non-leaf nodes)
 
-If the provided node might contain multiple screens, flows, or variants:
-- Run `get_metadata` first to inspect the child tree
-- Identify candidate screen frames and notable child nodes
-- Build a short mapping table before fetching full design context
-- Stop and ask the user if the mapping is ambiguous enough to change implementation scope
+Run `get_metadata` **before** the Step 2 batch whenever the node is not obviously a single leaf screen. Triggers (non-exhaustive):
+- a root node such as `0:1`
+- a page-level frame
+- any container whose name suggests multiple screens ("Flow", "Onboarding", "Page", "All Screens")
+- depth or children count past the thresholds in references/fetch-strategy.md
+- a document from Step 0 names more screens than the Figma URL seems to point at
 
-See references/screen-discovery.md for the required output format and confidence rules.
+Use metadata to:
+1. Map candidate screen frames with confidence (high / medium / low) — save to `.figma-cache/<nodeId>/metadata.json`
+2. Reconcile against the Step 0 document if present
+3. Stop and ask the user when a mapping is low-confidence or affects scope
+4. If the result is "this is actually a flow of N screens", hand off to `figma-flow-to-swiftui-feature` — do NOT run Phase A on the root
+
+Skip this step only when the input is unambiguously a single leaf screen/component (user said so, URL points to a frame, no contradicting document).
+
+See references/screen-discovery.md for the required output format. See references/fetch-strategy.md for thresholds and circuit breaker.
 
 ### Step 2 — Batch Fetch All MCP Data
 
@@ -69,16 +104,17 @@ Run all MCP calls and save results to `.figma-cache/<nodeId>/`. Create the cache
 
 3. `get_variable_defs(fileKey, nodeId)`
    → Save to `.figma-cache/<nodeId>/tokens.json`
+   → **Once per `fileKey`** — if multiple nodes from the same file are cached this session, copy or symlink the first `tokens.json` instead of refetching.
 
 4. `get_code_connect_map(fileKey, nodeId)`
    → Save to `.figma-cache/<nodeId>/code-connect.json`
 
 5. For complex/large designs only: `get_metadata(fileKey, nodeId)`
-   → Save to `.figma-cache/<nodeId>/metadata.json`
+   → Save to `.figma-cache/<nodeId>/metadata.json` (already saved in Step 1b if that step ran)
 
-For large/complex designs: If get_design_context is truncated, use get_metadata to find child IDs, then fetch each section individually into separate cache files (e.g., `design-context-section1.md`).
+**Circuit breaker:** if `get_design_context` times out or returns truncated output, do NOT retry the same node. Fall back to `get_metadata`, pick the smallest meaningful child, and fetch context per child into separate section files (e.g. `design-context-section1.md`). Log the split in the manifest. See references/fetch-strategy.md.
 
-For multi-device designs: If Figma contains frames for different screen sizes (iPhone + iPad), fetch all device-specific frames. See references/responsive-layout.md.
+For multi-device designs: if Figma contains frames for different screen sizes (iPhone + iPad), fetch all device-specific frames. See references/responsive-layout.md.
 
 ### Step 3 — Download Assets
 
@@ -249,17 +285,21 @@ User can say "tiếp tục fetch" or "continue" to resume Phase A, or "implement
 1. get_metadata to get the node tree → save to cache
 2. Identify major sections and child node IDs
 3. Implement top-down: container first, then sections
-4. Fetch each section into separate cache files
+4. Fetch each section into separate cache files, one section at a time
 5. If user requested validation, validate per section, then full composition
+
+See references/fetch-strategy.md for the circuit breaker when a section is still too large.
 
 ## MCP Tools Reference
 
-get_design_context: Design data + default code + asset download URLs. Primary source.
-get_metadata: Sparse node tree. Use for large designs, structure first.
-get_screenshot: Visual reference PNG. Validation truth.
-get_variable_defs: Design tokens. Use when project has design system tokens.
-get_code_connect_map: Existing code mappings. Check before creating components.
-add_code_connect_map: Register new mappings. After creating reusable components.
+- `get_design_context` — Design data + default code + asset download URLs. Primary source for implementation, but never call on a root/page node; call per leaf screen or section only.
+- `get_metadata` — Sparse node tree. Default first call for anything not obviously a single leaf screen (see Step 1b).
+- `get_screenshot` — Visual reference PNG. Fetched in Phase A alongside `get_design_context`.
+- `get_variable_defs` — Design tokens. Once per `fileKey` per session; dedup across nodes of the same file.
+- `get_code_connect_map` — Existing code mappings. Part of Phase A batch per node.
+- `add_code_connect_map` — Register new mappings. After creating reusable components (Phase B, Step 9).
+
+See references/fetch-strategy.md for the full per-feature call budget and circuit breaker.
 
 ## Key Principles
 

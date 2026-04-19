@@ -30,6 +30,7 @@ This skill is not responsible for pixel-level Figma-to-view translation. If `fig
 ## Inputs
 
 Look for these inputs first:
+- **Source document** — `.txt`, `.md`, PM brief, spec, ticket. Read first, before any Figma call.
 - Feature goal
 - One or more Figma nodes or URLs
 - Intended transitions between screens
@@ -37,10 +38,29 @@ Look for these inputs first:
 - Data dependencies: API, store, cache, auth, persistence, environment, feature flags
 - Architecture constraints already present in the project
 
+When a source document is present, read [../figma-to-swiftui/references/source-document.md](../figma-to-swiftui/references/source-document.md) for the extraction template and conflict rules.
 When details are incomplete, read [references/flow-input-contract.md](references/flow-input-contract.md).
 When the doc is behavior-oriented but vague about exact element mapping, read [references/ambiguous-mapping.md](references/ambiguous-mapping.md) before coding.
 
+## Fetch Discipline
+
+All Figma MCP calls in this workflow follow [../figma-to-swiftui/references/fetch-strategy.md](../figma-to-swiftui/references/fetch-strategy.md). Key rules for flows specifically:
+
+- `get_metadata` on the root **once**, to confirm screen → node mapping.
+- `get_variable_defs` **once per fileKey**; copy/symlink the resulting `tokens.json` into each screen's cache folder instead of refetching per screen.
+- Run `figma-to-swiftui`'s **Phase A for ALL screens** in one batch (populates `.figma-cache/<nodeId>/` + manifest per screen), then run Phase B for each screen in graph order. Do not interleave A and B across screens.
+- If any call times out, apply the circuit breaker in fetch-strategy.md. Do not retry the same node — split into sections instead.
+- Manifests make Phase A resumable — re-fetch only the entries marked `failed`.
+
 ## Workflow
+
+### 0. Read the Source Document (if provided)
+
+If the user attached or pasted a `.txt` / `.md` / spec document, read it **before** any Figma MCP call. Extract: feature goal, expected screens, entry point, per-screen actions, async work, required states, constraints, out-of-scope items.
+
+The extract is the primary driver for Step 1 and Step 2. It decides which Figma nodes are in scope, which actions to wire, and which non-happy-path states must be implemented even when Figma does not show them.
+
+See [../figma-to-swiftui/references/source-document.md](../figma-to-swiftui/references/source-document.md) for the template and conflict-resolution rules.
 
 ### 1. Normalize the Request
 
@@ -99,11 +119,22 @@ Prefer integration-first changes:
 Do not create a parallel navigation or state system if the project already has one.
 If the request is still ambiguous after the schema pass, stop here and ask instead of continuing into code generation.
 
-### 5. Implement Each Screen
+### 5. Implement Each Screen (Phase A for all, then Phase B per screen)
 
-For each screen:
-- Use `figma-to-swiftui` if available for the node-level translation
-- `figma-to-swiftui` uses a two-phase workflow: Phase A (Fetch & Cache) batches all MCP data locally, Phase B (Implement) works offline from cache. When orchestrating multiple screens, run Phase A for all screens first, then Phase B for each — this minimizes MCP exposure time and avoids mid-implementation timeouts.
+Use `figma-to-swiftui`'s two-phase workflow across the whole flow:
+
+**Phase A — batch-fetch ALL screens first.** For every screen in the graph, run Phase A (Step 1–4 of `figma-to-swiftui`), populating `.figma-cache/<nodeId>/` with design-context, screenshot, tokens, code-connect, assets, and a manifest. Do this for all screens in one burst, not interleaved with Phase B. Reasons:
+- Minimizes total MCP exposure time (ephemeral asset URLs, session windows).
+- Lets the manifest checkpoint partial progress — if a fetch fails, retry only the failed node instead of losing work.
+- Keeps Phase B free of MCP calls, so it is unaffected by timeouts.
+
+**Dedup the file-scoped data.** `get_variable_defs` is per `fileKey`, not per node. If all screens come from the same Figma file, fetch tokens once and copy/symlink the same `tokens.json` into each screen's cache folder.
+
+**If a Phase A fetch fails** on a screen: the manifest records it as `failed`; continue with the next screen, then retry failed ones at the end. Do NOT retry the same node on timeout — apply the circuit breaker from fetch-strategy.md and split the screen into sections.
+
+**Phase B — implement offline from cache.** Once Phase A is complete (or complete-with-known-gaps that the user has accepted), implement screens one at a time in graph order. No further MCP calls in Phase B.
+
+Per-screen implementation rules:
 - Reuse existing project components, modifiers, styles, assets, and colors before creating new ones
 - Prefer `IKFont`, `IKCoreApp`, and project-native helpers over raw implementations
 - Name any new Figma-derived assets with a screen or source-node prefix
