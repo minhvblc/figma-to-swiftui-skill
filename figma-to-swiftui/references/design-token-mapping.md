@@ -57,16 +57,53 @@ Use project's existing spacing system if one exists. Do not create a parallel sy
 
 ## Typography Tokens
 
-Figma typography variables map to Font definitions.
+Figma typography variables map to Font definitions. **Typography is the #1 source of "it doesn't look right" in SwiftUI** — carry every field, not just size + weight.
+
+### Required fields for every text style
+
+| Figma | SwiftUI |
+|---|---|
+| font-family | `Font.custom("Family", size:)` or `.system(size:)` |
+| font-size | `size:` param |
+| font-weight | `weight:` param |
+| font-width (Expanded/Condensed) | `.fontWidth(.expanded)` / `.condensed` (iOS 16+) |
+| line-height | `.lineSpacing(lineHeight - fontSize)` — **see pitfall below** |
+| letter-spacing | `.tracking(X)` (preferred) or `.kerning(X)` |
+| text-align | `.multilineTextAlignment(.leading / .center / .trailing)` |
+| text-transform: uppercase | `.textCase(.uppercase)` |
+
+### Line height pitfall
+
+Figma `line-height: 22px` on a `16px` font = 22pt total line box. SwiftUI `Text` has its own default line height (~1.17× font size ≈ 18.72pt for size 16). To force Figma's value:
+
+```swift
+Text("...")
+    .font(.system(size: 16, weight: .semibold))
+    .lineSpacing(22 - 16)  // extra space between lines = lineHeight - fontSize
+    // If the resulting block over-pads, compensate:
+    .padding(.vertical, -((22 - 16) / 2))
+```
+
+**Never skip line-height when Figma specifies it.** Multi-line text will look loose or tight otherwise.
+
+### Letter spacing pitfall
+
+Figma `letter-spacing: -0.32px` → `.tracking(-0.32)`. Do not use `.kerning()` for font-aware tracking — `.tracking()` respects font ligatures. `.kerning()` applies raw between all chars.
+
+### Example — full style carry-over
 
 ```swift
 extension Font {
     static let headingLarge = Font.system(size: 28, weight: .bold)
-    static let headingMedium = Font.system(size: 22, weight: .semibold)
-    static let bodyRegular = Font.system(size: 16, weight: .regular)
-    static let bodySmall = Font.system(size: 14, weight: .regular)
-    static let caption = Font.system(size: 12, weight: .medium)
 }
+
+Text("Title")
+    .font(.headingLarge)
+    .fontWidth(.expanded)           // if Figma style is "Expanded"
+    .tracking(-0.56)                 // Figma letter-spacing
+    .lineSpacing(34 - 28)            // Figma line-height 34
+    .foregroundStyle(Color.textPrimary)
+    .multilineTextAlignment(.leading)
 ```
 
 ### Custom Fonts
@@ -119,6 +156,46 @@ extension View {
     }
 }
 ```
+
+## Gradients
+
+Figma linear gradient → SwiftUI `LinearGradient`. Match stops and direction exactly.
+
+```swift
+// Figma: top-to-bottom gradient, #FF0080 0% → #7928CA 100%
+LinearGradient(
+    colors: [Color(hex: "FF0080"), Color(hex: "7928CA")],
+    startPoint: .top,
+    endPoint: .bottom
+)
+
+// Figma: diagonal (45° / topLeading → bottomTrailing)
+LinearGradient(
+    colors: [...],
+    startPoint: .topLeading,
+    endPoint: .bottomTrailing
+)
+
+// Figma: stops at specific positions
+LinearGradient(
+    stops: [
+        .init(color: Color(hex: "FF0080"), location: 0.0),
+        .init(color: Color(hex: "7928CA"), location: 0.6),
+        .init(color: Color(hex: "0070F3"), location: 1.0)
+    ],
+    startPoint: .leading,
+    endPoint: .trailing
+)
+```
+
+Radial gradient → `RadialGradient`. Angular (conic) → `AngularGradient`. Match Figma's center, radius, and angle exactly.
+
+## Opacity
+
+- Figma fill opacity 50% → `Color(...).opacity(0.5)` on the background.
+- Figma layer opacity (applied to the whole layer + children) → `.opacity(0.5)` on the view.
+- These differ: fill-opacity only affects the fill color; layer opacity affects everything inside. Read the Figma inspector carefully.
+- Tailwind `bg-black/50` = fill opacity. `opacity-50` = layer opacity.
 
 ## General Rules
 

@@ -41,6 +41,20 @@ Figma padding maps to SwiftUI .padding():
 - Individual edges -> .padding(EdgeInsets(top:, leading:, bottom:, trailing:))
 - Note: Figma uses left/right, SwiftUI uses leading/trailing for RTL support
 
+**Padding vs background order matters:**
+```swift
+// Figma: card with 16pt inner padding, white bg, 12pt radius
+content
+    .padding(16)                                         // inner padding
+    .background(Color.white, in: .rect(cornerRadius: 12)) // bg clipped to rounded shape
+// NOT:
+content
+    .background(Color.white)  // bg first — takes intrinsic size, no padding
+    .padding(16)              // padding OUTSIDE bg — visible gap
+```
+
+**Figma "padding" on a text layer is not always padding:** Figma sometimes encodes vertical centering as top/bottom padding. When a Text in Figma has padding top=4, bottom=4 and line-height ≠ font-size, this is usually the text's line-box, not real padding. Don't double-apply — see references/visual-fidelity.md for line-height handling.
+
 ### Sizing
 
 Figma sizing modes:
@@ -48,6 +62,12 @@ Figma sizing modes:
 - Hug contents -> No modifier needed. SwiftUI views hug by default.
 - Fill container -> .frame(maxWidth: .infinity) or .frame(maxHeight: .infinity)
 - Fill with min/max -> .frame(minWidth:, maxWidth:, minHeight:, maxHeight:)
+
+**Common sizing mistakes:**
+- Applying `.frame(width: 375)` on a full-width element — use `.frame(maxWidth: .infinity)` so it adapts to device width
+- Forgetting `.frame(maxWidth: .infinity, alignment: .leading)` when Figma left-aligns content inside a fill-width container
+- Using `.frame(height:)` on Text — Text height = font line-box; fixed height clips or leaves space. Prefer `.padding` on Text's container.
+- Image without `.resizable()` — stays at intrinsic size regardless of `.frame`
 
 ### Aspect Ratio
 
@@ -114,3 +134,36 @@ VStack {
 .safeAreaInset(edge: .bottom) { ... }
 // or use .toolbar(.bottomBar)
 ```
+
+## Effects & Decorations
+
+| Figma | SwiftUI |
+|---|---|
+| Drop shadow | `.shadow(color:, radius:, x:, y:)` — full form; defaults are wrong |
+| Inner shadow | `.overlay { RoundedRectangle(...).stroke(...).blur(...) }` or custom |
+| Layer blur | `.blur(radius:)` |
+| Background blur | `.background(.ultraThinMaterial)` / `.regularMaterial` / `.thickMaterial` |
+| Corner radius (all equal) | `.clipShape(.rect(cornerRadius:))` |
+| Individual corners | `UnevenRoundedRectangle(topLeadingRadius:, topTrailingRadius:, bottomLeadingRadius:, bottomTrailingRadius:)` |
+| Border / stroke | `.overlay(RoundedRectangle(...).stroke(color, lineWidth:))` |
+| Clip content | `.clipped()` or `.clipShape(...)` |
+| Mask | `.mask { ... }` |
+| Blend mode | `.blendMode(.multiply)` etc |
+| Liquid Glass (iOS 26+) | `.glassEffect()` with appropriate shape |
+
+## Animations & Transitions
+
+Figma prototype connections = design intent for transitions, not literal animation specs. Interpret as navigation or state-change animations.
+
+| Figma | SwiftUI |
+|---|---|
+| Dissolve | `.opacity(...)` + `withAnimation(.easeInOut)` |
+| Move in / slide in | `.transition(.move(edge:))` or `.offset(...)` |
+| Push | `NavigationStack` push (system transition) |
+| Smart animate | `withAnimation { }` on state change |
+| Scroll animate | `ScrollView` + `.scrollTransition()` |
+
+Rules:
+- Check project deps for Lottie — use if present
+- Don't over-animate. Prototype links = navigation, not custom animation.
+- Complex choreographed animations → ask user whether to implement fully or simplify

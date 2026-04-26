@@ -58,14 +58,45 @@ For one feature (single screen OR multi-screen flow), expected call counts:
 
 | Tool | Per feature |
 |---|---|
-| `get_metadata` | 0–1 on root (Step 1b) + 1 per timed-out node (circuit breaker) |
+| `get_metadata` | **1 per screen (mandatory)** — needed for icon node-ID registry. Additional calls per timed-out node (circuit breaker). |
 | `get_design_context` | 1 per screen (+ extras only if split by the circuit breaker) |
-| `get_screenshot` | 1 per screen |
+| `get_screenshot` | 1 per screen + 1 per flattened region + 1 per icon with no download URL (typical: 3–10 per screen) |
 | `get_variable_defs` | **1 total per `fileKey`**. Deduplicate across screens from the same file. |
-| `get_code_connect_map` | 1 per screen |
-| `add_code_connect_map` | 1 per newly created reusable component, at the end of Phase B |
+| Code Connect lookup (if MCP exposes one) | 1 per screen — optional, skip if unavailable |
+| Code Connect register (if MCP exposes one) | 1 per newly created reusable component — optional, skip if unavailable |
+
+`get_screenshot` is the workhorse for assets — it's cheap, fast, and always returns PNG. Don't skimp on per-icon calls.
 
 Exceeding this is a signal to stop and re-plan, not to keep fetching.
+
+## Asset Dedup Across Screens (shared nodeId store)
+
+An icon appearing on 5 screens should be fetched **once**, stored once, referenced by all 5.
+
+**Layout:**
+```
+.figma-cache/
+├── _shared/assets/
+│   ├── 3166_70211.png         ← keyed by source nodeId (: → _)
+│   └── 3166_70211.meta.json   ← displaySize, renderingMode, friendlyName
+├── <screen1NodeId>/manifest.json    ← references _shared/assets/3166_70211.png
+└── <screen2NodeId>/manifest.json    ← also references _shared/assets/3166_70211.png
+```
+
+**Fetch rule (before any download):**
+```bash
+NODE_ID="3166:70211"
+SAFE_ID="${NODE_ID//:/_}"
+if [ -f ".figma-cache/_shared/assets/${SAFE_ID}.png" ]; then
+  echo "SKIP: already cached"  # reuse
+else
+  # fetch via REST API or get_screenshot → save to _shared/assets/
+fi
+```
+
+**REST API batch across screens:** Collect all unique nodeIds across ALL screens in the flow, make one batch call, download all URLs. Far cheaper than per-screen fetches.
+
+**Asset Catalog (Step 7):** one imageset per unique source nodeId, not per screen. Screens referencing the same node share the Catalog entry → consistency automatic.
 
 ## Phase A for Multi-Screen Flows
 
@@ -77,7 +108,7 @@ For flows with N screens, Phase A runs **once, in a batch, for all N screens**, 
 4. For each screen in the graph, in parallel where the session permits:
    - `get_design_context`
    - `get_screenshot`
-   - `get_code_connect_map`
+   - Code Connect lookup (optional, only if MCP exposes it)
    - Copy/symlink the shared `tokens.json` into the screen's cache folder.
    - Download assets for this screen (URLs are ephemeral — do it during the same Phase A window, not later).
 5. Write/update the manifest for each screen as calls complete.
@@ -98,7 +129,7 @@ When a source document was read in Step 0:
 
 ## Parallelism Inside Phase A
 
-- Independent endpoints on the same node can be parallelized: `get_design_context(nodeA)` + `get_screenshot(nodeA)` + `get_code_connect_map(nodeA)` in parallel.
+- Independent endpoints on the same node can be parallelized: `get_design_context(nodeA)` + `get_screenshot(nodeA)` (+ Code Connect lookup if available) in parallel.
 - Fetches for unrelated nodes can be parallelized only if the session is not timeout-prone. If you hit any timeout this session, serialize for safety.
 - Never parallelize `get_metadata` with `get_design_context` on the same node — metadata informs whether context is safe to call.
 
