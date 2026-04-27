@@ -382,6 +382,84 @@ Các asset custom quan trọng nên:
 - không bị lẫn trong frame sâu quá
 - có tên semantic
 
+## 9.4 Convention bắt buộc cho asset cần export tự động: `eIC*` / `eImage*`
+
+Skill `figma-to-swiftui` dùng MCPFigma server (`figma-assets`) để batch-export icon và image trực tiếp vào `Assets.xcassets`. Để skill nhận diện được, asset cần được đặt tên trên Figma theo prefix:
+
+| Prefix Figma | Loại | Sẽ thành |
+|---|---|---|
+| `eIC<Name>` | Icon (1 màu hoặc nhiều màu) | `icAI<Name>` trong `Assets.xcassets` |
+| `eImage<Name>` | Image / illustration / brand | `imageAI<Name>` trong `Assets.xcassets` |
+
+**Quy tắc validate:**
+- Ký tự đầu sau prefix phải là chữ cái ASCII viết hoa: `eICHome` ✅, `eIChome` ❌
+- Phần còn lại chỉ cho `[A-Za-z0-9_]`: `eICHome_2` ✅, `eICHome-2` ❌, `eICHomé` ❌
+- Tên không hợp lệ → MCPFigma sẽ skip và emit warning trong output, asset đó rơi về fallback path (`get_screenshot`)
+
+**Khi nào dùng prefix:**
+- Mỗi icon atomic (close, chevron, home, search, …) → `eIC<Name>`
+- Mỗi image / illustration / hero artwork đứng độc lập → `eImage<Name>`
+- KHÔNG cần prefix cho:
+  - Region cần FLATTEN (skill sẽ tự render qua `get_screenshot`)
+  - Decorative shape vẽ được bằng SwiftUI (`Circle`, `Rectangle`, gradient)
+  - Photo người dùng / dynamic content load qua URL
+
+**Tại sao quan trọng:**
+- Asset có prefix → skill chạy fast path: 1 batch call, đúng scale `@2x`/`@3x`, đúng tên iOS, tự import vào xcassets — không cần thao tác tay.
+- Asset không có prefix → skill rơi về fallback path (`get_screenshot` từng node) — vẫn chạy, nhưng chậm hơn và phải đặt tên thủ công.
+
+**Best practice:**
+- Tag mọi asset reusable (icon + brand image) với prefix.
+- Đặt cùng tên trên Figma cho asset dùng nhiều nơi (skill tự dedupe theo nodeId, không cần copy).
+- Nếu một asset có biến thể light/dark, đặt 2 nodes riêng: `eICLogo` + `eICLogoDark` — skill sẽ export thành 2 imageset riêng. App tự pick theo `colorScheme`.
+
+**Ví dụ tổ chức tốt:**
+
+```text
+Page: Home
+Section: Top Bar
+- eICMenu          (icon hamburger)
+- eICSearch        (icon search)
+- eICNotifications (icon chuông)
+Section: Hero
+- eImageHomeBanner (illustration full-width)
+Section: Footer
+- eICHome
+- eICExplore
+- eICProfile
+```
+
+## 9.5 Convention cho slot animation Lottie: `eAnim*`
+
+Nếu màn có animation chạy bằng Lottie (loading spinner, success checkmark, onboarding hero animation, …), Designer **không** đặt là `eImage*` — đặt riêng prefix `eAnim<Name>`:
+
+| Prefix Figma | Loại | Skill xử lý |
+|---|---|---|
+| `eAnim<Name>` | Slot animation Lottie | Skill sinh `LottieView(animation: .named("placeholder_animation"))` ở đúng vị trí + frame size, không tải PNG |
+
+**Quy tắc validate:** giống `eIC*`/`eImage*` — UpperCamel sau prefix, ký tự `[A-Za-z0-9_]`.
+
+**Khác biệt quan trọng so với `eIC*` / `eImage*`:**
+- MCPFigma **bỏ qua** `eAnim*` khi quét — không tải PNG, không vào xcassets.
+- Children của node `eAnim*` cũng bị bỏ qua (children chỉ là preview keyframes cho Designer xem; skill không inventory chúng).
+- Skill không tự đặt tên Lottie thật — sinh placeholder constant `"placeholder_animation"` để dev thay sau khi Designer cung cấp file `.json`.
+
+**Best practice cho Designer:**
+- Frame chứa node `eAnim*` quy định **kích thước animation** trên app. Dev sẽ set `.frame(width:, height:)` đúng theo bounding box.
+- KHÔNG đặt UI tương tác (button, input) bên trong slot `eAnim*` — slot chỉ chứa animation, mọi thứ khác Designer đặt cạnh hoặc chồng `ZStack` ở ngoài.
+- Một animation = một node `eAnim*`. Cùng animation chạy ở nhiều màn → mỗi màn đặt 1 node riêng, dev sẽ wire chung 1 file Lottie sau.
+- Cùng với file `.json` Lottie, Designer nên cung cấp tên file (vd. `loading_spinner.json`) để dev biết thay vào chỗ `"placeholder_animation"`.
+
+**Ví dụ cấu trúc:**
+
+```text
+Section: Loading State
+- eAnimLoading        (frame 120×120, child là 1 illustration preview)
+Section: Success State
+- eAnimSuccess        (frame 80×80)
+- Text "Done!"
+```
+
 ## 10. PM / Designer nên bàn giao thêm gì ngoài Figma
 
 Figma tốt chưa đủ cho flow phức tạp. Bộ handoff tối thiểu nên có:

@@ -28,3 +28,7 @@ Response too large:
 - Use get_metadata first for node structure
 - Fetch child nodes individually
 - Focus on one section at a time
+
+## Companion server — `figma-assets` (MCPFigma)
+
+The Figma MCP described above provides design context, screenshots, metadata, and tokens. Asset *exporting* for designer-tagged nodes (`eIC*`/`eImage*`) is delegated to a second MCP server, `figma-assets`. See [`mcpfigma-setup.md`](./mcpfigma-setup.md) for installation and the probe-then-fallback contract used by Phase B.

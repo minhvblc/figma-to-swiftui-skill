@@ -140,6 +140,22 @@ alignment:      leading | center | trailing (+ cross-axis)
 - `lineHeight`, `letterSpacing`, `shadow`, `border` are skipped most often. Never skip them if design-context mentions them.
 - If Figma uses `Expanded` or `Condensed` width, record it — SwiftUI needs `.fontWidth(.expanded)`, not just weight.
 
+### Source-tag → swiftui-pro routing
+
+Each source tag implies a different routing decision in C2 codegen. Refer to `swiftui-pro-bridge.md` §3 for the full project-context decision tree.
+
+| Tag | Source | Example value | swiftui-pro route (project baseline: `Spacing` / `IKFont` / `IKCoreApp` enums + iOS 16) |
+|---|---|---|---|
+| `tokens` | Figma variable in `tokens.json` | `--text-primary` | `IKCoreApp.colors.textPrimary` (preferred); else `Color(.textPrimary)` if `useGeneratedSymbols`; else `Color("textPrimary")` |
+| `inline` | Figma node style in design-context | `font-weight: 700` | swiftui-pro transform — `.bold()` (api.md L3, design.md L27). Never `.fontWeight(.bold)`. |
+| `inline` | spacing literal `padding: 24` | `24pt` | `Spacing.l24` if a matching token exists; else inline `.padding(24)` (compliant — value is specifically requested). |
+| `inline` | typography literal `font-size: 16` | `16pt body` | If matches Dynamic Type role → `.font(.body)`. Else if `IKFont.<token>` matches → use it. Else `@ScaledMetric var fontSize: CGFloat = 16` + `.font(.system(size: fontSize, weight: .regular))`. Never inline `.font(.system(size: 16))` without `@ScaledMetric`. |
+| `inline` | color literal `#FF6600` | hex | `IKCoreApp.colors.<token>` if matches; else `Color(.brandOrange)` if `useGeneratedSymbols` and asset exists; else `Color(hex: "#FF6600")` if `Color(hex:)` extension; else `Color(red:green:blue:)` with `// TODO` comment. |
+| `class` | Tailwind class on Figma component | shared button class | Reuse via project's existing `ButtonStyle` (audit C1). Never re-implement. |
+| `screenshot` | Visual measurement (estimate) | spacing ~24pt | Same routing as `inline` literal (token first, then inline). Mark `[estimate]` in inventory; ask user to verify if the design-system enum value differs by > 4pt. |
+
+When the chosen route is "inline literal" (no token match), record a one-line note in the run summary so the user knows where the design system might want a new token added (no auto-edit of `Spacing`/`IKFont`/`IKCoreApp` — surface, don't mutate).
+
 ---
 
 ## 4. SwiftUI Defaults That Break Fidelity
@@ -194,7 +210,9 @@ These are the silent killers. Watch for each:
 
 ## 5. Screenshot Cross-Check
 
-The screenshot is the final arbiter. Use it actively:
+The screenshot is the final arbiter. Use it actively.
+
+This section provides the underlying checklist; the executable procedure that produces a verifiable diff report (and the gates that catch report bugs) lives in `references/verification-loop.md`. The bullet codes below (LH, LS, ...) are the canonical names used by that report.
 
 ### Before implementing a section
 1. Look at `screenshot.png`.
@@ -207,20 +225,22 @@ The screenshot is the final arbiter. Use it actively:
 1. Re-open `screenshot.png` in your mind.
 2. Go through the implemented code top-down.
 3. For each `.padding`, `.spacing`, `.font`, `.foregroundStyle`, `.background`, `.frame`, `.shadow` — ask: "does this match what I see?"
-4. Special scan for commonly-missed items:
-   - [ ] Line height (if Text has multi-line content)
-   - [ ] Letter spacing / tracking
-   - [ ] Inner shadow / outer shadow
-   - [ ] Border + radius combined
-   - [ ] Opacity on sub-elements
-   - [ ] Icon rendering mode (tint vs original)
-   - [ ] Icon exact pixel size (not just "small")
-   - [ ] Divider color / opacity / height
-   - [ ] Background material (blur) behind text
-   - [ ] Text truncation / line limit
-   - [ ] Gradient direction (top→bottom vs diagonal)
-   - [ ] Safe area behavior (does bg extend under status bar?)
-   - [ ] **No system chrome drawn** — no "9:41", no wifi/battery SF Symbols, no `Capsule`/`RoundedRectangle` at (~134×5) pretending to be the home indicator. iOS renders these.
+4. Special scan for commonly-missed items (the canonical 15 checks — every C3 Pass 2 report row cites one of these codes):
+   - [ ] **LH** Line height (if Text has multi-line content)
+   - [ ] **LS** Letter spacing / tracking
+   - [ ] **SH** Inner shadow / outer shadow
+   - [ ] **BD** Border + radius combined
+   - [ ] **OP** Opacity on sub-elements
+   - [ ] **RM** Icon rendering mode (tint vs original)
+   - [ ] **IS** Icon exact pixel size (not just "small")
+   - [ ] **DV** Divider color / opacity / height
+   - [ ] **BG** Background material (blur) behind text
+   - [ ] **TR** Text truncation / line limit
+   - [ ] **GR** Gradient direction (top→bottom vs diagonal)
+   - [ ] **SA** Safe area behavior (does bg extend under status bar?)
+   - [ ] **CH** No system chrome drawn — no "9:41", no wifi/battery SF Symbols, no `Capsule`/`RoundedRectangle` at (~134×5) pretending to be the home indicator. iOS renders these.
+   - [ ] **PD** Explicit padding / spacing (no SwiftUI defaults — see Hard Rules §7 #7)
+   - [ ] **BS** `.buttonStyle(.plain)` on custom-styled buttons (Hard Rules §7 #5)
 
 ### Disagreement handling
 When code reflects inventory correctly but doesn't look right against the screenshot:

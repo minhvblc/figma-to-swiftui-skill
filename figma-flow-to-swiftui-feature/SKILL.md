@@ -48,6 +48,9 @@ All Figma MCP calls in this workflow follow [../figma-to-swiftui/references/fetc
 
 - `get_metadata` on the root **once**, to confirm screen → node mapping.
 - `get_variable_defs` **once per fileKey**; copy/symlink the resulting `tokens.json` into each screen's cache folder instead of refetching per screen.
+- `figma_list_assets` (MCPFigma) **once on the root flow node**, after `get_metadata` confirms screen mapping. The result is the **flow-global tagged-asset registry** — every match has a single source nodeId regardless of how many screens reference it. Cache as `.figma-cache/_shared/mcpfigma-list.json`. The registry is per `(fileKey, rootNodeId)`, not per screen; the single-screen skill filters it by sub-tree containment per screen.
+- If `figma_list_assets` is unavailable (server not configured, token bad), log it once at the flow level. Each screen's Phase B falls back to `get_screenshot` independently — do not retry the probe per screen.
+- **Lottie placeholders (`eAnim*`)** are detected per-screen by walking the screen's `metadata.json` in single-screen B0 step 5 — no flow-global pre-fetch is needed. Each screen's Phase B inventory ends up with `kind: "lottie-placeholder"` rows; Phase C2 codegens `LottieView` stubs using the literal name `"placeholder_animation"`. See `../figma-to-swiftui/references/lottie-placeholders.md`. The flow skill should surface a combined end-of-run summary across all screens listing every placeholder the developer needs to replace.
 - Run `figma-to-swiftui`'s **Phase A for ALL screens** in one batch (populates `.figma-cache/<nodeId>/` + manifest per screen), then run Phase B for each screen in graph order. Do not interleave A and B across screens.
 - If any call times out, apply the circuit breaker in fetch-strategy.md. Do not retry the same node — split into sections instead.
 - Manifests make Phase A resumable — re-fetch only the entries marked `failed`.
@@ -93,6 +96,9 @@ Before generating any SwiftUI:
 - Find existing service clients, repositories, or `IKCoreApp` helpers
 - Find reusable components, modifiers, button styles, typography helpers, asset and color tokens
 - Check nearby features for the same flow shape before creating new abstractions
+- **swiftui-pro audit (mandatory):** confirm the routing uses `NavigationStack` / `NavigationSplitView` (not deprecated `NavigationView`) and that destinations register via `.navigationDestination(for:)` not `NavigationLink(destination:)`. If the existing codebase **mixes** the two, **STOP** — flag to the user before writing new screens; mixing breaks navigation. See `../figma-to-swiftui/references/swiftui-pro/navigation.md`.
+- **swiftui-pro audit (mandatory):** confirm shared state uses `@Observable` + `@MainActor` (iOS 17+) or `ObservableObject` + `@Published` + `@StateObject` (iOS 16 fallback) consistently — not mixed. See `../figma-to-swiftui/references/swiftui-pro/data.md`. If project baseline is iOS 16+, the legacy form is mandatory; document that decision in the screen graph output.
+- **swiftui-pro audit (mandatory):** locate `Spacing`, `IKFont`, `IKCoreApp` enums and list their cases. C2 routes Figma values through them per `../figma-to-swiftui/references/swiftui-pro-bridge.md` §7. If any enum is missing, surface to the user before generating views.
 
 Read [references/navigation-state-integration.md](references/navigation-state-integration.md) when wiring architecture.
 
@@ -123,6 +129,15 @@ If the request is still ambiguous after the schema pass, stop here and ask inste
 
 Use `figma-to-swiftui`'s two-phase workflow across the whole flow:
 
+**Phase A sub-step A0 (flow-global): tagged-asset registry.** Once per flow, before fetching any screen:
+1. Call `figma_list_assets(fileKey, rootNodeId, depth=10)`.
+2. Save to `.figma-cache/_shared/mcpfigma-list.json`.
+3. Pin a single `assetCatalogPath` for the whole flow (interactive prompt if the project has multiple `.xcassets`). Stash in the shared cache folder so every screen's Phase B reads the same value.
+4. When delegating Phase B to `figma-to-swiftui` for each screen, pass `mcpfigmaListPath = .figma-cache/_shared/mcpfigma-list.json`. The single-screen skill's B0 step reads from this file instead of re-calling `figma_list_assets` per screen.
+5. The single-screen skill filters the global registry per screen: a screen's tagged-asset registry is the subset of global matches whose `nodeId` is (or is a descendant of) the screen's nodeId.
+
+If `figma_list_assets` returns auth error or the tool is not registered, skip A0 entirely and let each screen fall back to `get_screenshot` independently (the single-screen skill handles this in B0).
+
 **Phase A — batch-fetch ALL screens first.** For every screen in the graph, run Phase A (Step 1–4 of `figma-to-swiftui`), populating `.figma-cache/<nodeId>/` with design-context, screenshot, tokens, code-connect, assets, and a manifest. Do this for all screens in one burst, not interleaved with Phase B. Reasons:
 - Minimizes total MCP exposure time (ephemeral asset URLs, session windows).
 - Lets the manifest checkpoint partial progress — if a fetch fails, retry only the failed node instead of losing work.
@@ -139,6 +154,8 @@ Per-screen implementation rules:
 - Prefer `IKFont`, `IKCoreApp`, and project-native helpers over raw implementations
 - Name any new Figma-derived assets with a screen or source-node prefix
 - Avoid placeholder UI or fake data if the real integration already exists in the project
+- **swiftui-pro structural rules apply:** each screen view in its own file; sub-sections > ~40 lines extract into separate `View` structs (in their own files), not computed properties returning `some View`. See `../figma-to-swiftui/references/swiftui-pro/views.md` and `../figma-to-swiftui/references/swiftui-pro-bridge.md` §4.
+- **All generated screen views run C3 Pass 4 (swiftui-pro Review)** before declaring done. Surface a flow-level summary listing every Pass 4 finding across screens, prioritized.
 
 Prefer this reuse order:
 1. Code Connect mapped component
@@ -146,6 +163,16 @@ Prefer this reuse order:
 3. Nearby feature component with the same role
 4. Existing modifier, style, token, or helper
 5. New feature-specific implementation only when no suitable project-native option exists
+
+### 5.5 xcassets import order (multi-screen flows)
+
+For each screen's Phase B:
+- Tagged assets (MCPFigma path) write directly into `Assets.xcassets` during B3a, **per screen, in the order screens are processed**.
+- MCPFigma groups imagesets into a folder named after the root node passed in the call (the screen). Two screens that both reference `eICHome` will land as `Assets.xcassets/Screen1/icAIHome.imageset` AND `Assets.xcassets/Screen2/icAIHome.imageset` — each under its screen folder. **Xcode resolves `Image("icAIHome")` by name across the whole catalog**, so this duplication on disk is harmless at the call site (SwiftUI doesn't care which folder it's in).
+- `skipIfExistsInCatalog` (default `true`) means a re-run will not re-download/re-import an imageset whose name already exists anywhere in the catalog. Effective behavior: the FIRST screen that processes a shared icon "wins" the import; subsequent screens silently skip it. Re-runs become cheap.
+- Different source nodeIds with the same Figma name (rare; two designers used `eICClose` on different nodes) → MCPFigma deduplicates with suffix (`icAIClose_2`). Surface as a warning.
+- Untagged assets (`get_screenshot` path) are written in Phase C4 per screen, after the screen's view code is done.
+- A single `assetCatalogPath` is pinned for the entire flow at A0 (interactive prompt if the project has multiple `.xcassets`). All screens share it — do not re-prompt per screen.
 
 ### 6. Wire the Full Behavior
 
