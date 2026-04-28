@@ -223,7 +223,13 @@ User abort phrases (`stop fixing`, `ship as-is`) → mark `manifest.verification
 
 ## 5. C5 Simulator Workflow
 
-C5 is `mandatory-with-opt-out`: by default, after C3 Pass 2 succeeds, propose this validation. User can decline with phrases like `skip C5`, `skip validate`, `no build`, `bỏ qua C5`, `không cần build`. Persist the choice in `manifest.verification.c5.userChoice` so re-runs don't re-prompt.
+**C5 is mandatory.** It runs unconditionally after Gate C3-Pass2 prints `GATE: PASS`. There are no user opt-out phrases. The agent only skips C5 when one of three system reasons applies (auto-detected, persisted in `manifest.verification.c5.skipped`):
+
+- `no_project` — no `.xcodeproj` / `.xcworkspace` after walking up 3 levels (handled in C5.1).
+- `simctl_error` — `xcrun simctl` errors, missing simulator runtime, missing Xcode CLT (handled in C5.2 / C5.4).
+- `ci_environment` — `CI=true` or `GITHUB_ACTIONS=true` env present (no GUI simulator in CI).
+
+User phrases like `skip C5` / `bỏ qua C5` / `không cần build` are NOT honored. Reply with the Done-Gate (`SKILL.md` Key Principle #12) and proceed.
 
 ### C5.1 — Detect build target
 
@@ -314,9 +320,9 @@ The Figma screenshot and the simulator screenshot will have different pixel size
 | Build fails | Surface compile errors as FAIL high rows, self-fix loop. |
 | App boots wrong screen | Ask once for `previewEntry`, stash and reuse. |
 | Simulator unavailable / `simctl` errors | Tell user, mark `manifest.verification.c5.skipped = "simctl_error"`, do not block. |
-| User opts out | Mark `manifest.verification.c5.userChoice = "opt_out"`, finish without running. |
 | Re-run after fix | Reuse `scheme`, `udid`, `previewEntry` from manifest. |
-| CI / headless | C5 requires a Mac with Xcode + simulators. In CI, skip C5; rely on C3 Pass 2. |
+| CI / headless | Detect `CI=true` or `GITHUB_ACTIONS=true` → mark `manifest.verification.c5.skipped = "ci_environment"`. Rely on a follow-up local C5 run before merge. |
+| User says "skip C5" / "bỏ qua C5" | NOT honored. Reply with Done-Gate (`SKILL.md` Principle #12) and proceed. The only valid bypass is one of the three system reasons above. |
 
 ### 5.7 — Gate C5 (BASH, mandatory after C5.6)
 
