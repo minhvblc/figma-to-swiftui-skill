@@ -1,6 +1,6 @@
 ---
 name: figma-to-swiftui
-description: "Build pixel-perfect SwiftUI views from Figma via Figma MCP. Triggers on figma.com URLs, Figma node IDs, a current Figma selection in figma-desktop MCP, and phrases like 'implement/translate/convert Figma to SwiftUI', 'iOS UI from Figma', 'làm UI SwiftUI từ Figma', 'code màn iOS theo Figma', 'làm màn này', 'adapt SwiftUI view to Figma', or a .txt/.md brief paired with Figma work for iOS. Requires Figma MCP. Do NOT trigger for React, web, or Android."
+description: "Build pixel-perfect SwiftUI views from Figma via Figma MCP. Triggers on figma.com URLs, Figma node IDs, a current Figma selection in figma-desktop MCP, and phrases like 'implement/translate/convert Figma to SwiftUI', 'iOS UI from Figma', 'làm UI SwiftUI từ Figma', 'code màn iOS theo Figma', 'làm màn này', 'adapt SwiftUI view to Figma', or a .txt/.md brief paired with Figma work for iOS. Requires BOTH the figma-desktop MCP (get_metadata / get_design_context / get_screenshot) AND the MCPFigma server (figma_build_registry / figma_extract_tokens / figma_export_assets_unified) — STOP if either is missing, never improvise. Do NOT trigger for React, web, or Android."
 ---
 
 # Figma to SwiftUI
@@ -30,7 +30,7 @@ Every visible icon, logo, illustration, image, and decorative graphic in the scr
 - iOS system chrome the user explicitly said to keep system-default (back chevron in NavigationStack toolbar, share sheet icons)
 - The user explicitly tells you to substitute for a missing asset
 
-**Failure-mode self-check.** If you catch yourself thinking *"SF Symbol is close enough"*, *"the user won't notice"*, *"I'll skip the pipeline this time"*, *"there's no FIGMA_TOKEN so I can't download"*, or *"I'll mark this as approximation in the summary"* — **STOP**. That is the exact failure mode this skill exists to prevent. Go run Phase B. `get_screenshot(fileKey, nodeId)` works without any token and is the default asset downloader.
+**Failure-mode self-check.** If you catch yourself thinking *"SF Symbol is close enough"*, *"the user won't notice"*, *"I'll skip the pipeline this time"*, *"there's no FIGMA_TOKEN so I can't download"*, or *"I'll mark this as approximation in the summary"* — **STOP**. That is the exact failure mode this skill exists to prevent. Go run Phase B via `figma_export_assets_unified` (MCPFigma). If MCPFigma is not connected, STOP and ask the user to install it — do not silently downgrade to substitutions.
 
 If an asset truly cannot be fetched (node missing from Figma, MCP returns error after retry), **STOP and tell the user** — do not improvise. Improvisation = task failure.
 
@@ -57,7 +57,23 @@ Figma frames often include a mockup of iOS system chrome (status bar, Dynamic Is
 
 ## Prerequisites
 
-- Figma MCP connected — **probe first**, don't ask upfront. Call `get_metadata` on the target node (or current selection) as the first MCP action. If the call fails because no MCP is configured, only then pause and ask the user to set it up.
+**Two Figma MCP servers are required — both, not one.** They cover disjoint responsibilities and the skill assumes both:
+
+| MCP server | Tools used by this skill | Purpose |
+|---|---|---|
+| `figma-desktop` (official) | `get_metadata`, `get_design_context`, `get_screenshot`, `get_variable_defs` | Reads design spec, FRAME screenshot, design context, raw variable defs from the open Figma file. |
+| `figma-assets` (MCPFigma) | `figma_build_registry`, `figma_extract_tokens`, `figma_export_assets_unified` (and legacy `figma_list_assets` / `figma_export_assets` — **do not use, see Step 5 of flow skill**) | Discovers screen graph, extracts SwiftUI-ready tokens, exports per-node PNG assets into `Assets.xcassets`. |
+
+Connection check (mandatory, **probe first** — do not ask upfront):
+
+1. Call `get_metadata` on the target node (or current selection). Failure → figma-desktop MCP missing → STOP, ask user to install/connect.
+2. Call `figma_build_registry(fileKey, nodeId, depth=10)` (Step A2). Failure with "tool not registered" → MCPFigma missing → STOP, ask user to install per `references/mcpfigma-setup.md`.
+
+**If only one of the two is connected → STOP. Do not improvise a fallback.** Specifically:
+- Missing `get_screenshot` / `get_design_context` → no Pass 2 / C5 visual diff is possible; agent MUST NOT proceed by "reading metadata + guessing styles". That is exactly the failure mode banned above.
+- Missing `figma_build_registry` / `figma_export_assets_unified` → Phase B asset pipeline cannot run; agent MUST NOT fall back to `Image(systemName:)` or hand-drawn shapes.
+
+Other inputs:
 - Figma URL `figma.com/design/:fileKey/:fileName?node-id=...`, or current selection in figma-desktop MCP (no URL needed)
 - SwiftUI Xcode project (preferred)
 - Optional: `.txt`/`.md` brief — read **before** any Figma call
@@ -97,15 +113,36 @@ Call `figma_build_registry(fileKey, nodeId, depth=10)` once. The response gives 
 
 The registry response also includes `taggedAssets[]` and `lottiePlaceholders[]` — Step B0 reuses these instead of re-fetching. See `references/screen-discovery.md`.
 
+### Step A2b — Screen-vs-State Disambiguation (mandatory before A3)
+
+Two screens with **the same UI structure** in Figma are almost always two **states of one screen**, not two separate screens — even if the doc describes them as separate steps in a flow. Common pairs that mislead agents into building twice as many screens as needed:
+
+- "Enter PIN" + "Confirm PIN" frames with identical 3×4 number pad → ONE screen, two states (`first-entry`, `re-entry-for-confirm`)
+- "Enable Face ID" + "Scan Face ID" frames sharing the same illustration → ONE screen with an overlay/modal state
+- Step-1, Step-2, Step-3 onboarding cards with identical layout → ONE screen with `currentStep` state, three copy variants
+
+**Detection rule** — for every pair `(A, B)` in `registry.screens[]`, flag a similarity hit when **all** of:
+- Same frame size (`width × height` match)
+- ≥ 80% of node-tree shape matches (same component types in same positions; cheap proxy: walk `metadata.json` paths and Jaccard on the path set)
+- Body copy nearly identical (Levenshtein-ratio > 0.8 between extracted text content)
+
+For each hit:
+
+> Stop. Show the two screens to the user with both screenshots side by side. Ask: **"Đây là 2 state của cùng một màn (X) hay 2 màn riêng?"** Wait for the answer. If "state" → produce ONE screen with state-driven view + state enum case for each Figma node; record the mapping in `registry.json` under `stateGroups[]`. If "two screens" → continue with both. Do NOT decide on your own.
+
+This check is mandatory before Step A3 batch fetch — if you don't run it, you waste tokens fetching design-context for what becomes one screen, and you build duplicate screens later. The doc behavior describing the user flow does NOT justify treating identical Figma frames as separate screens; doc describes user-facing steps, Figma describes view structure, and one view can host many steps.
+
 ### Step A3 — Batch Fetch Spec
 
 Run in parallel where possible; save to `.figma-cache/<nodeId>/`:
 
-1. `get_design_context(fileKey, nodeId, prompt="generate for iOS using SwiftUI")` → `design-context.md`
-2. `get_screenshot(fileKey, nodeId)` at **scale 3** (fine details visible) → `screenshot.png` (this is the FRAME screenshot, not asset)
-3. `figma_extract_tokens(fileKey)` → `tokens.json` (once per `fileKey` — dedup by copying/symlinking). This replaces `get_variable_defs` + manual SwiftUI naming. Output already has `swiftName`, `lightHex`/`darkHex`, `isCapsule` for radius. Empty `colors`+`spacing`+… with non-empty `warnings` = file has no Variables API access; fall back to reading `design-context.md` inline tokens at C2.
-4. `get_metadata(fileKey, nodeId)` → `metadata.json` (kept for design-context cross-ref in Phase C; A2's registry handles asset discovery)
+1. `get_design_context(fileKey, nodeId, prompt="generate for iOS using SwiftUI")` → `design-context.md` *(figma-desktop MCP)*
+2. `get_screenshot(fileKey, nodeId)` at **scale 3** (fine details visible) → `screenshot.png` *(figma-desktop MCP — this is the FRAME screenshot used for visual diff in C3 Pass 2 and C5; it is NOT an asset. Per-asset PNG export happens in Phase B via `figma_export_assets_unified`.)*
+3. `figma_extract_tokens(fileKey)` → `tokens.json` *(MCPFigma — once per `fileKey`, dedup by copying/symlinking)*. This replaces `get_variable_defs` + manual SwiftUI naming. Output already has `swiftName`, `lightHex`/`darkHex`, `isCapsule` for radius. Empty `colors`+`spacing`+… with non-empty `warnings` = file has no Variables API access; fall back to reading `design-context.md` inline tokens at C2.
+4. `get_metadata(fileKey, nodeId)` → `metadata.json` *(figma-desktop MCP — kept for design-context cross-ref in Phase C; A2's registry handles asset discovery)*
 5. Optional: Code Connect mapping — only if your Figma MCP exposes such a tool. Skip silently if unavailable.
+
+**Hard rule on missing tools.** If steps 1, 2, or 4 error because figma-desktop MCP is not connected → STOP and ask the user to install it. **Do NOT** proceed with metadata-only + guessing styles — Pass 2 / C5 visual diff cannot run without `screenshot.png`, and Phase C cannot ground colors/typography without `design-context.md`. Same rule for step 3: if MCPFigma is missing, STOP and ask — do not invent token enums.
 
 On truncation: don't retry — fall back to metadata + per-section fetch. See `references/fetch-strategy.md`.
 
@@ -137,6 +174,66 @@ The whole pipeline runs through **`figma_export_assets_unified`** — one call t
 - **Lottie path** (rows with `strategy: "lottiePlaceholder"`) — pass-through; manifest row only, no PNG.
 
 Skill picks the right `exporter`/`strategy` per row in B1/B2 (visual judgment); the tool nukes all the orchestration. See `references/mcpfigma-setup.md`.
+
+### Step B0a — Copy extraction (mandatory before any view code)
+
+Parse `design-context.md` and extract **every visible string** the user will read on this screen — title, subtitle, body, button labels, helper text, error text, status badges, footer links. For each: note the `data-node-id` from the React/Tailwind output; note the Figma typography style if present in the inline tokens block.
+
+Write the extracts to a single source of truth for the project — choose ONE of:
+
+**Option 1 (preferred for iOS 16+)**: a Swift String Catalog (`Localizable.xcstrings`). Each entry uses the `data-node-id` as the key (e.g. `welcome.title.3:24644`) and the Figma copy verbatim as the default value. SwiftUI views reference via `Text("welcome.title.3:24644")`. Auto-localizable later.
+
+**Option 2 (when no String Catalog)**: a single `Strings.swift` enum:
+
+```swift
+enum Strings {
+    enum Welcome {
+        static let title = "Secure All Accounts"               // Figma node 3:24644
+        static let body = "Add an extra layer of security..."  // Figma node 3:24645
+        static let cta  = "Continue"                           // Figma node I3:24648;109:3976
+    }
+    // ...
+}
+```
+
+**Hard rule from this point onward**: every `Text(...)` literal in a generated view file MUST be either:
+- a String Catalog key, OR
+- a `Strings.<Screen>.<key>` reference, OR
+- dynamic data from a model (`token.serviceName`, etc.)
+
+Inline English literals (`Text("Continue")`, `Text("Welcome")`) in view files are **banned** by C3 Pass 1 review. They indicate the agent invented copy or duplicated it from memory instead of from Figma.
+
+### Step B0b — Token codegen (mandatory before any view code)
+
+Read `tokens.json` (from A3 `figma_extract_tokens`). Generate **read-only** Swift token files in the project's `DesignSystem/` directory. Files are auto-generated; never edit by hand:
+
+1. **`DesignSystem/Color+Tokens.swift`** — one extension on `Color` per token. Figma slash names map to Swift via `swiftName` field. Each declaration carries a `// Figma: <token-name>` comment.
+
+   ```swift
+   extension Color {
+       static let primary1000 = Color(red: 0x3B/255, green: 0x7B/255, blue: 0xFD/255)  // Figma: Primary/1000
+       static let lightText900 = Color(red: 0x1A/255, green: 0x1A/255, blue: 0x1A/255)  // Figma: Light/Text/900
+       // ...
+   }
+   ```
+
+2. **`DesignSystem/AppFont.swift`** — one static method per Figma typography token. Use the exact `family / weight / size / lineHeight / letterSpacing` from the token. Do NOT consolidate fonts ("close enough"); preserve every distinct token.
+
+   ```swift
+   enum AppFont {
+       /// Figma: Heading 3 28px — SF Pro Rounded Bold 28 / lh 1.3
+       static func heading3() -> Font { .system(size: 28, weight: .bold, design: .rounded) }
+       /// Figma: Body Normal 18px Regular — SF Pro Rounded Regular 18 / lh 1.7
+       static func body18() -> Font { .system(size: 18, weight: .regular, design: .rounded) }
+       // ...
+   }
+   ```
+
+3. **`DesignSystem/Spacing.swift`** — only emit cases that actually appear in tokens. Do NOT add a generic 8pt grid (`xxs/xs/s/m/l/xl…`) unless those literal values exist in `tokens.json`.
+
+**Hard rule from this point onward**: every `Color(...)`, `.font(...)`, padding/spacing literal in a generated view file MUST come from these enums OR carry an explicit `// Figma: <node-id>` comment justifying the inline value (rare — typically one-off layout positions). Made-up tokens (`surfaceCard`, `textTertiary`, `cardGap` without a Figma source) are **banned** by C3 Pass 1 review.
+
+If `tokens.json` is missing or has empty `colors[]` despite the file having a Variables API → fall back to inline tokens parsed from `design-context.md`'s "These styles are contained in the design: …" block. Never invent.
 
 ### Step B0 — Read registry, pin asset catalog
 
@@ -427,6 +524,19 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
   - Typography → `IKFont.<token>` first; else `@ScaledMetric` + `.font(.system(size:weight:))`.
   - Top-level app values → `IKCoreApp.colors.*`, `IKCoreApp.spacing.*`.
   - Never invent new enum cases; surface mismatches in the run summary instead.
+- **Strict-fidelity rules (MANDATORY, banned patterns enforced by C3 Pass 1).** Every generated view file is reviewed against these:
+  - **No inline string literals.** `Text("Continue")` is banned in view files. Use String Catalog keys or `Strings.<Screen>.<key>` from the B0a manifest. Exception: developer-debug screens explicitly opted out.
+  - **No inline hex / RGB color literals.** `Color(red: 0x3B/255, …)` and `Color(hex: "#3B7BFD")` in views are banned. Use `Color.<token>` from the B0b-generated `Color+Tokens.swift`.
+  - **No inline font sizes.** `.font(.system(size: 28, weight: .bold))` in views is banned. Use `AppFont.<token>()` from the B0b-generated `AppFont.swift`. If the screen needs a value not in tokens, STOP and ask the user — typography drift is a bug.
+  - **No made-up token names.** Adding `surfaceCard`, `textTertiary`, `cardGap` (or any case) to `Color+Tokens.swift` / `Spacing.swift` without a backing entry in `tokens.json` is banned. Pass 1 review greps new enum cases against `tokens.json` and rejects mismatches.
+  - **Layout values trace to Figma.** Every `padding(.<edge>, <number>)`, `frame(width: <number>)`, `.cornerRadius(<number>)` must (a) trace to a literal in `design-context.md` (Tailwind class such as `p-[16px]`, `rounded-[16px]`, `w-[343px]`) or (b) come from a `Spacing` / `CornerRadius` enum case backed by `tokens.json`. One-off absolute-layout positions require `// Figma: y=192, w=375` comment to pass review.
+  - **Banned invention phrases.** Pass 1 greps the diff for known agent-invented English copy and red-flags. Current banned list (extended as new failures appear):
+    - "Secure your accounts" → Figma says "Secure All Accounts"
+    - "Use Face ID" → Figma says "Quick Setup: Face ID Protection"
+    - "Create your PIN" → Figma says "Let's make your account safer"
+    - "Get Started" when the actual Figma button reads "Continue"
+    - benefit-checklist text that does not appear in `design-context.md`
+    - any title/subtitle pair where the title length differs from Figma by > 30%
 
 **Translation references:**
 - `references/visual-fidelity.md` — **read first, always**
@@ -719,7 +829,7 @@ Ask the assistant to set them up via the `update-config` skill.
 7. **Self-check four passes + structural gates.** Pass 1 code-vs-inventory, Pass 2 code-vs-screenshot (writes `c3-pass2-diff.md`, Gate C3-Pass2 verifies structure + anti-hallucination), Pass 3/3b bash grep for `Image(systemName:` and system chrome, Pass 4 swiftui-pro Review (deprecated API + iOS 16 fallbacks + structural).
 8. **Beware SwiftUI defaults.** Always specify `.font(.system(size:))`, `VStack(spacing:)`, `.padding(X)`, `.buttonStyle(.plain)` for custom buttons.
 9. **Flatten composed artwork.** Don't reassemble atoms via `.offset()`. When in doubt → flatten.
-10. **`get_screenshot(nodeId)` is the default asset downloader.** No token, no excuse to skip.
+10. **Two-MCP split is mandatory.** `get_screenshot(nodeId)` (figma-desktop MCP) gives the FRAME screenshot used by Pass 2 / C5 visual diff — never use it as an asset exporter. Per-asset PNG export goes through `figma_export_assets_unified` (MCPFigma). If either MCP is missing → STOP and ask the user; never improvise a substitute.
 11. **Verification produces artifacts.** Pass 2 writes a structured diff report; C5 captures a simulator screenshot and writes a visual diff report. Both are gated and feed a self-fix loop. Mental walk-throughs are not enough — the agent can lie, but `file <path>` cannot.
 12. **Done-Gate.** A task is NOT complete until either `manifest.verification.c5.gate == "PASS"` OR `manifest.verification.c5.skipped` is set to one of `no_project`, `simctl_error`, `ci_environment`. Stating "done" / "implemented" / "xong" / "ship it" without one of these is a protocol violation. The agent MUST surface the C5 status (PASS, FAIL, or SKIPPED with reason) in its final user-facing message — see the **Verification summary** template below.
 

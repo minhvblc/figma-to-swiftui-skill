@@ -1,6 +1,6 @@
 ---
 name: figma-flow-to-swiftui-feature
-description: "Orchestrate one or more Figma nodes plus a user-provided feature flow brief into a production-ready SwiftUI feature. Trigger when the user wants a full user journey, end-to-end flow, or multi-screen feature in an iOS project, including navigation, state handling, validation, loading/error/success states, and project-aware integration. Use together with figma-to-swiftui when pixel-accurate screen generation is also required."
+description: "Orchestrate one or more Figma nodes plus a user-provided feature flow brief into a production-ready SwiftUI feature. Trigger when the user wants a full user journey, end-to-end flow, or multi-screen feature in an iOS project, including navigation, state handling, validation, loading/error/success states, and project-aware integration. Requires BOTH the figma-desktop MCP (get_metadata / get_design_context / get_screenshot) AND the MCPFigma server (figma_build_registry / figma_extract_tokens / figma_export_assets_unified) — STOP if either is missing, never improvise. Use together with figma-to-swiftui when pixel-accurate screen generation is also required."
 ---
 
 # Figma Flow to SwiftUI Feature Skill
@@ -127,7 +127,28 @@ If the request is still ambiguous after the schema pass, stop here and ask inste
 
 ### 5. Implement Each Screen (Phase A for all, then Phase B per screen)
 
-Use `figma-to-swiftui`'s two-phase workflow across the whole flow:
+Use `figma-to-swiftui`'s two-phase workflow across the whole flow.
+
+**STOP — read this before doing anything.** The single most common failure mode in this skill is: "agent runs `figma_list_assets` + `figma_export_assets` only, writes a minimal `manifest.json` with `assetList`, satisfies the legacy hook, then proceeds to write Swift view files based on doc behavior + invented copy + invented tokens." That outcome compiles. **It does not match Figma.** If you find yourself reaching for the older split tools below, you are about to fail this skill:
+
+- ❌ `figma_list_assets` — superseded by `figma_build_registry` (returns screens + tagged + lottie + warnings in one call)
+- ❌ `figma_export_assets` — superseded by `figma_export_assets_unified` (handles tagged + fallback + lottie in one call)
+- ❌ Using `get_variable_defs` raw + manually deriving `swiftName` — superseded by `figma_extract_tokens` (returns tokens with `swiftName`, `lightHex`/`darkHex`, `isCapsule` ready)
+
+If `figma_extract_tokens` / `figma_build_registry` / `figma_export_assets_unified` are unavailable in the session, surface this to the user and stop — do not silently fall back to the older tools. The strict-fidelity rules in `figma-to-swiftui` Step C2 (no inline strings / no inline hex / no inline font sizes / no made-up token names) and the C3 Pass 1 banned-phrase grep depend on the artifacts the unified tools produce.
+
+**Self-attestation block (mandatory before writing any Swift view file).** When you reach Phase B, emit this table to the user. Every screen must show all four artifacts present. If even one row has `missing`, you are not allowed to proceed:
+
+```
+Phase A artifacts per screen
+| Screen | design-context.md | screenshot.png | tokens.json | manifest.phaseA |
+|---|---|---|---|---|
+| <Name 1> (nodeId X)  | ✓ <bytes> | ✓ valid | ✓ <symlink to _shared> | ✓ "done" |
+| <Name 2> (nodeId Y)  | ✓ <bytes> | ✓ valid | ✓ <symlink to _shared> | ✓ "done" |
+...
+```
+
+The hook `figma-to-swiftui-gate.sh` enforces this at write-time — it will reject Swift writes when any of the four artifacts is missing for any screen-cache directory. Do not try to bypass the hook by writing a fake `manifest.json` with a stub `assetList`; the hook reads `phaseA: "done"` AND verifies `design-context.md` non-empty AND `tokens.json` present AND `screenshot.png` valid PNG. Fake one, the next is missing.
 
 **Phase A sub-step A0 (flow-global): registry.** Once per flow, before fetching any screen:
 1. Call `figma_build_registry(fileKey, rootNodeId, depth=10)`.
@@ -157,6 +178,14 @@ If `figma_build_registry` returns auth error or is not registered, surface and s
 
 **Phase B — implement offline from cache.** Once Phase A is complete (or complete-with-known-gaps that the user has accepted), implement screens one at a time in graph order. No further MCP calls in Phase B.
 
+**Phase B order, flow-level (mandatory):**
+
+1. **B0a — Copy extraction** (flow-level once). Walk every screen's `design-context.md`, extract every visible string with its `data-node-id`, write a single `Strings.swift` (or String Catalog) keyed by node ID. See `figma-to-swiftui/SKILL.md` Step B0a. Every `Text(...)` in subsequent view files must reference this — inline English literals are banned by C3 Pass 1.
+
+2. **B0b — Token codegen** (flow-level once). Read `_shared/tokens.json`, generate `DesignSystem/Color+Tokens.swift`, `AppFont.swift`, `Spacing.swift` with one entry per Figma token, each carrying a `// Figma: <token-name>` comment. See Step B0b. Every Color / font / spacing in subsequent view files must come from these enums — inline hex / font sizes are banned by C3 Pass 1.
+
+3. **Per-screen B0 → B6** (figma-to-swiftui), in graph order. Shared components processed before consumers.
+
 Per-screen implementation rules:
 - Reuse existing project components, modifiers, styles, assets, and colors before creating new ones
 - Prefer `IKFont`, `IKCoreApp`, and project-native helpers over raw implementations
@@ -164,6 +193,7 @@ Per-screen implementation rules:
 - Avoid placeholder UI or fake data if the real integration already exists in the project
 - **swiftui-pro structural rules apply:** each screen view in its own file; sub-sections > ~40 lines extract into separate `View` structs (in their own files), not computed properties returning `some View`. See `../figma-to-swiftui/references/swiftui-pro/views.md` and `../figma-to-swiftui/references/swiftui-pro-bridge.md` §4.
 - **All generated screen views run C3 Pass 4 (swiftui-pro Review)** before declaring done. Surface a flow-level summary listing every Pass 4 finding across screens, prioritized.
+- **Doc-vs-Figma conflict resolution.** When the source document describes a flow that doesn't match the Figma frames (e.g. doc says "PIN Setup → PIN Confirm" as two steps but Figma has two visually-identical frames), defer to Figma for **structure** and to the doc for **behavior**. If two Figma frames have ≥80% identical structure → they are two states of one screen (per `figma-to-swiftui` Step A2b). Build ONE view with state, not two views. Never invent a separate view to match the doc's narration.
 
 Prefer this reuse order:
 1. Code Connect mapped component
@@ -210,16 +240,27 @@ A flow is NOT done while any screen has neither. **A successful `xcodebuild buil
 
 If you cannot run C5 for a real reason (e.g. missing StoreKit config blocks the paywall from rendering, missing Lottie SDK leaves placeholders), capture the screenshot anyway and note the degraded state in the diff row — do not skip the entire C5. Partial visual evidence is better than none, and the user can decide whether the gap is acceptable.
 
-#### 7b. Feature-level wiring checks
+#### 7b. Feature-level walkthrough — delegate to `ios-simulator-verify`
 
-After 7a passes (or is skipped for a system reason), verify the whole flow, not just each screen:
-- Routes are reachable
-- State transitions are coherent
-- Errors surface on the correct screen
-- Success moves to the correct next screen
-- Shared components stay consistent across the journey
+7a (C5) proves each screen renders correctly in isolation. **It does not prove the journey works.** A user does not stop on Welcome and visually compare it to Figma — they tap Next, then enter a PIN, then mismatch it, then recover. That sequence is what 7b verifies, and it is a separate concern from per-screen visual fidelity.
 
-If the project has tests for similar features, extend that pattern. If verification cannot be run, say exactly what was not checked.
+After 7a passes (or is skipped for a system reason), invoke the **`ios-simulator-verify` skill** to drive the simulator through the planned walkthrough. The flow skill's job at this step is to hand the verify skill a concrete walkthrough plan — not to re-implement simulator orchestration here.
+
+What you must hand to `ios-simulator-verify`:
+
+1. The **screen graph** from Step 3, expressed as an ordered sequence of actions ("tap Next", "type 1234", "tap close").
+2. **At minimum three coverage axes**: end-to-end happy path, one recovery path (mismatch / form error / retry), one conditional fork (first-launch vs returning, premium vs free, empty vs populated).
+3. **Per-step assertions**: what should be visible, what side effect must be observable (UserDefaults flag, keychain entry, navigation depth).
+4. **Known degradations** the verify skill should mark `degraded` rather than fail on (e.g. no `.storekit` config means the paywall plan list will be empty — that is expected, not a regression).
+
+What `ios-simulator-verify` returns:
+- A three-column **verified / degraded / not-checked** findings table
+- A directory of state-named screenshots
+- A "next actions" list for closing the gaps
+
+Surface that table in your final response. Do not silently absorb the verify skill's findings — if a row is `⚠️ degraded` because StoreKit is unconfigured, the user must see that.
+
+If `ios-simulator-verify` is unavailable (skill not installed, simulator unavailable, CI environment), state explicitly which axes were not checked and why. **Compile-passed alone is not 7b.** A clean compile fails 7b by definition because nothing was driven through the flow.
 
 #### 7c. Flow-level Verification summary (mandatory final block)
 
