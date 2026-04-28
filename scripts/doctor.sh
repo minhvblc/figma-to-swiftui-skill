@@ -8,6 +8,7 @@
 #   4. FIGMA_ACCESS_TOKEN works against the Figma API
 #   5. figma-desktop MCP registered (any server name containing "figma")
 #   6. Skills installed in ~/.claude/skills/ (or project .claude/skills/)
+#   7. Enforcement hooks installed + registered in ~/.claude/settings.json
 #
 # Exits 0 if all checks pass, 1 otherwise.
 # Always prints exact fix suggestions per failure.
@@ -206,6 +207,66 @@ if [ "$SKILL_FOUND" -eq 0 ]; then
   hint "Searched: ${SKILL_DIRS[*]}"
   hint "Run scripts/install.sh, or copy figma-to-swiftui/ and figma-flow-to-swiftui-feature/ to ~/.claude/skills/"
 fi
+
+# ── 7. Enforcement hooks ──────────────────────────────────────────────────────
+echo
+echo "7. Enforcement hooks"
+HOOKS_DIR="$HOME/.claude/hooks"
+SETTINGS_PATH="$HOME/.claude/settings.json"
+EXPECTED_HOOKS=(
+  "figma-to-swiftui-gate.sh:PreToolUse"
+  "figma-to-swiftui-pass2-gate.sh:PostToolUse"
+  "figma-to-swiftui-stop-gate.sh:Stop"
+)
+
+for entry in "${EXPECTED_HOOKS[@]}"; do
+  name="${entry%:*}"
+  event="${entry#*:}"
+  hook_path="$HOOKS_DIR/$name"
+
+  if [ ! -f "$hook_path" ]; then
+    bad "$name missing at $hook_path"
+    hint "Run scripts/install.sh (auto-installs hooks), or scripts/install.sh --no-hooks to skip"
+    continue
+  fi
+  if [ ! -x "$hook_path" ]; then
+    bad "$name not executable"
+    hint "Fix: chmod +x \"$hook_path\""
+    continue
+  fi
+
+  if [ ! -f "$SETTINGS_PATH" ]; then
+    bad "$name installed but $SETTINGS_PATH missing — gate will not fire"
+    hint "Run scripts/install.sh to register hooks"
+    continue
+  fi
+
+  REG=$(python3 - "$SETTINGS_PATH" "$event" "$name" <<'PY' 2>/dev/null
+import json, sys, os
+path, event, name = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    cfg = json.load(open(path))
+except Exception:
+    print("ERR")
+    sys.exit(0)
+expected = os.path.expanduser(f"~/.claude/hooks/{name}")
+for b in (cfg.get("hooks", {}).get(event) or []):
+    for h in (b.get("hooks") or []):
+        cmd = os.path.expanduser(h.get("command", ""))
+        if cmd == expected:
+            print("OK")
+            sys.exit(0)
+print("MISSING")
+PY
+)
+  case "$REG" in
+    OK)      ok "$name registered ($event)";;
+    MISSING) bad "$name installed but NOT registered in settings.json ($event)"
+             hint "Run scripts/install.sh to patch settings.json";;
+    *)       bad "Could not parse $SETTINGS_PATH"
+             hint "Fix the JSON manually, then re-run doctor";;
+  esac
+done
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo

@@ -11,13 +11,16 @@
 #   3. Get FIGMA_ACCESS_TOKEN (env var or interactive prompt) + validate
 #   4. Patch Claude config (project-level if .claude/ exists in cwd, else user-level)
 #   5. Install skills into ~/.claude/skills/ (copy by default; --symlink for dev)
-#   6. Run doctor.sh
+#   6. Install enforcement hooks (PreToolUse / PostToolUse / Stop) and register
+#      them in ~/.claude/settings.json. Skip with --no-hooks.
+#   7. Run doctor.sh
 #
 # Usage:
 #   ./scripts/install.sh                          # download latest pre-built binary
 #   ./scripts/install.sh --build-from-source      # always clone + swift build
 #   ./scripts/install.sh --version v0.3.0         # download a specific tag
 #   ./scripts/install.sh --symlink                # symlink skills (re-run git pull to update)
+#   ./scripts/install.sh --no-hooks               # skip hook installation
 #   FIGMA_ACCESS_TOKEN=figd_xxx ./scripts/install.sh   # non-interactive token
 #
 # What this script CANNOT do:
@@ -29,16 +32,18 @@ set -eu
 # ── flags ─────────────────────────────────────────────────────────────────────
 SYMLINK_SKILLS=0
 BUILD_FROM_SOURCE=0
+INSTALL_HOOKS=1
 PINNED_VERSION=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --symlink) SYMLINK_SKILLS=1; shift ;;
     --build-from-source) BUILD_FROM_SOURCE=1; shift ;;
+    --no-hooks) INSTALL_HOOKS=0; shift ;;
     --version)
       [ "$#" -ge 2 ] || { echo "--version needs a tag, e.g. --version v0.3.0" >&2; exit 2; }
       PINNED_VERSION="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,28p' "$0"; exit 0 ;;
+      sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -62,7 +67,7 @@ echo "Repo: $REPO_ROOT"
 echo
 
 # ── 1. Pre-flight ─────────────────────────────────────────────────────────────
-say "1/5  Pre-flight"
+say "1/6  Pre-flight"
 [ "$(uname -s)" = "Darwin" ] || abort "macOS required (mcp-figma is a macOS binary)"
 command -v curl    >/dev/null 2>&1 || abort "curl not found (should ship with macOS — check your PATH)"
 command -v python3 >/dev/null 2>&1 || abort "python3 not found (should ship with macOS — check your PATH)"
@@ -75,7 +80,7 @@ else
 fi
 
 # ── 2. Obtain binary ──────────────────────────────────────────────────────────
-say "2/5  mcp-figma binary"
+say "2/6  mcp-figma binary"
 
 build_from_source() {
   command -v git   >/dev/null 2>&1 || abort "git required to build from source — install Xcode CLT: xcode-select --install"
@@ -169,7 +174,7 @@ else
 fi
 
 # ── 3. FIGMA_ACCESS_TOKEN ─────────────────────────────────────────────────────
-say "3/5  Figma access token"
+say "3/6  Figma access token"
 TOKEN="${FIGMA_ACCESS_TOKEN:-}"
 if [ -z "$TOKEN" ]; then
   echo "  Need a Figma Personal Access Token with 'File content read' scope."
@@ -193,7 +198,7 @@ case "$HTTP" in
 esac
 
 # ── 4. Patch Claude config ────────────────────────────────────────────────────
-say "4/5  Claude config"
+say "4/6  Claude config"
 
 if [ -d "$PWD/.claude" ]; then
   CONFIG="$PWD/.claude/mcp.json"
@@ -246,7 +251,7 @@ echo "  $(yellow ⚠) Note: token is stored in plaintext at the path above."
 echo "      If you store this config in git, exclude it from version control."
 
 # ── 5. Install skills ─────────────────────────────────────────────────────────
-say "5/5  Skills"
+say "5/6  Skills"
 SKILL_DIR="$HOME/.claude/skills"
 mkdir -p "$SKILL_DIR"
 
@@ -279,6 +284,86 @@ install_one() {
 
 install_one figma-to-swiftui
 install_one figma-flow-to-swiftui-feature
+
+# ── 6. Hooks ──────────────────────────────────────────────────────────────────
+say "6/6  Enforcement hooks"
+
+if [ "$INSTALL_HOOKS" = "0" ]; then
+  echo "  $(yellow skip) --no-hooks set; gates will rely on agent honoring them"
+else
+  HOOKS_SRC="$REPO_ROOT/scripts/hooks"
+  HOOKS_DST="$HOME/.claude/hooks"
+  SETTINGS="$HOME/.claude/settings.json"
+
+  if [ ! -d "$HOOKS_SRC" ]; then
+    echo "  $(red ✗) Hooks source missing: $HOOKS_SRC"
+    echo "      → re-clone the repo or install manually per SKILL.md §Strongly recommended hooks"
+  else
+    mkdir -p "$HOOKS_DST"
+    for src in "$HOOKS_SRC"/*.sh; do
+      [ -f "$src" ] || continue
+      name=$(basename "$src")
+      dst="$HOOKS_DST/$name"
+      cp "$src" "$dst"
+      chmod +x "$dst"
+      echo "  $(green ✓) Installed $name"
+    done
+
+    # Backup + patch ~/.claude/settings.json to register the three hooks.
+    if [ -f "$SETTINGS" ]; then
+      BACKUP="${SETTINGS}.bak.$(date +%Y%m%d-%H%M%S)"
+      cp "$SETTINGS" "$BACKUP"
+      echo "  $(green ✓) Backup: $BACKUP"
+    fi
+    mkdir -p "$(dirname "$SETTINGS")"
+
+    python3 - "$SETTINGS" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    cfg = {}
+
+cfg.setdefault("hooks", {})
+
+GATES = [
+    ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-gate.sh"),
+    ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-pass2-gate.sh"),
+    ("Stop",        None,         "~/.claude/hooks/figma-to-swiftui-stop-gate.sh"),
+]
+
+def already_registered(blocks, command):
+    for b in blocks or []:
+        for h in (b.get("hooks") or []):
+            if h.get("command") == command:
+                return True
+    return False
+
+added = 0
+for event, matcher, command in GATES:
+    blocks = cfg["hooks"].setdefault(event, [])
+    if already_registered(blocks, command):
+        continue
+    entry = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+    if matcher:
+        entry["matcher"] = matcher
+    blocks.append(entry)
+    added += 1
+
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+
+print(f"REGISTERED {added}")
+PY
+    echo "  $(green ✓) Patched $SETTINGS — gates run automatically next session"
+    echo "      (PreToolUse blocks .swift writes when assets missing,"
+    echo "       PostToolUse auto-runs Gate C3-Pass2,"
+    echo "       Stop blocks termination when C5 Done-Gate unsatisfied)"
+  fi
+fi
 
 # ── Final ─────────────────────────────────────────────────────────────────────
 echo
