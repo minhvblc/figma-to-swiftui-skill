@@ -4,33 +4,42 @@
 # Idempotent. Safe to re-run. Always backs up your Claude config before patching.
 #
 # Steps:
-#   1. Pre-flight (macOS, swift, git, python3)
-#   2. Clone (or pull) MCPFigma into a sibling directory
-#   3. Build mcp-figma binary
-#   4. Get FIGMA_ACCESS_TOKEN (env var or interactive prompt) + validate
-#   5. Patch Claude config (project-level if .claude/ exists in cwd, else user-level)
-#   6. Install skills into ~/.claude/skills/ (copy by default; --symlink for dev)
-#   7. Run doctor.sh
+#   1. Pre-flight (macOS, curl, python3; swift + git only if building from source)
+#   2. Obtain mcp-figma binary
+#        a) Try downloading the latest pre-built release from GitHub
+#        b) If no release exists OR --build-from-source is passed, clone+build
+#   3. Get FIGMA_ACCESS_TOKEN (env var or interactive prompt) + validate
+#   4. Patch Claude config (project-level if .claude/ exists in cwd, else user-level)
+#   5. Install skills into ~/.claude/skills/ (copy by default; --symlink for dev)
+#   6. Run doctor.sh
 #
 # Usage:
-#   ./scripts/install.sh                 # interactive
-#   ./scripts/install.sh --symlink       # symlink skills (re-run git pull to update)
+#   ./scripts/install.sh                          # download latest pre-built binary
+#   ./scripts/install.sh --build-from-source      # always clone + swift build
+#   ./scripts/install.sh --version v0.3.0         # download a specific tag
+#   ./scripts/install.sh --symlink                # symlink skills (re-run git pull to update)
 #   FIGMA_ACCESS_TOKEN=figd_xxx ./scripts/install.sh   # non-interactive token
 #
 # What this script CANNOT do:
 #   - Install the figma-desktop MCP (Figma's own product) — link printed at end
-#   - Install Xcode / Swift (we abort with instructions if missing)
+#   - Install Xcode / Swift (we abort with instructions if --build-from-source is needed)
 
 set -eu
 
 # ── flags ─────────────────────────────────────────────────────────────────────
 SYMLINK_SKILLS=0
-for arg in "$@"; do
-  case "$arg" in
-    --symlink) SYMLINK_SKILLS=1 ;;
+BUILD_FROM_SOURCE=0
+PINNED_VERSION=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --symlink) SYMLINK_SKILLS=1; shift ;;
+    --build-from-source) BUILD_FROM_SOURCE=1; shift ;;
+    --version)
+      [ "$#" -ge 2 ] || { echo "--version needs a tag, e.g. --version v0.3.0" >&2; exit 2; }
+      PINNED_VERSION="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,25p' "$0"; exit 0 ;;
-    *) echo "Unknown flag: $arg" >&2; exit 2 ;;
+      sed -n '2,28p' "$0"; exit 0 ;;
+    *) echo "Unknown flag: $1" >&2; exit 2 ;;
   esac
 done
 
@@ -42,8 +51,10 @@ say()    { echo "$(bold "▶") $1"; }
 abort()  { echo "$(red "✗") $1" >&2; exit 1; }
 
 REPO_ROOT="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
-MCPFIGMA_DIR="${REPO_ROOT}/../MCPFigma"
-MCPFIGMA_REPO="https://github.com/minhvblc/MCPFigma.git"
+MCPFIGMA_REPO_URL="https://github.com/minhvblc/MCPFigma.git"
+MCPFIGMA_RELEASES_API="https://api.github.com/repos/minhvblc/MCPFigma/releases"
+MCPFIGMA_BUILD_DIR="${REPO_ROOT}/../MCPFigma"
+BINARY_INSTALL_DIR="${HOME}/.local/share/mcp-figma"
 
 echo
 bold "figma-to-swiftui installer"
@@ -51,35 +62,114 @@ echo "Repo: $REPO_ROOT"
 echo
 
 # ── 1. Pre-flight ─────────────────────────────────────────────────────────────
-say "1/6  Pre-flight"
-[ "$(uname -s)" = "Darwin" ] || abort "macOS required (MCPFigma is Swift, macOS-only)"
-command -v git     >/dev/null 2>&1 || abort "git not found. Install Xcode CLT: xcode-select --install"
-command -v swift   >/dev/null 2>&1 || abort "swift not found. Install Xcode 16+ from the App Store, then re-run."
+say "1/5  Pre-flight"
+[ "$(uname -s)" = "Darwin" ] || abort "macOS required (mcp-figma is a macOS binary)"
+command -v curl    >/dev/null 2>&1 || abort "curl not found (should ship with macOS — check your PATH)"
 command -v python3 >/dev/null 2>&1 || abort "python3 not found (should ship with macOS — check your PATH)"
-echo "  $(green ✓) macOS, git, swift, python3 OK"
-
-# ── 2. Clone / update MCPFigma ────────────────────────────────────────────────
-say "2/6  MCPFigma source"
-if [ -d "$MCPFIGMA_DIR/.git" ]; then
-  echo "  Found existing checkout at $MCPFIGMA_DIR"
-  ( cd "$MCPFIGMA_DIR" && git pull --ff-only 2>&1 | sed 's/^/    /' ) || \
-    echo "  $(yellow ⚠) git pull failed; continuing with current checkout"
+if [ "$BUILD_FROM_SOURCE" = "1" ]; then
+  command -v git   >/dev/null 2>&1 || abort "git not found. Install Xcode CLT: xcode-select --install"
+  command -v swift >/dev/null 2>&1 || abort "swift not found. Install Xcode 16+ from the App Store, then re-run."
+  echo "  $(green ✓) macOS, curl, python3, git, swift OK (build-from-source mode)"
 else
-  echo "  Cloning $MCPFIGMA_REPO → $MCPFIGMA_DIR"
-  git clone "$MCPFIGMA_REPO" "$MCPFIGMA_DIR" 2>&1 | sed 's/^/    /'
+  echo "  $(green ✓) macOS, curl, python3 OK"
 fi
 
-# ── 3. Build binary ───────────────────────────────────────────────────────────
-say "3/6  Build mcp-figma"
-( cd "$MCPFIGMA_DIR" && swift build -c release 2>&1 | tail -20 | sed 's/^/    /' )
-# Canonicalize so the path written into config has no `..` segments
-MCPFIGMA_DIR="$( cd "$MCPFIGMA_DIR" && pwd -P )"
-BIN_PATH="$MCPFIGMA_DIR/.build/release/mcp-figma"
-[ -x "$BIN_PATH" ] || abort "Build finished but binary missing at $BIN_PATH"
-echo "  $(green ✓) Built: $BIN_PATH"
+# ── 2. Obtain binary ──────────────────────────────────────────────────────────
+say "2/5  mcp-figma binary"
 
-# ── 4. FIGMA_ACCESS_TOKEN ─────────────────────────────────────────────────────
-say "4/6  Figma access token"
+build_from_source() {
+  command -v git   >/dev/null 2>&1 || abort "git required to build from source — install Xcode CLT: xcode-select --install"
+  command -v swift >/dev/null 2>&1 || abort "swift required to build from source — install Xcode 16+ from the App Store"
+
+  if [ -d "$MCPFIGMA_BUILD_DIR/.git" ]; then
+    echo "  Found existing MCPFigma checkout at $MCPFIGMA_BUILD_DIR"
+    ( cd "$MCPFIGMA_BUILD_DIR" && git pull --ff-only 2>&1 | sed 's/^/    /' ) || \
+      echo "  $(yellow ⚠) git pull failed; continuing with current checkout"
+  else
+    echo "  Cloning $MCPFIGMA_REPO_URL → $MCPFIGMA_BUILD_DIR"
+    git clone "$MCPFIGMA_REPO_URL" "$MCPFIGMA_BUILD_DIR" 2>&1 | sed 's/^/    /'
+  fi
+  echo "  Building (this takes ~30s)..."
+  ( cd "$MCPFIGMA_BUILD_DIR" && swift build -c release 2>&1 | tail -10 | sed 's/^/    /' )
+  MCPFIGMA_BUILD_DIR="$( cd "$MCPFIGMA_BUILD_DIR" && pwd -P )"
+  BIN_PATH="$MCPFIGMA_BUILD_DIR/.build/release/mcp-figma"
+  [ -x "$BIN_PATH" ] || abort "Build finished but binary missing at $BIN_PATH"
+  echo "  $(green ✓) Built: $BIN_PATH"
+}
+
+download_release() {
+  local tag="$1"   # empty = latest
+  local api_url
+  if [ -z "$tag" ]; then
+    api_url="$MCPFIGMA_RELEASES_API/latest"
+  else
+    api_url="$MCPFIGMA_RELEASES_API/tags/$tag"
+  fi
+
+  echo "  Querying $api_url"
+  local tmp_json
+  tmp_json="$(mktemp)"
+  local http
+  http=$(curl -sL -w "%{http_code}" -o "$tmp_json" "$api_url" || echo "000")
+  if [ "$http" != "200" ]; then
+    rm -f "$tmp_json"
+    return 1
+  fi
+
+  local asset_url version
+  read -r version asset_url < <(python3 - "$tmp_json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+tag = data.get("tag_name", "").lstrip("v")
+url = ""
+for a in data.get("assets", []):
+    if a.get("name", "").endswith("-darwin-universal.tar.gz"):
+        url = a.get("browser_download_url", "")
+        break
+print(tag, url)
+PY
+)
+  rm -f "$tmp_json"
+
+  if [ -z "$asset_url" ] || [ -z "$version" ]; then
+    echo "  $(yellow ⚠) Release exists but has no darwin-universal asset attached"
+    return 1
+  fi
+
+  echo "  Found mcp-figma v$version"
+  mkdir -p "$BINARY_INSTALL_DIR"
+  local archive="$BINARY_INSTALL_DIR/mcp-figma-$version.tar.gz"
+  curl -fsSL -o "$archive" "$asset_url" || abort "Download failed: $asset_url"
+  tar -xzf "$archive" -C "$BINARY_INSTALL_DIR"
+  rm -f "$archive"
+  BIN_PATH="$BINARY_INSTALL_DIR/mcp-figma"
+  chmod +x "$BIN_PATH"
+  # Remove macOS quarantine attribute so Gatekeeper doesn't block first launch.
+  # The binary is unsigned (no Apple Developer ID for this project), so this
+  # bypass is required and safe — you just downloaded it from a known URL.
+  xattr -d com.apple.quarantine "$BIN_PATH" 2>/dev/null || true
+  [ -x "$BIN_PATH" ] || abort "Extracted binary missing or not executable at $BIN_PATH"
+  echo "  $(green ✓) Installed: $BIN_PATH (v$version)"
+  return 0
+}
+
+BIN_PATH=""
+if [ "$BUILD_FROM_SOURCE" = "1" ]; then
+  echo "  --build-from-source set; skipping download"
+  build_from_source
+elif [ -n "$PINNED_VERSION" ]; then
+  echo "  Downloading pinned version $PINNED_VERSION"
+  download_release "$PINNED_VERSION" || abort "Could not download $PINNED_VERSION (no such release, or no asset)"
+else
+  echo "  Trying to download latest pre-built release..."
+  if ! download_release ""; then
+    echo "  $(yellow ⚠) No suitable release available — falling back to build from source"
+    build_from_source
+  fi
+fi
+
+# ── 3. FIGMA_ACCESS_TOKEN ─────────────────────────────────────────────────────
+say "3/5  Figma access token"
 TOKEN="${FIGMA_ACCESS_TOKEN:-}"
 if [ -z "$TOKEN" ]; then
   echo "  Need a Figma Personal Access Token with 'File content read' scope."
@@ -102,12 +192,9 @@ case "$HTTP" in
   *)   abort "Unexpected HTTP $HTTP from Figma API";;
 esac
 
-# ── 5. Patch Claude config ────────────────────────────────────────────────────
-say "5/6  Claude config"
+# ── 4. Patch Claude config ────────────────────────────────────────────────────
+say "4/5  Claude config"
 
-# Decide which config to patch.
-# Priority: project-level if cwd has a .claude/ dir, else user-level ~/.claude.json,
-# else create user-level fresh.
 if [ -d "$PWD/.claude" ]; then
   CONFIG="$PWD/.claude/mcp.json"
   echo "  Project-level config detected: $CONFIG"
@@ -129,17 +216,14 @@ else
   echo "  Will use $CONFIG"
 fi
 
-# Backup if file exists
 if [ -f "$CONFIG" ]; then
   BACKUP="${CONFIG}.bak.$(date +%Y%m%d-%H%M%S)"
   cp "$CONFIG" "$BACKUP"
   echo "  $(green ✓) Backup: $BACKUP"
 fi
 
-# Make sure parent dir exists
 mkdir -p "$(dirname "$CONFIG")"
 
-# Patch in figma-assets entry, preserving any existing keys
 python3 - "$CONFIG" "$BIN_PATH" "$TOKEN" <<'PY'
 import json, os, sys
 config_path, bin_path, token = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -161,8 +245,8 @@ echo "  $(green ✓) Patched 'figma-assets' into $CONFIG"
 echo "  $(yellow ⚠) Note: token is stored in plaintext at the path above."
 echo "      If you store this config in git, exclude it from version control."
 
-# ── 6. Install skills ─────────────────────────────────────────────────────────
-say "6/6  Skills"
+# ── 5. Install skills ─────────────────────────────────────────────────────────
+say "5/5  Skills"
 SKILL_DIR="$HOME/.claude/skills"
 mkdir -p "$SKILL_DIR"
 

@@ -42,12 +42,22 @@ cd figma-to-swiftui-skill
 
 The installer is idempotent and safe to re-run. It will:
 
-1. Check toolchain (macOS, git, swift, python3)
-2. Clone (or update) MCPFigma into a sibling directory and build `mcp-figma`
+1. Check toolchain (macOS, curl, python3 — and git+swift only if it has to build from source)
+2. **Download the latest pre-built `mcp-figma` binary** from the [MCPFigma releases page](https://github.com/minhvblc/MCPFigma/releases) (universal binary for arm64 + x86_64). Falls back to clone+`swift build` if no release is available — or pass `--build-from-source` to force the build path.
 3. Prompt for your `FIGMA_ACCESS_TOKEN` and validate it against the Figma API
 4. Back up your existing Claude config, then patch in the `figma-assets` MCP entry (project-level if a `.claude/` exists in cwd, else `~/.claude.json`)
 5. Copy the two skill folders into `~/.claude/skills/` (use `--symlink` if you want to `git pull` to update later)
 6. Run `scripts/doctor.sh` to verify everything
+
+Useful flags:
+
+```bash
+./scripts/install.sh                    # download latest pre-built binary (default)
+./scripts/install.sh --version v0.3.0   # pin a specific release
+./scripts/install.sh --build-from-source # always clone + swift build (for hacking on MCPFigma)
+./scripts/install.sh --symlink          # symlink skills (re-run git pull to update)
+FIGMA_ACCESS_TOKEN=figd_xxx ./scripts/install.sh   # non-interactive token
+```
 
 After it finishes, install the **figma-desktop MCP** separately (see step 2 of Manual install below — Figma's installer is outside our scope) and restart Claude.
 
@@ -59,9 +69,26 @@ You can verify any time with:
 
 The doctor checks 6 things and prints exact fix commands for any failure.
 
+> **About the unsigned binary.** The pre-built binary is unsigned (no Apple Developer ID). The installer automatically removes the macOS quarantine attribute (`xattr -d com.apple.quarantine`) so Gatekeeper doesn't block first launch. If you'd rather build it yourself, use `--build-from-source`.
+
 ### Manual install
 
 #### 1. Install MCPFigma (`figma-assets` server)
+
+**Option A — pre-built binary (recommended).** Download the latest universal binary from the [releases page](https://github.com/minhvblc/MCPFigma/releases):
+
+```bash
+mkdir -p ~/.local/share/mcp-figma && cd ~/.local/share/mcp-figma
+curl -fsSL -o mcp-figma.tar.gz \
+  https://github.com/minhvblc/MCPFigma/releases/latest/download/mcp-figma-<VERSION>-darwin-universal.tar.gz
+tar -xzf mcp-figma.tar.gz && rm mcp-figma.tar.gz
+chmod +x mcp-figma
+xattr -d com.apple.quarantine mcp-figma 2>/dev/null || true   # bypass Gatekeeper (binary is unsigned)
+```
+
+Binary lives at `~/.local/share/mcp-figma/mcp-figma`. The `--latest/download/` URL pattern requires you to substitute the actual version into the filename — or pull the release page first to grab the exact asset name.
+
+**Option B — build from source.** Requires macOS 13+ and Swift 6.0+ (Xcode 16+):
 
 ```bash
 git clone https://github.com/minhvblc/MCPFigma.git
@@ -69,9 +96,7 @@ cd MCPFigma
 swift build -c release
 ```
 
-Binary lives at `.build/release/mcp-figma`. Requires macOS 13+ and Swift 6.0+ (Xcode 16+).
-
-> Pre-built binaries are not yet published — build from source for now. Tracking issue: [TODO open one in MCPFigma repo].
+Binary then lives at `<repo>/.build/release/mcp-figma`.
 
 Register with Claude Code at the **project level** (recommended, so the token stays out of `~/`):
 
