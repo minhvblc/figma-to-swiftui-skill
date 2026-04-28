@@ -11,95 +11,86 @@ This doc covers the contract end-to-end. Phase B detects `eAnim*` from `metadata
 | Aspect | `eIC*` / `eImage*` | `eAnim*` |
 |---|---|---|
 | Source format | PNG raster | Lottie JSON (separate file added later) |
-| Phase B path | MCPFigma `figma_export_assets` → `.imageset` | **None — no download, no xcassets entry** |
-| MCPFigma scanner | Surfaces in `matches` | Skipped (does NOT recurse into children) |
-| Phase B inventory row | `exporter: "mcpfigma"` (or fallback) | `exporter: "none"`, `kind: "lottie-placeholder"` |
+| Phase B path | Tagged path → `.imageset` | **None — no download, no xcassets entry** |
+| Registry surface | `taggedAssets[]` | `lottiePlaceholders[]` |
+| Phase B inventory row | `exporter: "tagged"` (or fallback) | `exporter: "fallback"`, `strategy: "lottiePlaceholder"` |
 | Phase C2 SwiftUI | `Image("icAI<Name>")` | `LottieView(animation: .named("placeholder_animation"))` |
 | Frame size | From parent frame | From parent frame (animation slot) |
 | Asset on disk after Phase C | `Assets.xcassets/.../*.imageset/*.png` | None — Lottie JSON added by developer post-skill |
 
-**Why MCPFigma skips `eAnim*`:** rasterizing an animation frame would lose the motion. The designer's intent is "play a Lottie here," not "show this static frame." So MCPFigma's scanner stops at `eAnim*` and does not look at children — the children are usually a stack of static keyframes Figma uses for preview.
+**Why the tagged path skips `eAnim*`:** rasterizing an animation frame would lose the motion. The designer's intent is "play a Lottie here," not "show this static frame." So the scanner stops at `eAnim*` and does not look at children — the children are usually a stack of static keyframes Figma uses for preview.
 
 ---
 
-## 2. Detection (Phase B Step B0)
+## 2. Detection (Phase A2 / B0)
 
-After the `figma_list_assets` probe, scan `metadata.json` for nodes whose name starts with `eAnim`. These appear in `metadata.json` (which lists every node) but are absent from `figma_list_assets.matches` (which intentionally skips them).
+`figma_build_registry` (called once in A2) returns `lottiePlaceholders[]` with each entry already validated:
 
-Reference pseudocode:
-
-```python
-import json, re
-meta = json.load(open(".figma-cache/<nodeId>/metadata.json"))
-
-def walk(node, out):
-    name = node.get("name", "")
-    if re.match(r"^eAnim[A-Z]", name):
-        out.append({
-            "sourceNodeId": node["id"],
-            "figmaName":    name,
-            "kind":         "lottie-placeholder",
-            "frame":        node.get("absoluteBoundingBox"),  # width/height
-        })
-        return  # do NOT recurse — children are preview keyframes
-    for child in node.get("children", []):
-        walk(child, out)
-
-placeholders = []
-walk(meta, placeholders)
+```json
+{
+  "nodeId":    "3166:71000",
+  "figmaName": "eAnimLoading",
+  "width":     120,
+  "height":    120
+}
 ```
 
-Persist to `.figma-cache/<nodeId>/lottie-placeholders.json` so Phase C2 can read without re-scanning.
+Skill no longer needs to walk `metadata.json` by hand — the tool does this. `registry.json` is the source of truth.
 
-**Validation rules** (mirror MCPFigma's tagged-asset rules):
+**Validation rules** (enforced by the tool):
 - First character after `eAnim` must be ASCII uppercase: `eAnimLoading` ✅, `eAnimloading` ❌
 - Remaining characters: `[A-Za-z0-9_]`
-- Invalid name → log warning, do NOT generate a row. Surface to user once at end of Phase B.
+- Invalid name → entry lands in `registry.warnings[]` instead of `lottiePlaceholders[]`. Skill surfaces to user at end of Phase B.
 
 ---
 
 ## 3. Inventory row
 
-Add one row to the Phase B inventory per detected `eAnim*` node:
+Add one row to the Phase B inventory per `lottiePlaceholders[]` entry:
 
-| # | Purpose | NodeId | Tagged | Strategy | Exporter | Filename / Lottie name |
-|---|---|---|---|---|---|---|
-| 5 | Loading animation | 3166:71000 | n/a | lottie-placeholder | none | placeholder_animation |
+| # | Purpose | NodeId | Exporter | Strategy | Filename / Lottie name |
+|---|---|---|---|---|---|
+| 5 | Loading animation | 3166:71000 | fallback | lottiePlaceholder | placeholder_animation |
 
-`Exporter = none`, `Strategy = lottie-placeholder`. No PNG, no xcassets entry.
+The tool returns this row in the manifest with `status: "done"` (no download was attempted), `exportName: null`, no `outputPath`/`sharedPath`/`imagesetPath`.
 
 ---
 
 ## 4. Manifest schema
 
-A lottie-placeholder row in `manifest.assetList`:
+A lottie-placeholder row in `manifest.rows`:
 
 ```json
 {
-  "sourceNodeId":  "3166:71000",
-  "figmaName":     "eAnimLoading",
-  "tagged":        false,
-  "exporter":      "none",
-  "kind":          "lottie-placeholder",
-  "lottieName":    "placeholder_animation",
-  "displaySize":   "120x120",
-  "loopMode":      "loop",
-  "status":        "done"
+  "nodeId":           "3166:71000",
+  "exporter":         "fallback",
+  "strategy":         "lottiePlaceholder",
+  "status":           "done",
+  "friendlyName":     "placeholder_animation",
+  "exportName":       null,
+  "outputPath":       null,
+  "imagesetPath":     null,
+  "xcassetsImported": false,
+  "sharedPath":       null,
+  "reason":           null
 }
 ```
 
+Plus skill-side metadata you can carry in the same row (not produced by the tool, set during B1/B2):
+```json
+{ "displaySize": "120x120", "loopMode": "loop" }
+```
+
 Notes:
-- `lottieName` is always `"placeholder_animation"` until the developer updates it. The skill does NOT try to infer the real name.
-- `displaySize` comes from the parent frame's bounding box (width × height in points).
+- `friendlyName` is always `"placeholder_animation"` until the developer updates it. The skill does NOT try to infer the real name.
+- `displaySize` comes from `registry.lottiePlaceholders[].width / .height` (points).
 - `loopMode` defaults to `"loop"`. If the designer specifies otherwise in the node name (e.g. `eAnimLoadingOnce`), that's a future extension — for now always `"loop"`.
 
 ---
 
 ## 5. Phase B gates
 
-`eAnim*` rows do NOT need a PNG on disk and do NOT need an `.imageset`. The Gate B bash already loads paths from manifest and only fails when `outputPath`, `sharedPath`, and `friendlyName.png` are all missing — for placeholder rows, none of those keys are set, but the gate must not flag them as missing.
-
-The Gate B bash should treat `kind == "lottie-placeholder"` as a no-op for the file-on-disk and PNG-validity checks. The single-screen SKILL.md gate already has a guard; verify it explicitly skips placeholder rows.
+`eAnim*` rows do NOT need a PNG on disk and do NOT need an `.imageset`. Gate B treats `strategy == "lottiePlaceholder"` as a no-op for the file-on-disk and PNG-validity checks.
 
 ---
 
@@ -137,9 +128,9 @@ Lottie placeholders are not assets, so C4 has nothing to copy. Add a verificatio
 PLACEHOLDERS=$(python3 -c "
 import json
 m = json.load(open('.figma-cache/<nodeId>/manifest.json'))
-for a in m['assetList']:
-    if a.get('kind') == 'lottie-placeholder':
-        print(a['sourceNodeId'])
+for r in m.get('rows', []):
+    if r.get('strategy') == 'lottiePlaceholder':
+        print(r['nodeId'])
 ")
 SWIFT_FILES="<your-generated-swift-files>"
 for nid in $PLACEHOLDERS; do

@@ -87,8 +87,15 @@ If a doc is attached, read it first. Extract: goal, screens, actions, states, co
 - Reject `/proto/` and `/board/` — ask for a `/design/` link
 - figma-desktop: uses selected node automatically
 
-### Step A2 — Screen Discovery (metadata-first)
-Run `get_metadata` before Step A3 when the node is not obviously a leaf (root `0:1`, page, "Flow"/"Onboarding"/"All Screens"/"Page" containers, or doc names more screens than URL suggests). Build a candidate screen map with confidence. Hand off to flow skill if result is N screens. See `references/screen-discovery.md`.
+### Step A2 — Screen Discovery (registry-first)
+
+Call `figma_build_registry(fileKey, nodeId, depth=10)` once. The response gives you `screens[]` (FRAME-like children with iOS-canvas dimensions) directly — no manual `get_metadata` walk needed. Persist to `.figma-cache/<nodeId>/registry.json`.
+
+- 0 screens **and** root is not itself a FRAME → ask user to point at a frame, not a page.
+- 1 screen → continue with this skill.
+- N > 1 screens → hand off to `figma-flow-to-swiftui-feature` (which reuses the same registry).
+
+The registry response also includes `taggedAssets[]` and `lottiePlaceholders[]` — Step B0 reuses these instead of re-fetching. See `references/screen-discovery.md`.
 
 ### Step A3 — Batch Fetch Spec
 
@@ -96,8 +103,8 @@ Run in parallel where possible; save to `.figma-cache/<nodeId>/`:
 
 1. `get_design_context(fileKey, nodeId, prompt="generate for iOS using SwiftUI")` → `design-context.md`
 2. `get_screenshot(fileKey, nodeId)` at **scale 3** (fine details visible) → `screenshot.png` (this is the FRAME screenshot, not asset)
-3. `get_variable_defs(fileKey, nodeId)` → `tokens.json` (once per `fileKey` — dedup by copying/symlinking)
-4. `get_metadata(fileKey, nodeId)` → `metadata.json` (**always run** — icon nodeIds are here)
+3. `figma_extract_tokens(fileKey)` → `tokens.json` (once per `fileKey` — dedup by copying/symlinking). This replaces `get_variable_defs` + manual SwiftUI naming. Output already has `swiftName`, `lightHex`/`darkHex`, `isCapsule` for radius. Empty `colors`+`spacing`+… with non-empty `warnings` = file has no Variables API access; fall back to reading `design-context.md` inline tokens at C2.
+4. `get_metadata(fileKey, nodeId)` → `metadata.json` (kept for design-context cross-ref in Phase C; A2's registry handles asset discovery)
 5. Optional: Code Connect mapping — only if your Figma MCP exposes such a tool. Skip silently if unavailable.
 
 On truncation: don't retry — fall back to metadata + per-section fetch. See `references/fetch-strategy.md`.
@@ -113,6 +120,7 @@ FAIL=0
 file "$CACHE/screenshot.png" 2>/dev/null | grep -q "PNG image data" && echo "PASS: screenshot" || { echo "FAIL: screenshot"; FAIL=1; }
 [ -s "$CACHE/metadata.json" ] && grep -q '"id"' "$CACHE/metadata.json" && echo "PASS: metadata" || { echo "FAIL: metadata"; FAIL=1; }
 [ -f "$CACHE/tokens.json" ] && echo "PASS: tokens" || { echo "FAIL: tokens"; FAIL=1; }
+[ -s "$CACHE/registry.json" ] && grep -q '"rootNode"' "$CACHE/registry.json" && echo "PASS: registry" || { echo "FAIL: registry"; FAIL=1; }
 [ $FAIL -eq 0 ] && echo "GATE: PASS (Phase A)" || echo "GATE: FAIL (Phase A)"
 ```
 
@@ -122,42 +130,26 @@ file "$CACHE/screenshot.png" 2>/dev/null | grep -q "PNG image data" && echo "PAS
 
 **This is the phase agents skip. Don't.** Goal: every visible icon/logo/illustration/image from the screenshot exists as a validated PNG on disk (and, for tagged assets, also as an `.imageset` inside `Assets.xcassets`).
 
-Phase B has **two asset paths that run side by side**:
+The whole pipeline runs through **`figma_export_assets_unified`** — one call that handles tagged + fallback paths internally:
 
-1. **MCPFigma path — DEFAULT for designer-tagged assets** (`eIC*`/`eImage*`). `figma_list_assets` discovers them; `figma_export_assets` batch-renders, renames to iOS convention (`icAI<Name>` / `imageAI<Name>`), and writes `.imageset` directly into `Assets.xcassets`. See `references/mcpfigma-setup.md`.
-2. **`get_screenshot` path — fallback** for FLATTEN regions, untagged nodes, MCPFigma export errors, and degraded environments (server not configured, token missing).
+- **Tagged path** (rows with `exporter: "tagged"`) — for `eIC*` / `eImage*` nodes registered by the designer. Renders @2x/@3x, renames to `icAI<Name>` / `imageAI<Name>`, writes `.imageset` directly into `Assets.xcassets`.
+- **Fallback path** (rows with `exporter: "fallback"`) — for FLATTEN regions, untagged atomic nodes, and tagged rows that the server failed to render. Renders at scale 3 via `/v1/images`, validates PNG signature, dedupes into `_shared/assets/`.
+- **Lottie path** (rows with `strategy: "lottiePlaceholder"`) — pass-through; manifest row only, no PNG.
 
-You always run the probe (B0) and the visual inventory (B1) before any download. The two paths are decided per-row in B2.
+Skill picks the right `exporter`/`strategy` per row in B1/B2 (visual judgment); the tool nukes all the orchestration. See `references/mcpfigma-setup.md`.
 
-### Step B0 — Tagged Asset Probe (MCPFigma)
+### Step B0 — Read registry, pin asset catalog
 
-Goal: get a registry of designer-tagged assets (`eIC*` / `eImage*`) for the current node, **before** you build the visual inventory. Tagged assets short-circuit the inventory's "find a nodeId" step — MCPFigma already has them.
+The `registry.json` written in A2 already contains everything the old Step B0 probed for: `taggedAssets[]`, `lottiePlaceholders[]`, naming `warnings[]`. No second probe.
 
-1. **Probe availability:**
-   - Call `figma_list_assets(fileKey=<fileKey>, nodeId=<nodeId>, depth=10)`.
-   - Tool not registered (server not configured) → set `mcpfigmaAvailable = false`. Print one line: `WARN: figma-assets MCP not configured — Phase B will use get_screenshot for every asset (see references/mcpfigma-setup.md).` Continue with all-fallback path.
-   - Auth error → `mcpfigmaAvailable = false`. Same warning, plus: `WARN: FIGMA_ACCESS_TOKEN missing or invalid in figma-assets env`.
-   - 200 with empty `matches` AND `warnings` → `mcpfigmaAvailable = true`, but registry is empty (designer hasn't tagged anything in scope). Every inventory row will end up on the `get_screenshot` path. Valid state.
-   - 200 with matches and/or warnings → `mcpfigmaAvailable = true`. Stash the response.
+1. **Surface designer warnings** from `registry.warnings` to the user once at the end of Phase B (e.g. `eIChome` lowercase → falls back to fallback path; user fixes name in Figma to use the MCPFigma fast path).
 
-2. **Persist the response** to `.figma-cache/<nodeId>/mcpfigma-list.json`. The manifest references this file.
-
-3. **Build the tagged-asset registry** (in memory):
-   - Each `match` → row `{ sourceNodeId, figmaName, kind ("icon"|"image"), exportName }`.
-   - Each `warning` → log to `.figma-cache/<nodeId>/mcpfigma-warnings.log` and surface to user once at the end of Phase B (do not silently drop). Tell user: *"Designer tagged N nodes but they failed validation: <list>. They will be exported via get_screenshot fallback. To use the MCPFigma fast path, fix the names in Figma."*
-
-4. **Pin `assetCatalogPath`** for this run:
-   - 0 `.xcassets` in project → ask user to create one before continuing (no fallback for the import step).
+2. **Pin `assetCatalogPath`** for this run (project-specific judgment, not in the tool):
+   - 0 `.xcassets` in project → ask user to create one before continuing.
    - 1 `.xcassets` → silent default, tell user which one.
-   - N > 1 → interactive prompt; stash answer in `manifest.mcpfigma.assetCatalogPath`.
+   - N > 1 → interactive prompt; stash answer in `manifest.assetCatalogPath`.
 
    On Phase B re-run, prefer the previously stashed value.
-
-5. **Scan `metadata.json` for Lottie placeholders (`eAnim*`)**. MCPFigma's scanner skips these (does not recurse into children) and they do NOT appear in `figma_list_assets.matches` — but they're present in `metadata.json`. Walk the tree, collect every node whose name matches `eAnim[A-Z][A-Za-z0-9_]*`, and stop recursion at each match (children are designer preview keyframes).
-
-   Persist to `.figma-cache/<nodeId>/lottie-placeholders.json`. Each entry: `{ sourceNodeId, figmaName, kind: "lottie-placeholder", frame: { width, height } }`.
-
-   Invalid name (e.g. `eAnimloading` lowercase first char) → log warning, skip the row, surface at end of Phase B. See `references/lottie-placeholders.md` §2 for detection pseudocode.
 
 ### Step B1 — Inventory (visual-first)
 
@@ -166,161 +158,116 @@ Open `screenshot.png` and **list every visible non-text element**. Cross-referen
 2. `design-context.md`: `<img>` URLs, inline `<svg>`, `imageRef`, `background-image`
 3. `metadata.json`: nodes of type `VECTOR`, `BOOLEAN_OPERATION`, `INSTANCE`; names with `icon`, `ic_`, `logo`, `illustration`
 
-Build the inventory table (with B0's tagged-asset registry **and** Lottie placeholder list in mind):
+Build the inventory table (with `registry.taggedAssets[]` and `registry.lottiePlaceholders[]` in mind):
 
-| # | Purpose | NodeId | Tagged | Strategy | Exporter | exportName / friendlyName / lottieName |
-|---|---|---|---|---|---|---|
-| 1 | Close icon | 3166:70211 | yes (eICClose) | atomic | mcpfigma | icAIClose |
-| 2 | Hero illustration | 3166:70200 | no | flatten | get_screenshot | heroArtwork |
-| 3 | Facebook logo | 3166:70250 | yes (eICFacebook) | atomic | mcpfigma | icAIFacebook |
-| 4 | Decorative blob | 3166:70260 | no | atomic | get_screenshot | logoBlob |
-| 5 | Loading animation | 3166:71000 | n/a (eAnimLoading) | lottie-placeholder | none | placeholder_animation |
+| # | Purpose | NodeId | Exporter | Strategy | exportName / friendlyName / lottieName |
+|---|---|---|---|---|---|
+| 1 | Close icon | 3166:70211 | tagged | atomic | icAIClose |
+| 2 | Hero illustration | 3166:70200 | fallback | flatten | heroArtwork |
+| 3 | Facebook logo | 3166:70250 | tagged | atomic | icAIFacebook |
+| 4 | Decorative blob | 3166:70260 | fallback | atomic | logoBlob |
+| 5 | Loading animation | 3166:71000 | fallback | lottiePlaceholder | placeholder_animation |
 
 **Cross-reference rule (run after building the visual rows):**
-- For every visual row whose `nodeId` matches a `match` in the B0 tagged-asset registry → set `tagged = yes`, `exporter = mcpfigma`, `exportName = match.exportName`.
-- For every visual row whose `nodeId` matches a Lottie placeholder from B0 step 5 → set `strategy = lottie-placeholder`, `exporter = none`, `lottieName = "placeholder_animation"`. **No PNG, no xcassets entry.** See `references/lottie-placeholders.md`.
-- Else → `tagged = no`, `exporter = get_screenshot`, set `friendlyName` per the §6 naming rules in `references/asset-handling.md`.
-- Then walk both lists the other direction: for every B0 tagged `match` OR Lottie placeholder whose nodeId is **not** in the visual inventory → **STOP, ask the user**. Either the designer tagged a node the screenshot doesn't visibly contain (designer/inventory drift), or your visual scan missed it. Both are bugs.
-- If `mcpfigmaAvailable = false`, skip the tagged-asset cross-reference entirely; every non-lottie row gets `exporter = get_screenshot`. The Lottie placeholder scan still runs (it reads `metadata.json`, not MCPFigma).
+- For every visual row whose `nodeId` matches a `registry.taggedAssets[]` entry → set `exporter = "tagged"`, `exportName = entry.exportName`.
+- For every visual row whose `nodeId` matches a `registry.lottiePlaceholders[]` entry → set `strategy = "lottiePlaceholder"`, `lottieName = "placeholder_animation"`. **No PNG, no xcassets entry.** See `references/lottie-placeholders.md`.
+- Else → `exporter = "fallback"`, set `friendlyName` per the §6 naming rules in `references/asset-handling.md`.
+- Then walk both lists the other direction: for every tagged asset OR Lottie placeholder in registry whose nodeId is **not** in the visual inventory → **STOP, ask the user**. Either the designer tagged a node the screenshot doesn't visibly contain (designer/inventory drift), or your visual scan missed it. Both are bugs.
 
 **Hard rules:**
 - Every visible non-text element → one row.
 - A visible icon you cannot find a nodeId for → **STOP, ask the user**, do not skip.
 - Empty inventory on a screen that visibly has icons/logos → bug, re-scan.
-- A tagged node sitting inside a flattened parent region → trust the prefix by default and export the tagged node via MCPFigma per its row. The flattened parent still exports via `get_screenshot`. The result is a duplicated visual atom (once inside the flatten PNG, once as a standalone tagged asset), which is fine — only one is referenced from SwiftUI. To override, the user explicitly says "skip MCPFigma for this node".
+- A tagged node sitting inside a flattened parent region → keep the tagged row (will export through tagged path). The flattened parent still exports as a fallback row. The result is a duplicated visual atom (once inside the flatten PNG, once as a standalone tagged asset), which is fine — only one is referenced from SwiftUI. To override, the user explicitly says "skip tagged path for this node" — set `exporter = "fallback"` on that row.
 
 ### Step B2 — Classify (flatten / decompose / code)
 
 Per region:
-- **FLATTEN** (`get_screenshot` on the region → one PNG): composed artwork, layered scene, artistic effects, static content. If a tagged node sits inside the flattened parent, the tagged node still exports via MCPFigma per its inventory row — see B1 cross-reference rule.
-- **DECOMPOSE** (atomic icons + SwiftUI compose): icon rows, grids, interactive/dynamic content. Each atom → its own row.
-- **CODE** (SwiftUI shapes): only for trivial primitives — rect, circle, gradient, blur material. **Not for icons.** "It looks like a circle with a line" is still an icon — download it.
-- **MIXED**: flatten artwork sub-frame, overlay interactive UI in ZStack.
-- **LOTTIE-PLACEHOLDER** (no download, codegen `LottieView` stub): pre-classified by B0 step 5 for any node whose name starts with `eAnim*`. Children of the `eAnim*` node are designer preview keyframes — never inventoried, never downloaded. The placeholder's frame size comes from the `eAnim*` node's bounding box. See `references/lottie-placeholders.md`.
+- **FLATTEN** (one fallback row whose nodeId is the region root): composed artwork, layered scene, artistic effects, static content. If a tagged node sits inside the flattened parent, keep its own tagged row — see B1 cross-reference rule.
+- **DECOMPOSE** (atomic rows, one per icon): icon rows, grids, interactive/dynamic content.
+- **CODE** (SwiftUI shapes, no row at all): only for trivial primitives — rect, circle, gradient, blur material. **Not for icons.**
+- **MIXED**: flatten artwork sub-frame as a fallback row, overlay interactive UI in ZStack at code time.
+- **LOTTIE-PLACEHOLDER**: registry already pre-classified these. Inventory row uses `strategy: "lottiePlaceholder"`. See `references/lottie-placeholders.md`.
 
 Heuristic: "the hero illustration" (1 thing) → flatten; "a row of action icons" (N things) → decompose. **Doubt → flatten.** Never reassemble composed artwork with `.offset()`. Rules: `references/asset-handling.md` §1a.
 
-**Lottie placeholder rows are skipped in both B3a and B3b.** They have no PNG to download, no xcassets entry. Phase C2 generates the `LottieView` stub directly from the manifest metadata.
+### Step B3 — Unified export (one call)
 
-### Step B3a — Batch export tagged assets (MCPFigma)
-
-Skip this step if `mcpfigmaAvailable = false` OR the tagged-asset registry is empty.
-
-Otherwise, **one** call:
+Send the inventory to `figma_export_assets_unified`:
 
 ```
-figma_export_assets(
+figma_export_assets_unified(
   fileKey          = <fileKey>,
-  nodeId           = <root nodeId — same as B0's nodeId>,
-  outputDir        = ".figma-cache/<nodeId>/assets/_mcpfigma",
+  nodeId           = <root nodeId>,
+  outputDir        = ".figma-cache/<nodeId>/assets",
+  sharedAssetsDir  = ".figma-cache/_shared/assets",
   assetCatalogPath = <pinned in B0>,
-  nodeIds          = [ ...all tagged sourceNodeIds from inventory whose row is exporter=mcpfigma... ],
-  scales           = [2, 3],
-  overwrite        = true
+  rows = [
+    { nodeId: "3166:70211", exporter: "tagged",   exportName: "icAIClose" },
+    { nodeId: "3166:70200", exporter: "fallback", friendlyName: "heroArtwork", strategy: "flatten" },
+    { nodeId: "3166:71000", exporter: "fallback", friendlyName: "placeholder_animation", strategy: "lottiePlaceholder" }
+  ]
 )
 ```
 
-Why pass `nodeIds` explicitly: B1 cross-reference may have flagged a tagged node as "skip via user override". Passing the explicit subset honors that.
+The tool absorbs everything that used to be skill prose:
+- Tagged batch render (@2x, @3x), naming, xcassets imageset write, screen-folder grouping.
+- Fallback batch render (scale 3 by default) → PNG-signature validation → dedup into `sharedAssetsDir`.
+- Tagged row that errors → automatically promoted to fallback path; final row reports `exporter: "fallback"` with both reasons.
+- Lottie rows pass through with `status: "done"` and no PNG.
+- `skipIfExistsInCatalog` defaults to true, so re-runs are cheap.
 
-Why `assetCatalogPath` not `xcodeProjectPath`: avoids multi-`.xcassets` ambiguity. B0 already pinned the catalog.
+**Persist the response** as the manifest. Write the response (plus any extra metadata you carry — display size, rendering mode, etc.) to `.figma-cache/<nodeId>/manifest.json`. Do NOT add a second source of truth for asset state.
 
-`skipIfExistsInCatalog` defaults to `true` server-side — re-runs of Phase B are cheap because already-imported imagesets are skipped. To force re-import (e.g. designer changed the artwork), pass `skipIfExistsInCatalog=false`.
-
-**Imageset folder layout:** MCPFigma creates a sub-folder named after the root node inside the catalog: `Assets.xcassets/<RootNodeName>/icAI<Name>.imageset/...`. SwiftUI's `Image("icAI<Name>")` resolves by name across the whole catalog, so the folder hierarchy is for organization only and does not affect call-site code.
-
-**Process the response:**
-- `savedFiles` (the `outputDir` ones) → mark inventory row `status: done`, stash `outputPath` in manifest.
-- `assetCatalog.savedFiles` → set `xcassetsImported: true`, stash `imagesetPath` in manifest.
-- `errors` (or `assetCatalog.errors`) → mark `status: failed` for that node, **fall back to `get_screenshot` for that one node only** (rewrite its inventory row's `exporter` to `get_screenshot`, generate a `friendlyName`, re-process in B3b).
-- `warnings` → log to `mcpfigma-warnings.log` and surface to user.
-
-**Validate every PNG:** `file <path>` on every file in `outputDir` must say `PNG image data`. If anything else, treat as a server bug and fall back per node.
-
-### Step B3b — Per-node fallback (`get_screenshot`)
-
-For every inventory row whose `exporter = get_screenshot` (untagged nodes, FLATTEN regions, MCPFigma failures from B3a):
-
-```
-get_screenshot(fileKey=<fileKey>, nodeId=<nodeId>)  →  save to .figma-cache/<nodeId>/assets/<friendlyName>.png
-```
-
-**No FIGMA_TOKEN needed.** Run in parallel batches.
-
-Optional faster paths (only if available):
-- Figma REST API (when `FIGMA_TOKEN` is set): `GET /v1/images/:fileKey?ids=A,B,C&format=png&scale=3` — batches multiple nodes in one call.
-- `download_figma_images` MCP tool — only if your MCP server exposes it; only useful for `imageRef` raster fills.
-
-**Never** convert SVG→PNG locally. Validate every downloaded file: `file X.png` must say `PNG image data`. Files reporting `SVG` or `ASCII text` are failures — re-fetch via `get_screenshot`.
-
-**Shared asset store (dedup):** before fetching, check `.figma-cache/_shared/assets/<nodeId>.png` (`:`→`_`). Exists → skip. Save new fetches to `_shared/assets/`, reference from per-screen manifest. See `references/fetch-strategy.md` §Asset Dedup.
-
-Full flow + edge cases: `references/asset-handling.md`.
-
-### Step B4 — Manifest
-
-Write `.figma-cache/<nodeId>/manifest.json`:
+Example manifest after merge with display info:
 
 ```json
 {
   "fileKey": "abc",
   "nodeId":  "3166:70147",
-  "fetchedAt": "...",
   "phaseA": "done",
   "phaseB": "done",
-  "mcpfigma": {
-    "available":        true,
-    "listResponsePath": ".figma-cache/3166:70147/mcpfigma-list.json",
-    "warningsPath":     ".figma-cache/3166:70147/mcpfigma-warnings.log",
-    "assetCatalogPath": "/Users/me/Project/App/Assets.xcassets",
-    "exportRunAt":      "2026-04-26T10:11:12Z"
-  },
-  "assetList": [
+  "assetCatalogPath": "/Users/me/Project/App/Assets.xcassets",
+  "rows": [
     {
-      "sourceNodeId":     "3166:70211",
-      "figmaName":        "eICClose",
-      "tagged":           true,
-      "exporter":         "mcpfigma",
-      "exportName":       "icAIClose",
-      "outputPath":       ".figma-cache/3166:70147/assets/_mcpfigma/icAIClose@3x.png",
+      "nodeId": "3166:70211",
+      "exporter": "tagged",
+      "strategy": "atomic",
+      "status": "done",
+      "exportName": "icAIClose",
+      "outputPath": ".figma-cache/3166:70147/assets/_mcpfigma/icAIClose@3x.png",
+      "imagesetPath": "/Users/me/Project/App/Assets.xcassets/Welcome/icAIClose.imageset",
       "xcassetsImported": true,
-      "imagesetPath":     "/Users/me/Project/App/Assets.xcassets/icAIClose.imageset",
-      "displaySize":      "24x24",
-      "renderingMode":    "template",
-      "status":           "done"
+      "displaySize": "24x24",
+      "renderingMode": "template"
     },
     {
-      "sourceNodeId":  "3166:70200",
-      "figmaName":     "Hero / Onboarding",
-      "tagged":        false,
-      "exporter":      "get_screenshot",
-      "friendlyName":  "heroArtwork",
-      "sharedPath":    "_shared/assets/3166_70200.png",
-      "strategy":      "flatten",
-      "displaySize":   "fill x 240",
-      "renderingMode": "original",
-      "status":        "done"
+      "nodeId": "3166:70200",
+      "exporter": "fallback",
+      "strategy": "flatten",
+      "status": "done",
+      "friendlyName": "heroArtwork",
+      "sharedPath": ".figma-cache/_shared/assets/3166_70200.png",
+      "displaySize": "fill x 240",
+      "renderingMode": "original"
     },
     {
-      "sourceNodeId": "3166:71000",
-      "figmaName":    "eAnimLoading",
-      "tagged":       false,
-      "exporter":     "none",
-      "kind":         "lottie-placeholder",
-      "strategy":     "lottie-placeholder",
-      "lottieName":   "placeholder_animation",
-      "loopMode":     "loop",
-      "displaySize":  "120x120",
-      "status":       "done"
+      "nodeId": "3166:71000",
+      "exporter": "fallback",
+      "strategy": "lottiePlaceholder",
+      "status": "done",
+      "friendlyName": "placeholder_animation",
+      "displaySize": "120x120"
     }
-  ]
+  ],
+  "warnings": []
 }
 ```
 
 Key notes:
 - `xcassetsImported: true` on a row → C4 must NOT re-run sips/imageset/Contents.json for that asset.
-- The same `sourceNodeId` must never appear twice. If MCPFigma export fails and the row falls back to `get_screenshot`, REPLACE the row's `exporter` and `friendlyName`/`exportName` rather than adding a second row.
-
-Failed downloads: mark `status: failed`, retry once, then tell user. Never silently drop a row.
+- Each `nodeId` appears exactly once — auto-promotion happens inside the tool, the row just reports its final `exporter` value.
+- A row with `status: "failed"` → tell the user the `reason`, do not silently drop. Re-run after fixing the cause.
 
 ### Gate B — Phase B Exit (BASH, mandatory and STRICT)
 
@@ -331,82 +278,70 @@ CACHE=".figma-cache/<nodeId>"
 FAIL=0
 [ -s "$CACHE/manifest.json" ] && echo "PASS: manifest" || { echo "FAIL: manifest"; FAIL=1; }
 
-# Asset coverage: assetList must not be empty if the design has icon hints OR tagged matches
-ASSET_COUNT=$(python3 -c "import json; print(len(json.load(open('$CACHE/manifest.json')).get('assetList',[])))" 2>/dev/null)
+# No row may be in failed status
+FAILED=$(python3 -c "
+import json
+m = json.load(open('$CACHE/manifest.json'))
+for r in m.get('rows', []):
+    if r.get('status') == 'failed':
+        print(r.get('nodeId'), '-', r.get('reason') or '?')
+")
+[ -z "$FAILED" ] && echo "PASS: no failed rows" || { echo "FAIL: failed rows:"; echo \"$FAILED\"; FAIL=1; }
+
+# Coverage: registry tagged + lottie must all appear in manifest rows
+UNCOVERED=$(python3 -c "
+import json
+reg = json.load(open('$CACHE/registry.json'))
+needed = {a['nodeId'] for a in reg.get('taggedAssets', [])}
+needed |= {p['nodeId'] for p in reg.get('lottiePlaceholders', [])}
+present = {r.get('nodeId') for r in json.load(open('$CACHE/manifest.json')).get('rows', [])}
+for nid in sorted(needed - present):
+    print('UNCOVERED:', nid)
+")
+[ -z "$UNCOVERED" ] && echo "PASS: registry coverage" || { echo "FAIL: $UNCOVERED"; FAIL=1; }
+
+# Coverage: visual hints in design-context demand at least 1 row when present
+ROW_COUNT=$(python3 -c "import json; print(len(json.load(open('$CACHE/manifest.json')).get('rows',[])))")
 ICON_HINTS=$(grep -ciE 'icon|logo|illustration|<img|<svg|VECTOR|BOOLEAN_OPERATION' "$CACHE/design-context.md" "$CACHE/metadata.json" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')
-TAGGED_COUNT=$(python3 -c "
-import json, os
-p='$CACHE/mcpfigma-list.json'
-print(len(json.load(open(p)).get('matches',[])) if os.path.exists(p) else 0)
-" 2>/dev/null)
-if [ "${ASSET_COUNT:-0}" -eq 0 ] && { [ "${ICON_HINTS:-0}" -gt 0 ] || [ "${TAGGED_COUNT:-0}" -gt 0 ]; }; then
-  echo "FAIL: assetList empty but design has $ICON_HINTS hints / $TAGGED_COUNT tagged matches — re-run Step B1 inventory"; FAIL=1
+if [ "${ROW_COUNT:-0}" -eq 0 ] && [ "${ICON_HINTS:-0}" -gt 0 ]; then
+  echo "FAIL: rows empty but design has $ICON_HINTS hints — re-run Step B1 inventory"; FAIL=1
 else
-  echo "PASS: assetList coverage ($ASSET_COUNT entries; $TAGGED_COUNT tagged matches)"
+  echo "PASS: rows ($ROW_COUNT entries)"
 fi
 
-# Every assetList row → file on disk (covers both exporters; skip lottie placeholders)
+# Files on disk for every non-Lottie row
 MISSING=$(python3 -c "
 import json, os
 m = json.load(open('$CACHE/manifest.json'))
-for a in m.get('assetList', []):
-    if a.get('kind') == 'lottie-placeholder':
-        continue                                                # no file expected
-    paths = [
-        a.get('outputPath',''),                                 # mcpfigma raw
-        a.get('sharedPath',''),                                 # get_screenshot dedup
-        '$CACHE/assets/' + a.get('friendlyName','') + '.png',   # get_screenshot per-screen
-    ]
+for r in m.get('rows', []):
+    if r.get('strategy') == 'lottiePlaceholder': continue
+    paths = [r.get('outputPath',''), r.get('sharedPath','')]
     if not any(p and os.path.exists(p) for p in paths):
-        print('MISSING:', a.get('exportName') or a.get('friendlyName') or '?')
+        print('MISSING:', r.get('exportName') or r.get('friendlyName') or r.get('nodeId'))
 ")
 [ -z "$MISSING" ] && echo "PASS: all assets on disk" || { echo "FAIL: $MISSING"; FAIL=1; }
 
-# Lottie placeholders sanity (counts only)
-LOTTIE_COUNT=$(python3 -c "
-import json
-m = json.load(open('$CACHE/manifest.json'))
-print(sum(1 for a in m.get('assetList',[]) if a.get('kind') == 'lottie-placeholder'))
-")
-echo "INFO: $LOTTIE_COUNT lottie placeholder(s) detected (no PNG, codegen as LottieView in C2)"
-
-# Imageset check for tagged rows that claim xcassetsImported
+# Imageset check for tagged rows
 BAD_IMAGESET=$(python3 -c "
 import json, os
 m = json.load(open('$CACHE/manifest.json'))
-for a in m.get('assetList', []):
-    if a.get('xcassetsImported') and not os.path.isdir(a.get('imagesetPath','')):
-        print('MISSING_IMAGESET:', a.get('exportName'))
+for r in m.get('rows', []):
+    if r.get('xcassetsImported') and not os.path.isdir(r.get('imagesetPath','')):
+        print('MISSING_IMAGESET:', r.get('exportName'))
 ")
 [ -z "$BAD_IMAGESET" ] && echo "PASS: imagesets on disk" || { echo "FAIL: $BAD_IMAGESET"; FAIL=1; }
 
-# All raw files are real PNG (covers both paths)
+# All cached files have real PNG signatures
 BAD=$(file "$CACHE/assets/"*.png \
            "$CACHE"/_shared/assets/*.png \
            "$CACHE"/assets/_mcpfigma/*.png \
            2>/dev/null | grep -v "PNG image data" | grep -v "cannot open")
 [ -z "$BAD" ] && echo "PASS: assets are real PNG" || { echo "FAIL: non-PNG: $BAD"; FAIL=1; }
 
-# Coverage: every B0 tagged match AND every Lottie placeholder must be in assetList
-UNCOVERED=$(python3 -c "
-import json, os
-needed = set()
-list_path = '$CACHE/mcpfigma-list.json'
-if os.path.exists(list_path):
-    needed |= {m['nodeId'] for m in json.load(open(list_path)).get('matches', [])}
-lottie_path = '$CACHE/lottie-placeholders.json'
-if os.path.exists(lottie_path):
-    needed |= {p['sourceNodeId'] for p in json.load(open(lottie_path))}
-present = {a.get('sourceNodeId') for a in json.load(open('$CACHE/manifest.json')).get('assetList', [])}
-for nid in sorted(needed - present):
-    print('UNCOVERED:', nid)
-")
-[ -z "$UNCOVERED" ] && echo "PASS: all tagged matches + lottie placeholders covered" || { echo "FAIL: $UNCOVERED"; FAIL=1; }
-
 [ $FAIL -eq 0 ] && echo "GATE: PASS (Phase B)" || echo "GATE: FAIL (Phase B) — DO NOT WRITE SWIFT FILES"
 ```
 
-If `GATE: FAIL`: fix the cause (most often: missed inventory rows or wrong nodeId). For tagged-but-uncovered failures, re-run B1 cross-reference and ensure every B0 match has an inventory row. Do NOT begin Phase C until this prints `GATE: PASS`.
+If `GATE: FAIL`: fix the cause (most often: missed inventory rows or a row whose `status: failed` reason explains the failure). Do NOT begin Phase C until this prints `GATE: PASS`.
 
 ---
 
@@ -468,12 +403,13 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 
 **Critical rules:**
 - MCP output = spec, not code. Parse values (see `references/visual-fidelity.md` §1), build native SwiftUI.
+- **Token usage.** `tokens.json` (from `figma_extract_tokens` in A3) already has `swiftName`, `lightHex`, `darkHex`, `isCapsule`. Use those directly — do NOT re-derive names from Figma slash strings. Then merge with project enums (`Spacing`, `IKFont`, `IKCoreApp`) per the routing rules below: prefer existing enum case → fallback to extracted token → inline literal as last resort.
 - `Text` → `LocalizedStringKey`; `Text(verbatim:)` for dynamic data.
 - `Color(hex:)` only if project has the extension; else Asset Catalog or `Color(red:green:blue:)`.
 - Respect iOS deployment target — don't use iOS 17+ APIs if target lower.
 - Don't draw iOS system chrome (status bar, Dynamic Island, home indicator, system keyboard, system nav back, system `TabView` bar, pull-to-refresh). See the **ABSOLUTE RULE — Do NOT draw iOS system chrome** section near the top.
 - **Use Figma assets only.** Every `Image(...)` must reference an asset downloaded in Phase B. `Image(systemName:)` is BANNED for Figma-designed icons. Drawing logos from `Text("G")` or colored `Rectangle()` is BANNED. If an asset is missing, STOP and re-run Phase B, never improvise.
-- **Lottie placeholders.** For every manifest row with `kind: "lottie-placeholder"`, emit a `LottieView` stub in place of an asset, using the `lottie-ios` (Airbnb) SwiftUI API. Do NOT substitute with `Image(systemName:)`, do NOT draw a static frame from the children of the `eAnim*` node. See `references/lottie-placeholders.md` §6 for the exact code template. Add `import Lottie` once per file. The placeholder name is always the literal `"placeholder_animation"` — do not derive from the Figma name. Append a `// TODO:` comment instructing the developer to replace the name.
+- **Lottie placeholders.** For every manifest row with `strategy: "lottiePlaceholder"`, emit a `LottieView` stub in place of an asset, using the `lottie-ios` (Airbnb) SwiftUI API. Do NOT substitute with `Image(systemName:)`, do NOT draw a static frame from the children of the `eAnim*` node. See `references/lottie-placeholders.md` §6 for the exact code template. Add `import Lottie` once per file. The placeholder name is always the literal `"placeholder_animation"` — do not derive from the Figma name. Append a `// TODO:` comment instructing the developer to replace the name.
 - **swiftui-pro standards (write-time, MANDATORY).** All emitted SwiftUI must comply with the snapshot in `references/swiftui-pro/`. The 23-row always-on transform table in `references/swiftui-pro-bridge.md` §2 is non-negotiable on every project, every emit:
   - `.bold()` not `.fontWeight(.bold)`; `.foregroundStyle()` not `.foregroundColor()`.
   - `Image(decorative:)` for decorative Figma images; `.accessibilityLabel("…")` on every meaningful icon (derive label from semantic Figma name: `eICClose` → `"Close"`).
@@ -647,25 +583,26 @@ Anything in code not traceable to inventory → guess → fix. Never "tweak unti
 
 ### Step C4 — Copy Assets to Project
 
-For each row in `manifest.assetList`, branch on `exporter`:
+For each row in `manifest.rows`, branch on `exporter`:
 
-**`exporter == "mcpfigma"`:**
-- The `.imageset` is already inside `Assets.xcassets` (MCPFigma did this in B3a). Verify `imagesetPath` exists and contains at least one `*@2x.png` and one `*@3x.png`. **No sips, no Contents.json work.**
-- If `xcassetsImported = false` (B3a wrote raw PNGs to `outputDir` but the catalog write failed), fall back to the get_screenshot path: take the existing `outputPath` PNGs, run sips for `@1x`, build the imageset by hand, copy. Treat as a get_screenshot row going forward.
-- Rendering mode is decided at the SwiftUI **call site** — MCPFigma does not write `template-rendering-intent`.
+**`exporter == "tagged"`:**
+- The `.imageset` is already inside `Assets.xcassets` (tool did this in B3). Verify `imagesetPath` exists and contains at least one `*@2x.png` and one `*@3x.png`. **No sips, no Contents.json work.**
+- Rendering mode is decided at the SwiftUI **call site** — the tool does not write `template-rendering-intent`.
 
-**`exporter == "get_screenshot"`:**
+**`exporter == "fallback"`** (and `strategy != "lottiePlaceholder"`):
 1. Rendering mode: single-color icon → template; else original (see `references/asset-handling.md` §4)
-2. `sips` → @1x/@2x/@3x from 3× source
+2. `sips` → @1x/@2x/@3x from 3× source (`sharedPath`)
 3. `.imageset` + Contents.json: universal idiom; `template-rendering-intent` for tinted; `appearances` for dark variants
 4. Copy to `Assets.xcassets` (use the catalog pinned in B0)
 
+**Lottie placeholder rows** are skipped here — codegen lives in C2.
+
 **SwiftUI call-site rules (both paths):**
-- `Image("<exportName>")` for mcpfigma rows; `Image("<friendlyName>")` for get_screenshot rows. The manifest is the single source of truth.
+- `Image("<exportName>")` for tagged rows; `Image("<friendlyName>")` for fallback rows. The manifest is the single source of truth.
 - Always `.resizable()` + explicit `.frame(width:height:)`.
 - Single-color icon (`renderingMode == "template"` in manifest):
-  - mcpfigma rows → `.renderingMode(.template)` + `.foregroundStyle(...)` at the call site.
-  - get_screenshot rows → may rely on `template-rendering-intent` in Contents.json, OR explicit `.renderingMode(.template)` — both work.
+  - tagged rows → `.renderingMode(.template)` + `.foregroundStyle(...)` at the call site.
+  - fallback rows → may rely on `template-rendering-intent` in Contents.json, OR explicit `.renderingMode(.template)` — both work.
 - Multi-color / illustration / brand: no `.renderingMode` modifier. Patterns in `references/asset-handling.md` §7.
 
 **Verification (BASH, mandatory):**
@@ -677,21 +614,21 @@ SWIFT_FILES="<your-generated-swift-files>"
 NAMES=$(python3 -c "
 import json
 m = json.load(open('.figma-cache/<nodeId>/manifest.json'))
-for a in m['assetList']:
-    if a.get('kind') == 'lottie-placeholder':
+for r in m.get('rows', []):
+    if r.get('strategy') == 'lottiePlaceholder':
         continue
-    print(a.get('exportName') or a.get('friendlyName'))
+    print(r.get('exportName') or r.get('friendlyName'))
 ")
 USED=$(grep -hoE 'Image\("[^"]+"\)' $SWIFT_FILES | sed -E 's/Image\("([^"]+)"\)/\1/')
 for h in $USED; do
   echo "$NAMES" | grep -qx "$h" || echo "ORPHAN: Image(\"$h\") not in manifest"
 done
 
-# (b) Every lottie-placeholder row must have a matching LottieView call in the generated views.
+# (b) Every lottie-placeholder row must have a matching LottieView call.
 PLACEHOLDER_COUNT=$(python3 -c "
 import json
 m = json.load(open('.figma-cache/<nodeId>/manifest.json'))
-print(sum(1 for a in m['assetList'] if a.get('kind') == 'lottie-placeholder'))
+print(sum(1 for r in m.get('rows', []) if r.get('strategy') == 'lottiePlaceholder'))
 ")
 LOTTIE_USES=$(grep -cE 'LottieView\(animation: \.named\("placeholder_animation"\)\)' $SWIFT_FILES \
               | awk -F: '{s+=$2} END{print s+0}')
@@ -712,15 +649,18 @@ find <project>/Assets.xcassets -name "*.imageset" -type d
 
 Build in Xcode — no "image not found" warnings, no missing-import errors. After the run, surface the placeholder list to the user (see `references/lottie-placeholders.md` §8 for the end-of-run summary template).
 
-### Step C5 — Visual Validate (default ON, user can opt out)
+### Step C5 — Visual Validate (mandatory)
 
-After C3 finishes (Pass 2 clean report, Pass 3/3b grep clean, C4 assets copied), propose runtime validation. This catches what Pass 2 cannot see: real font rendering, shadow at simulator DPI, safe-area on chosen device, keyboard avoidance, animation start state.
+After C3 finishes (Pass 2 clean report, Pass 3/3b grep clean, C4 assets copied), **RUN C5. Do not prompt.** This catches what Pass 2 cannot see: real font rendering, shadow at simulator DPI, safe-area on chosen device, keyboard avoidance, animation start state.
 
-Default: **PROMPT** with wording like *"C3 passed. Run C5 (build + screenshot simulator + side-by-side compare with Figma)? ~30s–2min. Reply 'yes' or 'skip C5'."*
+**Skip only when one of these system reasons applies** (auto-detected, persisted in `manifest.verification.c5.skipped`; user phrases cannot override):
+- `no_project` — no `.xcodeproj` / `.xcworkspace` after walking up 3 levels.
+- `simctl_error` — `xcrun simctl` errors (no simulator runtime, Xcode CLT missing, etc.).
+- `ci_environment` — `CI=true` or `GITHUB_ACTIONS=true` env var present (no GUI simulator in CI).
 
-Opt-out phrases: `skip C5`, `skip validate`, `no build`, `bỏ qua C5`, `không cần build`. Persist in `manifest.verification.c5.userChoice` so re-runs don't re-prompt.
+User phrases like `skip C5`, `bỏ qua C5`, `no build`, `không cần build` are NOT honored — the agent must explain the Done-Gate (Key Principle #12) and proceed with C5 anyway. The only legitimate way to bypass is one of the three system reasons above.
 
-If accepted, run the 6 sub-steps (commands + edge cases in `references/verification-loop.md` §5):
+Run the 6 sub-steps (commands + edge cases in `references/verification-loop.md` §5):
 
 1. **C5.1 Detect target** — `xcodebuild -list`. 1 scheme → use it; >1 → ask user, stash; 0 → skip with `manifest.verification.c5.skipped = "no_project"`.
 2. **C5.2 Pick simulator** — prefer Booted iPhone, else highest-iOS iPhone 15/16. Stash UDID.
@@ -742,26 +682,31 @@ Check manifest. `phaseA` and `phaseB` both `done` → skip to Phase C. Some `fai
 
 ## MCPFigma edge cases (reference)
 
-- **MCPFigma not configured.** B0 probe sets `mcpfigmaAvailable = false`, prints one warning. Phase B falls through entirely to `get_screenshot`. No further prompt — silent fallback after the warning is enough. See `references/mcpfigma-setup.md`.
-- **`FIGMA_ACCESS_TOKEN` missing or invalid.** `figma_list_assets` returns an auth error → same as "not configured", but with token-specific warning so the user knows the fix.
-- **Designer tagged a node but the name is invalid** (warning row from B0). Logged in `mcpfigma-warnings.log`. The node is NOT exported by MCPFigma; it falls back to `get_screenshot`. Either re-tag in Figma (`eIC<UpperCamel>`) or accept the fallback.
-- **Designer tags `eImageHero` containing nested interactive UI.** Trust the prefix by default — export the tagged node via MCPFigma even though the visual region looks like a FLATTEN candidate. Result is a flat raster of the whole region, fine for a hero. Override only when user explicitly says "treat eImageHero as decompose" — strip its `tagged` flag, set `exporter = get_screenshot`, mark FLATTEN.
-- **Project has multiple `.xcassets`.** B0 prompts for `assetCatalogPath` and stashes it in the manifest. `xcodeProjectPath` is never used by the skill — it can't disambiguate.
-- **`figma_export_assets` returns non-PNG.** Per Figma `/v1/images` contract, this should not happen. If `file <path>` ever shows non-PNG, treat as a server bug: mark the row `failed`, fall back to `get_screenshot`, file an issue.
-- **Light/dark variants.** MCPFigma exports each tagged node as one imageset. To support light/dark, designer ships two nodes (`eICLogo` + `eICLogoDark`). The app picks at `colorScheme`. Merging both into one imageset (with `appearances`) is supported only by the `get_screenshot` path; if needed, take the manual path described in `references/asset-handling.md` §5 "light + dark variants".
-- **Same `exportName` from two different source nodeIds.** MCPFigma adds `_2` suffix and emits a warning. Surface to user — the SwiftUI call site needs to know which is which.
-- **Phase B re-run after partial success.** MCPFigma is idempotent (`overwrite=true` default). On re-run, only still-failing nodes are re-attempted; successful rows are no-op overwrites. Inspect manifest's `status` field before re-running — `done` rows can be skipped entirely if `outputPath` and (when applicable) `imagesetPath` still exist.
-- **Lottie placeholder (`eAnim*`) — Lottie SDK missing.** C1 project pre-flight should detect whether `lottie-ios` is in dependencies. If not, surface to the user before C2 starts: *"Lottie SDK not detected — add `lottie-ios` (Airbnb) via SPM or CocoaPods, or convert these placeholders to static images."* Do NOT auto-install; do NOT silently swap in `Image(systemName:)`. See `references/lottie-placeholders.md` §9.
+- **MCPFigma not configured.** A2's `figma_build_registry` call returns an error; surface to user, ask them to install/configure per `references/mcpfigma-setup.md`. No silent fallback — the registry is mandatory.
+- **`FIGMA_ACCESS_TOKEN` missing or invalid.** Same — both `figma_build_registry` and the unified export need it. Token error message is server-side; relay it verbatim to the user.
+- **Designer tagged a node but the name is invalid** (warning row in `registry.warnings`). The node is NOT in `taggedAssets[]` — it lands in B1 inventory as a fallback row. Either re-tag in Figma (`eIC<UpperCamel>`) or accept the fallback.
+- **Designer tags `eImageHero` containing nested interactive UI.** Trust the prefix by default — keep the tagged row even though the visual region looks like FLATTEN. Result is a flat raster of the whole region, fine for a hero. Override only when user explicitly says "treat eImageHero as decompose" — set `exporter = "fallback"` on that row, mark FLATTEN.
+- **Project has multiple `.xcassets`.** B0 prompts for `assetCatalogPath` and stashes it in the manifest. The unified tool requires the explicit path — it does not auto-resolve from a project root.
+- **Tool returns non-PNG for a fallback row.** Tool already validates PNG signature and marks the row `failed` with reason `"Output không phải PNG..."`. Surface to user — typically means designer used SVG-only for that node; ask them to flatten in Figma.
+- **Light/dark variants.** Tagged path exports each node as one imageset (no `appearances`). To support light/dark, designer ships two nodes (`eICLogo` + `eICLogoDark`); app picks at `colorScheme`. Merging both into one imageset (with `appearances`) is only available on the fallback path's manual import — see `references/asset-handling.md` §5 "light + dark variants".
+- **Same `exportName` from two different source nodeIds.** Tool adds `_2` suffix and emits a warning in `summary.warnings`. Surface to user — SwiftUI call site needs to know which is which.
+- **Phase B re-run after partial success.** Tool is idempotent (`overwrite=true`, `skipIfExistsInCatalog=true` defaults). On re-run, only still-failing nodes are re-attempted; successful rows are no-op overwrites. Inspect manifest `rows[].status` before re-running — `done` rows can be skipped entirely if their files still exist on disk.
+- **Lottie placeholder (`eAnim*`) — Lottie SDK missing.** C1 project pre-flight should detect whether `lottie-ios` is in dependencies. If not, surface before C2: *"Lottie SDK not detected — add `lottie-ios` (Airbnb) via SPM or CocoaPods, or convert these placeholders to static images."* Do NOT auto-install; do NOT silently swap in `Image(systemName:)`. See `references/lottie-placeholders.md` §9.
 - **Lottie placeholder inside a flatten region.** The flattened parent exports as a static raster (animation is frozen in one frame). The placeholder `LottieView` overlays on top in `ZStack`. Tell the user the artwork would be cleaner if the designer pulled the `eAnim*` node out of the flatten region.
 - **Custom Lottie wrapper in project.** If C1 audit finds `IKLottieView`/`AnimatedView`/etc., prefer the wrapper at C2 codegen. The placeholder name string `"placeholder_animation"` stays unchanged.
+- **Variables API not available** (Figma file is not on a plan that exposes Variables, or token has no scope). `figma_extract_tokens` returns empty arrays + a `warnings[]` entry. Skill falls back to reading inline tokens from `design-context.md` per `references/design-token-mapping.md` General Rules.
 
-## Recommended hooks (hard enforcement)
+## Strongly recommended hooks (hard enforcement)
 
-To make Phase B genuinely un-skippable, add a `PreToolUse` hook in `.claude/settings.json` that blocks `Write`/`Edit` on `*.swift` files when `.figma-cache/<nodeId>/manifest.json` is missing or has empty `assetList`. Without the hook, gates rely on the agent honoring them; with the hook, the OS-level tool call is denied.
+These hooks turn the in-skill gates into OS-level enforcement. Without them, gates rely on the agent honoring them; with them, the tool call is denied at the harness layer.
 
-To make C3 Pass 2 self-checking automatic, add a `PostToolUse` hook on `Write` matching `c3-pass2-diff.md` that auto-runs the Gate C3-Pass2 BASH block and prints PASS/FAIL. Saves one round-trip per attempt and surfaces structural bugs immediately.
+1. **PreToolUse hook — block `Write`/`Edit` on `*.swift` when assets missing.** Triggers when `.figma-cache/<nodeId>/manifest.json` is missing or has empty `rows`. Forces Phase B to complete before any SwiftUI is written.
 
-Both are optional. Ask the assistant to set them up via the `update-config` skill if you want them.
+2. **PostToolUse hook — auto-run Gate C3-Pass2 on `c3-pass2-diff.md` write.** Saves one round-trip per attempt and surfaces structural bugs immediately.
+
+3. **Stop hook — block session termination when C5 not satisfied.** Reads `manifest.verification.c5`. Allows stop only when `gate == "PASS"` OR `skipped` is set to one of `no_project`, `simctl_error`, `ci_environment`. Otherwise prints to the agent: *"Done-Gate violated (Key Principle #12). Run C5 or set a system skip reason before declaring done."* This is the OS-level twin of Principle #12 and the strongest fix for "agent says done but C5 was never run".
+
+Ask the assistant to set them up via the `update-config` skill.
 
 ## Key Principles
 
@@ -776,3 +721,25 @@ Both are optional. Ask the assistant to set them up via the `update-config` skil
 9. **Flatten composed artwork.** Don't reassemble atoms via `.offset()`. When in doubt → flatten.
 10. **`get_screenshot(nodeId)` is the default asset downloader.** No token, no excuse to skip.
 11. **Verification produces artifacts.** Pass 2 writes a structured diff report; C5 captures a simulator screenshot and writes a visual diff report. Both are gated and feed a self-fix loop. Mental walk-throughs are not enough — the agent can lie, but `file <path>` cannot.
+12. **Done-Gate.** A task is NOT complete until either `manifest.verification.c5.gate == "PASS"` OR `manifest.verification.c5.skipped` is set to one of `no_project`, `simctl_error`, `ci_environment`. Stating "done" / "implemented" / "xong" / "ship it" without one of these is a protocol violation. The agent MUST surface the C5 status (PASS, FAIL, or SKIPPED with reason) in its final user-facing message — see the **Verification summary** template below.
+
+## Verification summary (mandatory final block)
+
+At the end of every run — success or failure — print this block to the user verbatim, filling in values from the artifacts on disk. The user uses this to verify the agent without re-reading the entire transcript.
+
+```
+Verification summary
+- C3 Pass 2 (offline diff):    PASS / FAIL (high: N, medium: N)
+- C3 Pass 3 (asset grep):      PASS / FAIL
+- C3 Pass 3b (chrome grep):    PASS / FAIL
+- C3 Pass 4 (swiftui-pro):     PASS / FAIL
+- C5 (build + simulator):      PASS / FAIL / SKIPPED (<reason>)
+- C5.6 (15-check visual diff): PASS / FAIL (high: N, medium: N)
+Artifacts:
+  .figma-cache/<nodeId>/c3-pass2-diff.md
+  .figma-cache/<nodeId>/c5-build.log
+  .figma-cache/<nodeId>/c5-simulator.png
+  .figma-cache/<nodeId>/c5-visual-diff.md
+```
+
+Omit any row that genuinely does not apply (e.g. C5.6 if C5 was skipped). Never fabricate a PASS — open the file with `cat` if uncertain.

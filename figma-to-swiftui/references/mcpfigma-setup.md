@@ -2,13 +2,13 @@
 
 ## What this is
 
-`figma-assets` is a separate MCP server (built from [MCPFigma](https://github.com/...)) that batch-exports designer-tagged assets (`eIC*` / `eImage*`) at iOS scales, renames them to iOS convention (`icAI*` / `imageAI*`), and (when an `assetCatalogPath` is supplied) writes `.imageset` directories directly into `Assets.xcassets`.
+`figma-assets` (built from MCPFigma, Swift) is the single MCP server that powers Phase A discovery + Phase B asset pipeline + Phase C token mapping. It consolidates what used to be three separate concerns:
 
-It complements the Figma design-context MCP (`get_metadata`, `get_design_context`, `get_screenshot`, `get_variable_defs`) — it does **not** replace it. The two run side by side:
+- **Asset discovery** — designer-tagged nodes (`eIC*` / `eImage*`), Lottie placeholders (`eAnim*`), and screen-like FRAMEs all in one walk.
+- **Asset export** — tagged path (xcassets pipeline @2x/@3x) and fallback path (Figma `/v1/images` → shared cache + PNG validation) in one call.
+- **Token extraction** — Figma local Variables → SwiftUI naming (camelCase, `lightHex`/`darkHex`, `isCapsule` for radius).
 
-- **Figma design-context MCP** → spec, screenshots, tokens, metadata (Phase A).
-- **`figma-assets` MCP** → tagged-asset export to xcassets (Phase B fast-path).
-- **`get_screenshot`** → per-node fallback for FLATTEN regions, untagged nodes, and degraded environments.
+The Figma design-context MCP (`get_design_context`, `get_screenshot`, `get_metadata`) still runs alongside for screenshots and JSX spec — figma-assets does not replace it.
 
 ---
 
@@ -28,7 +28,7 @@ cd MCPFigma
 swift build -c release
 ```
 
-Binary lives at `.build/release/mcp-figma`.
+Binary lives at `.build/release/mcp-figma`. Server self-reports as `mcp-figma 0.2.0`.
 
 ---
 
@@ -61,54 +61,163 @@ After editing config: **restart Claude (Cmd+Q, reopen)** to load the server.
 
 ---
 
-## Verify
+## Tools advertised
 
-After restart, the tool list (`tools/list`) advertises:
+After restart, `tools/list` advertises five tools. The skill uses three of them as the primary surface; the other two stay for backward compat / debugging:
 
-- `mcp__figma-assets__figma_list_assets`
-- `mcp__figma-assets__figma_export_assets`
-
-If they don't appear, run the troubleshooting steps below before proceeding to Phase B.
-
----
-
-## Runtime probe contract (used by Phase B Step B0)
-
-The skill probes availability once at the top of Phase B and falls back gracefully:
-
-```
-Step B0: figma_list_assets(fileKey, nodeId, depth=10)
-
-Outcomes:
-  a) Tool not found / not registered     → mcpfigmaAvailable = false
-                                           Print: WARN: figma-assets MCP not configured
-                                           Phase B uses get_screenshot for every asset
-  b) Auth error (unauthorized/forbidden) → mcpfigmaAvailable = false
-                                           Print: WARN: FIGMA_ACCESS_TOKEN missing or invalid
-  c) 200 with empty matches AND warnings → mcpfigmaAvailable = true
-                                           No tagged assets in scope; identical to fallback
-  d) Matches and/or warnings returned    → mcpfigmaAvailable = true
-                                           Proceed with split-path Phase B
-```
-
-Skill never retries the probe. One miss = fallback for the whole run.
+| Tool | Purpose | Skill phase |
+|---|---|---|
+| `figma_build_registry` | One walk → `screens`, `taggedAssets`, `lottiePlaceholders`, `warnings` | A2 |
+| `figma_export_assets_unified` | One call → tagged + fallback pipeline, returns full manifest | B3 |
+| `figma_extract_tokens` | Local variables → SwiftUI tokens with naming + light/dark | A3 |
+| `figma_list_assets` | Preview tagged matches without exporting | rarely; `figma_build_registry` covers this |
+| `figma_export_assets` | Lower-level tagged-only export (no fallback) | rarely; `figma_export_assets_unified` covers this |
 
 ---
 
-## Data flow
+## Tool reference
 
+### `figma_build_registry`
+
+**Input:**
+```json
+{ "fileKey": "ABC123", "nodeId": "1:2", "depth": 10 }
 ```
-Figma node (eICHome, eImageBanner, …)
-        │
-        ▼   figma_list_assets / figma_export_assets
-  figma-assets MCP server (Swift)
-        │
-        ▼   PNG @2x + @3x, iOS naming, optional xcassets import
-  /your/ios/project/Assets.xcassets/icAIHome.imageset/
-                                    icAIHome@2x.png
-                                    icAIHome@3x.png
-                                    Contents.json
+
+**Output:**
+```json
+{
+  "rootNode": { "nodeId": "1:2", "name": "OnboardingFlow", "type": "CANVAS" },
+  "screens": [
+    { "nodeId": "3166:70147", "name": "Welcome", "type": "FRAME",
+      "width": 375, "height": 812 }
+  ],
+  "taggedAssets": [
+    { "nodeId": "1:3", "figmaName": "eICHome", "kind": "icon", "exportName": "icAIHome" }
+  ],
+  "lottiePlaceholders": [
+    { "nodeId": "3166:71000", "figmaName": "eAnimLoading", "width": 120, "height": 120 }
+  ],
+  "warnings": [
+    { "nodeId": "1:5", "figmaName": "eIChome",
+      "reason": "Tên 'home' không hợp lệ — first char after prefix must be uppercase ASCII" }
+  ]
+}
 ```
+
+Screen detection rule: any direct-child FRAME of root (or root itself, if root is FRAME) with width in 320…1024 pt range. Containers (`CANVAS`/`PAGE`/`DOCUMENT`) recurse one level.
+
+### `figma_export_assets_unified`
+
+**Input:**
+```json
+{
+  "fileKey":          "ABC123",
+  "nodeId":           "3166:70147",
+  "outputDir":        "/abs/path/.figma-cache/3166:70147/assets",
+  "sharedAssetsDir":  "/abs/path/.figma-cache/_shared/assets",
+  "assetCatalogPath": "/abs/path/Project/App/Assets.xcassets",
+  "rows": [
+    { "nodeId": "3166:70211", "exporter": "tagged",   "exportName": "icAIClose" },
+    { "nodeId": "3166:70200", "exporter": "fallback", "friendlyName": "heroArtwork", "strategy": "flatten" },
+    { "nodeId": "3166:71000", "exporter": "fallback", "friendlyName": "placeholder_animation", "strategy": "lottiePlaceholder" }
+  ],
+  "scales":              [2, 3],
+  "fallbackScale":       3,
+  "overwrite":           true,
+  "skipIfExistsInCatalog": true
+}
+```
+
+`outputDir` and `sharedAssetsDir` are absolute paths. `assetCatalogPath` is required when any tagged row is present.
+
+**Output:**
+```json
+{
+  "rows": [
+    {
+      "nodeId": "3166:70211",
+      "exporter": "tagged",
+      "strategy": "atomic",
+      "status": "done",
+      "exportName": "icAIClose",
+      "outputPath": "/abs/.../assets/_mcpfigma/icAIClose@3x.png",
+      "imagesetPath": "/abs/.../Assets.xcassets/Welcome/icAIClose.imageset",
+      "xcassetsImported": true,
+      "sharedPath": null,
+      "friendlyName": null,
+      "reason": null
+    },
+    {
+      "nodeId": "3166:70200",
+      "exporter": "fallback",
+      "strategy": "flatten",
+      "status": "done",
+      "sharedPath": "/abs/.../_shared/assets/3166_70200.png",
+      "friendlyName": "heroArtwork",
+      "exportName": null,
+      "outputPath": null,
+      "imagesetPath": null,
+      "xcassetsImported": false,
+      "reason": null
+    },
+    {
+      "nodeId": "3166:71000",
+      "exporter": "fallback",
+      "strategy": "lottiePlaceholder",
+      "status": "done",
+      "friendlyName": "placeholder_animation",
+      "exportName": null, "outputPath": null,
+      "imagesetPath": null, "xcassetsImported": false,
+      "sharedPath": null, "reason": null
+    }
+  ],
+  "warnings": [],
+  "assetCatalogPath": "/abs/.../Assets.xcassets"
+}
+```
+
+### Internal pipeline behavior
+
+1. Tagged rows → batch render @2x/@3x via `/v1/images` → write PNG to `outputDir/_mcpfigma/` → import into `assetCatalogPath` as `Assets.xcassets/<RootName>/<exportName>.imageset/`. SwiftUI's `Image("<exportName>")` resolves by name across the whole catalog regardless of folder.
+2. Fallback rows → check `sharedAssetsDir/<nodeId-with-:_>.png` for a cached PNG (skip if found and `overwrite=false`) → batch render at `fallbackScale` via `/v1/images` → download → validate first 8 bytes match PNG signature (`89 50 4E 47 0D 0A 1A 0A`) → save to shared cache. Non-PNG (SVG/XML) → row marked `failed` with reason. Tool **never** converts SVG locally.
+3. Tagged row whose render fails → automatically promoted to fallback path; final row reports `exporter: "fallback"` with both reasons concatenated.
+4. Lottie rows → no network call, returned with `status: "done"` for codegen.
+
+### `figma_extract_tokens`
+
+**Input:**
+```json
+{ "fileKey": "ABC123" }
+```
+
+**Output:**
+```json
+{
+  "colors": [
+    { "figmaName": "primary/500", "swiftName": "primary500",
+      "lightHex": "#FF0080", "darkHex": "#E60074" }
+  ],
+  "spacing": [
+    { "figmaName": "spacing/md", "swiftName": "md", "value": 12, "isCapsule": false }
+  ],
+  "radius": [
+    { "figmaName": "radius/full", "swiftName": "full", "value": 9999, "isCapsule": true }
+  ],
+  "opacity": [],
+  "other": [],
+  "warnings": []
+}
+```
+
+Naming style:
+- Color uses `joinAll` (`primary/500` → `primary500`).
+- Spacing/radius/opacity drop the leading collection segment (`spacing/md` → `md`).
+- Radius value ≥ 999 → `isCapsule: true` (`Capsule()` instead of `RoundedRectangle`).
+- Mode pairs are detected by mode name: `light` / `default` / `mode 1` → `lightHex`; `dark` → `darkHex`.
+- Color aliases (variable references) are resolved up to 4 hops; longer chains land in `warnings`.
+
+`warnings` non-empty + all tokens empty → file does not have Variables API access (plan limit or token scope). Skill falls back to reading inline tokens from `design-context.md`.
 
 ---
 
@@ -118,106 +227,24 @@ Figma node (eICHome, eImageBanner, …)
 |---|---|---|
 | `eIC<Name>` | Icon | `icAI<Name>@2x.png`, `icAI<Name>@3x.png`, imageset `icAI<Name>` |
 | `eImage<Name>` | Image / illustration / brand | `imageAI<Name>@2x.png`, `imageAI<Name>@3x.png`, imageset `imageAI<Name>` |
+| `eAnim<Name>` | Lottie animation placeholder | NOT exported as PNG; codegen as `LottieView` stub |
 
 **Validation rules:**
 - First character after the prefix must be ASCII uppercase: `eICHome` ✅, `eIChome` ❌
 - Remaining characters: `[A-Za-z0-9_]` only: `eICHome_2` ✅, `eICHome-2` ❌, `eICHomé` ❌
-- Invalid names → MCPFigma skips and emits a warning row in `figma_list_assets` output.
-
-**Other prefixes recognized by the scanner:**
-- `eAnim*` — Lottie animation placeholders. MCPFigma's scanner skips these and does NOT recurse into their children (children are designer preview keyframes). They do NOT appear in `figma_list_assets.matches`. Phase B Step B0 step 5 detects them by walking `metadata.json` separately and adds inventory rows with `kind: "lottie-placeholder"`. Phase C2 emits a `LottieView` placeholder using the literal name `"placeholder_animation"` for the developer to swap later. Full contract in [`lottie-placeholders.md`](./lottie-placeholders.md). If a tagged Lottie placeholder needs to be exported as a static raster instead, rename it to `eImage*`.
-
-Skill behavior on validation failure: log the warning, surface to user, fall back to `get_screenshot` for that one node only. Other tagged nodes still take the MCPFigma path.
+- Invalid names → registry warning; the node falls back to fallback path (icons/images) or is skipped (Lottie).
 
 See `docs/designer-handoff.md` §9.4 for designer guidance.
 
 ---
 
-## Tool reference
+## Why `assetCatalogPath` is required (no `xcodeProjectPath` auto-resolve)
 
-### `figma_list_assets`
+Projects with multiple `.xcassets` (per-target, per-feature, modular) cannot be auto-resolved safely. The skill always pins `assetCatalogPath` explicitly in B0:
 
-Preview which assets the export would pick up, without downloading.
-
-**Input:**
-```json
-{
-  "fileKey": "ABC123xyz",
-  "nodeId":  "1:2",
-  "depth":   10
-}
-```
-
-**Output:**
-```json
-{
-  "matches": [
-    { "nodeId": "1:3", "figmaName": "eICHome",       "kind": "icon",  "exportName": "icAIHome" },
-    { "nodeId": "1:4", "figmaName": "eImageBanner",  "kind": "image", "exportName": "imageAIBanner" }
-  ],
-  "warnings": [
-    { "nodeId": "1:5", "figmaName": "eIChome", "reason": "Tên 'eIChome' không hợp lệ — first char after prefix must be uppercase ASCII" }
-  ]
-}
-```
-
-### `figma_export_assets`
-
-Batch-render PNG @2x + @3x, save to `outputDir`. If `xcodeProjectPath` or `assetCatalogPath` is supplied, also imports as `.imageset` into `Assets.xcassets`.
-
-**Input:**
-```json
-{
-  "fileKey":          "ABC123xyz",
-  "nodeId":           "1:2",
-  "outputDir":        ".figma-cache/<rootNodeId>/assets/_mcpfigma",
-  "assetCatalogPath": "/Users/me/Project/App/Assets.xcassets",
-  "nodeIds":          ["1:3", "1:4"],
-  "scales":           [2, 3],
-  "overwrite":        true
-}
-```
-
-- `nodeIds` (optional): export a subset; omit to export every match in the registry.
-- `scales` (optional): defaults to `[2, 3]`. We do not ship `@1x` for modern iOS.
-- `overwrite` (optional): defaults to `true` (idempotent re-runs of the disk write).
-- `skipIfExistsInCatalog` (optional, default `true`): if an imageset with the target name already exists anywhere in `.xcassets`, skip download AND import for that node. Set to `false` to force re-import. The skill leaves it default-true so Phase B re-runs after partial success only re-fetch the still-missing imagesets.
-- `xcodeProjectPath` (optional): path to `.xcodeproj`/`.xcworkspace`/project root for auto-resolving the catalog.
-- `assetCatalogPath` (optional): direct path to `.xcassets` — **prefer this over `xcodeProjectPath`** to avoid multi-catalog ambiguity.
-
-**xcassets folder grouping:** when importing, MCPFigma creates a folder inside the catalog named after the root node (e.g. the screen name). Imagesets land at `Assets.xcassets/<RootNodeName>/icAI<Name>.imageset/`. Two screens that share the same icon will produce two imagesets under their respective folders by default (idempotent on re-run). To force a flat layout, the user can manually move the imagesets after import.
-
-**Output:**
-```json
-{
-  "savedFiles": [
-    { "figmaName": "eICHome", "exportName": "icAIHome", "scale": 2, "path": "/.../_mcpfigma/icAIHome@2x.png" },
-    { "figmaName": "eICHome", "exportName": "icAIHome", "scale": 3, "path": "/.../_mcpfigma/icAIHome@3x.png" }
-  ],
-  "skipped": [],
-  "errors":  [],
-  "warnings": [],
-  "assetCatalog": {
-    "catalogPath": "/Users/me/Project/App/Assets.xcassets",
-    "savedFiles": [
-      { "figmaName": "eICHome", "exportName": "icAIHome", "scale": 2, "path": ".../Assets.xcassets/icAIHome.imageset/icAIHome@2x.png" },
-      { "figmaName": "eICHome", "exportName": "icAIHome", "scale": 3, "path": ".../Assets.xcassets/icAIHome.imageset/icAIHome@3x.png" }
-    ],
-    "skipped": [],
-    "errors":  []
-  }
-}
-```
-
----
-
-## Why `assetCatalogPath` over `xcodeProjectPath`
-
-`xcodeProjectPath` lets MCPFigma auto-resolve the `.xcassets` from the `.xcodeproj`. Fine when there's exactly one catalog, fragile otherwise (per-target catalogs, modular projects). The skill always pins `assetCatalogPath` explicitly in Step B0:
-
-- 0 `.xcassets` → ask user to create one before Phase B (no fallback).
+- 0 `.xcassets` → ask user to create one before Phase B (no fallback for the import step).
 - 1 `.xcassets` → silent default, tell the user which one.
-- N > 1 → interactive prompt; stash answer in `manifest.mcpfigma.assetCatalogPath` for re-runs.
+- N > 1 → interactive prompt; stash answer in `manifest.assetCatalogPath` for re-runs.
 
 ---
 
@@ -229,7 +256,9 @@ Batch-render PNG @2x + @3x, save to `outputDir`. If `xcodeProjectPath` or `asset
 | Auth error / `unauthorized` | Token wrong or expired | Regenerate at https://www.figma.com/settings |
 | `forbidden` | Token lacks `File content read` scope or no access to the file | Re-issue with proper scope; verify file is in your workspace |
 | `notFound` | Wrong `fileKey` or `nodeId` | Re-check Figma URL; `nodeId` uses `:` not `-` |
-| Empty `matches` and `warnings` | No node in scope is tagged `eIC*`/`eImage*` | Designer needs to tag (see §9.4 in handoff) — fallback path runs anyway |
-| `figma_list_assets` matches but `figma_export_assets` errors on a specific node | Render failed for that node | Skill auto-falls back to `get_screenshot` for that node only |
-| "Multiple `.xcassets` — please specify `assetCatalogPath`" | Project has > 1 catalog | Pass `assetCatalogPath` directly; B0 handles this |
+| `figma_build_registry` returns empty `screens` | Root is a leaf (icon or text) | Point at a parent FRAME instead |
+| Empty `taggedAssets` and `warnings` | No node in scope is tagged `eIC*`/`eImage*` | Designer needs to tag (see §9.4 in handoff) — fallback path runs anyway |
+| `figma_export_assets_unified` row `status: "failed"` reason "Output không phải PNG" | Designer published node as SVG-only with no raster | Ask designer to flatten in Figma, or accept that node won't export |
+| `figma_extract_tokens` returns empty arrays + warnings | File plan doesn't expose Variables API | Skill falls back to inline tokens from `design-context.md` |
+| Multiple `.xcassets` error | Project has > 1 catalog | Pass `assetCatalogPath` directly; B0 handles this |
 | Claude doesn't see the tools after install | Claude wasn't restarted | Cmd+Q and reopen |

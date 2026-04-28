@@ -1,6 +1,31 @@
 # Figma Design Tokens to SwiftUI Mapping
 
-How to translate Figma variables (from get_variable_defs) into a SwiftUI design system.
+How to translate Figma variables into a SwiftUI design system. **Phase A3 calls `figma_extract_tokens` once per `fileKey`** and writes the structured JSON to `tokens.json` — this file already has the SwiftUI naming applied (`primary500`, `textPrimary`, `headingLarge`, …) plus `lightHex`/`darkHex` for color modes and `isCapsule` for radius. The rules below describe the mapping the tool already performs and the project-specific judgment the skill still does at C2.
+
+## What `tokens.json` already contains
+
+```json
+{
+  "colors":  [{ "figmaName": "primary/500", "swiftName": "primary500",
+                "lightHex": "#FF0080", "darkHex": "#E60074" }],
+  "spacing": [{ "figmaName": "spacing/md", "swiftName": "md", "value": 12, "isCapsule": false }],
+  "radius":  [{ "figmaName": "radius/full", "swiftName": "full", "value": 9999, "isCapsule": true }],
+  "opacity": [],
+  "other":   [],
+  "warnings": []
+}
+```
+
+`warnings` non-empty + all arrays empty → file lacks Variables API access. Fall back to reading inline tokens from `design-context.md`.
+
+## Skill's job at C2: merge with project enums
+
+The tool doesn't know the project. At C2 the skill chooses, per token:
+1. Use existing project enum case if name matches (`Spacing.md`, `IKFont.headingLarge`, `IKCoreApp.colors.primary500`).
+2. Else fall back to the extracted token (`Color.primary500` from a generated extension).
+3. Else inline literal as last resort.
+
+Never invent new project enum cases — surface mismatches in the run summary.
 
 ## Color Tokens
 

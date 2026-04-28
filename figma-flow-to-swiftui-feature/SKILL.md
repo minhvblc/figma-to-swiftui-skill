@@ -46,11 +46,11 @@ When the doc is behavior-oriented but vague about exact element mapping, read [r
 
 All Figma MCP calls in this workflow follow [../figma-to-swiftui/references/fetch-strategy.md](../figma-to-swiftui/references/fetch-strategy.md). Key rules for flows specifically:
 
-- `get_metadata` on the root **once**, to confirm screen → node mapping.
-- `get_variable_defs` **once per fileKey**; copy/symlink the resulting `tokens.json` into each screen's cache folder instead of refetching per screen.
-- `figma_list_assets` (MCPFigma) **once on the root flow node**, after `get_metadata` confirms screen mapping. The result is the **flow-global tagged-asset registry** — every match has a single source nodeId regardless of how many screens reference it. Cache as `.figma-cache/_shared/mcpfigma-list.json`. The registry is per `(fileKey, rootNodeId)`, not per screen; the single-screen skill filters it by sub-tree containment per screen.
-- If `figma_list_assets` is unavailable (server not configured, token bad), log it once at the flow level. Each screen's Phase B falls back to `get_screenshot` independently — do not retry the probe per screen.
-- **Lottie placeholders (`eAnim*`)** are detected per-screen by walking the screen's `metadata.json` in single-screen B0 step 5 — no flow-global pre-fetch is needed. Each screen's Phase B inventory ends up with `kind: "lottie-placeholder"` rows; Phase C2 codegens `LottieView` stubs using the literal name `"placeholder_animation"`. See `../figma-to-swiftui/references/lottie-placeholders.md`. The flow skill should surface a combined end-of-run summary across all screens listing every placeholder the developer needs to replace.
+- `figma_build_registry(fileKey, rootNodeId, depth=10)` **once on the root flow node**. The response gives `screens[]` (drives the screen graph), `taggedAssets[]`, and `lottiePlaceholders[]` for the whole flow. Cache as `.figma-cache/_shared/registry.json`. Single-screen skill's B0 reads this and filters per screen by sub-tree containment.
+- `figma_extract_tokens(fileKey)` **once per fileKey**; copy/symlink the resulting `tokens.json` into each screen's cache folder.
+- `get_metadata` per screen as needed (kept for design-context cross-ref in C3); the registry already covers screen detection.
+- If `figma_build_registry` errors (server not configured, token bad), surface to user — do not silently proceed; the registry is mandatory for the unified pipeline.
+- **Lottie placeholders (`eAnim*`)** are already in `registry.lottiePlaceholders[]` — no separate walk per screen. Each screen's Phase B inventory ends up with `strategy: "lottiePlaceholder"` rows; Phase C2 codegens `LottieView` stubs using the literal name `"placeholder_animation"`. See `../figma-to-swiftui/references/lottie-placeholders.md`. The flow skill surfaces a combined end-of-run summary across all screens listing every placeholder the developer needs to replace.
 - Run `figma-to-swiftui`'s **Phase A for ALL screens** in one batch (populates `.figma-cache/<nodeId>/` + manifest per screen), then run Phase B for each screen in graph order. Do not interleave A and B across screens.
 - If any call times out, apply the circuit breaker in fetch-strategy.md. Do not retry the same node — split into sections instead.
 - Manifests make Phase A resumable — re-fetch only the entries marked `failed`.
@@ -129,23 +129,31 @@ If the request is still ambiguous after the schema pass, stop here and ask inste
 
 Use `figma-to-swiftui`'s two-phase workflow across the whole flow:
 
-**Phase A sub-step A0 (flow-global): tagged-asset registry.** Once per flow, before fetching any screen:
-1. Call `figma_list_assets(fileKey, rootNodeId, depth=10)`.
-2. Save to `.figma-cache/_shared/mcpfigma-list.json`.
+**Phase A sub-step A0 (flow-global): registry.** Once per flow, before fetching any screen:
+1. Call `figma_build_registry(fileKey, rootNodeId, depth=10)`.
+2. Save to `.figma-cache/_shared/registry.json`.
 3. Pin a single `assetCatalogPath` for the whole flow (interactive prompt if the project has multiple `.xcassets`). Stash in the shared cache folder so every screen's Phase B reads the same value.
-4. When delegating Phase B to `figma-to-swiftui` for each screen, pass `mcpfigmaListPath = .figma-cache/_shared/mcpfigma-list.json`. The single-screen skill's B0 step reads from this file instead of re-calling `figma_list_assets` per screen.
-5. The single-screen skill filters the global registry per screen: a screen's tagged-asset registry is the subset of global matches whose `nodeId` is (or is a descendant of) the screen's nodeId.
+4. When delegating Phase B to `figma-to-swiftui` for each screen, pass `registryPath = .figma-cache/_shared/registry.json`. The single-screen skill's B0 reads from this file.
+5. Per-screen filtering: a screen's tagged + lottie subset is the entries whose `nodeId` is (or is a descendant of) the screen's nodeId.
 
-If `figma_list_assets` returns auth error or the tool is not registered, skip A0 entirely and let each screen fall back to `get_screenshot` independently (the single-screen skill handles this in B0).
+If `figma_build_registry` returns auth error or is not registered, surface and stop — the registry is mandatory.
 
 **Phase A — batch-fetch ALL screens first.** For every screen in the graph, run Phase A (Step 1–4 of `figma-to-swiftui`), populating `.figma-cache/<nodeId>/` with design-context, screenshot, tokens, code-connect, assets, and a manifest. Do this for all screens in one burst, not interleaved with Phase B. Reasons:
 - Minimizes total MCP exposure time (ephemeral asset URLs, session windows).
 - Lets the manifest checkpoint partial progress — if a fetch fails, retry only the failed node instead of losing work.
 - Keeps Phase B free of MCP calls, so it is unaffected by timeouts.
 
-**Dedup the file-scoped data.** `get_variable_defs` is per `fileKey`, not per node. If all screens come from the same Figma file, fetch tokens once and copy/symlink the same `tokens.json` into each screen's cache folder.
+**Dedup the file-scoped data.** `figma_extract_tokens` is per `fileKey`, not per node. If all screens come from the same Figma file, fetch tokens once and copy/symlink the same `tokens.json` into each screen's cache folder.
 
 **If a Phase A fetch fails** on a screen: the manifest records it as `failed`; continue with the next screen, then retry failed ones at the end. Do NOT retry the same node on timeout — apply the circuit breaker from fetch-strategy.md and split the screen into sections.
+
+**No Phase A shortcut — design-context.md and screenshot.png are mandatory per screen.** Common failure modes that this rule exists to prevent:
+
+- *"I have depth=2 metadata + the doc, I'll skip per-screen design-context fetches."* — **STOP.** Metadata has node IDs and bounds; it does NOT have styling, fonts, colors, gradients, shadows, or layout. The doc describes BEHAVIOR; the screenshot captures RENDERED VISUAL TRUTH. They are not interchangeable.
+- *"Pragmatic adjustment: I'll generate SwiftUI directly from doc + judgment."* — that is hallucinated UI. C3 Pass 2 cannot run without `screenshot.png` (it diffs code against the screenshot). C5 visual diff cannot run without `screenshot.png`. Skipping the fetch silently disables both gates.
+- *"To save tokens."* — fetching design-context for N screens costs orders of magnitude less than shipping divergent UI and re-doing the work.
+
+**Per-screen Gate A enforcement.** After the Phase A batch-fetch, run **Gate A** from `figma-to-swiftui/SKILL.md` (the BASH block under "Gate A — Phase A Exit") for every screen individually. The flow does not advance to Phase B for ANY screen until that screen's Gate A prints `GATE: PASS`. Surface a per-screen Gate A status table to the user before proceeding.
 
 **Phase B — implement offline from cache.** Once Phase A is complete (or complete-with-known-gaps that the user has accepted), implement screens one at a time in graph order. No further MCP calls in Phase B.
 
@@ -167,11 +175,11 @@ Prefer this reuse order:
 ### 5.5 xcassets import order (multi-screen flows)
 
 For each screen's Phase B:
-- Tagged assets (MCPFigma path) write directly into `Assets.xcassets` during B3a, **per screen, in the order screens are processed**.
-- MCPFigma groups imagesets into a folder named after the root node passed in the call (the screen). Two screens that both reference `eICHome` will land as `Assets.xcassets/Screen1/icAIHome.imageset` AND `Assets.xcassets/Screen2/icAIHome.imageset` — each under its screen folder. **Xcode resolves `Image("icAIHome")` by name across the whole catalog**, so this duplication on disk is harmless at the call site (SwiftUI doesn't care which folder it's in).
+- Tagged assets write directly into `Assets.xcassets` during B3, **per screen, in the order screens are processed**.
+- The tool groups imagesets into a folder named after the root node passed in the call (the screen). Two screens that both reference `eICHome` will land as `Assets.xcassets/Screen1/icAIHome.imageset` AND `Assets.xcassets/Screen2/icAIHome.imageset` — each under its screen folder. **Xcode resolves `Image("icAIHome")` by name across the whole catalog**, so this duplication on disk is harmless at the call site.
 - `skipIfExistsInCatalog` (default `true`) means a re-run will not re-download/re-import an imageset whose name already exists anywhere in the catalog. Effective behavior: the FIRST screen that processes a shared icon "wins" the import; subsequent screens silently skip it. Re-runs become cheap.
-- Different source nodeIds with the same Figma name (rare; two designers used `eICClose` on different nodes) → MCPFigma deduplicates with suffix (`icAIClose_2`). Surface as a warning.
-- Untagged assets (`get_screenshot` path) are written in Phase C4 per screen, after the screen's view code is done.
+- Different source nodeIds with the same Figma name (rare; two designers used `eICClose` on different nodes) → tool deduplicates with suffix (`icAIClose_2`) and emits a warning.
+- Fallback assets (untagged + FLATTEN regions) are deduped at the flow level via `_shared/assets/`, then imageset-imported in C4 per screen.
 - A single `assetCatalogPath` is pinned for the entire flow at A0 (interactive prompt if the project has multiple `.xcassets`). All screens share it — do not re-prompt per screen.
 
 ### 6. Wire the Full Behavior
@@ -188,7 +196,23 @@ Read [references/feature-completeness.md](references/feature-completeness.md) to
 
 ### 7. Verify at Feature Level
 
-Verify the whole flow, not just each screen:
+**Step 7 has two halves: per-screen visual validation (7a) and feature-level wiring checks (7b). Both are mandatory; neither substitutes for the other. A clean compile is NOT proof the screens look right.**
+
+#### 7a. Per-screen C5 (build + simulator screenshot, MANDATORY)
+
+For every screen in the flow, run **Step C5** from the single-screen skill — see [`../figma-to-swiftui/SKILL.md`](../figma-to-swiftui/SKILL.md) Step C5 + [`../figma-to-swiftui/references/verification-loop.md`](../figma-to-swiftui/references/verification-loop.md) §5. C5 builds the project, boots a simulator, installs the app, screenshots each screen, and writes a visual diff vs the Figma render to `.figma-cache/<nodeId>/c5-visual-diff.md`. Persists `manifest.verification.c5.gate` per screen.
+
+C5 is **mandatory**. The flow's **Done-Gate** (the feature-level analogue of `figma-to-swiftui` Key Principle #12) requires every screen to satisfy one of:
+- `manifest.verification.c5.gate == "PASS"`, OR
+- `manifest.verification.c5.skipped` set to one of `no_project`, `simctl_error`, `ci_environment` (auto-detected, persisted; user phrases like `skip C5` / `bỏ qua C5` are NOT honored).
+
+A flow is NOT done while any screen has neither. **A successful `xcodebuild build` is not C5** — C5 requires `simctl boot` + `simctl install` + `simctl launch` + `simctl io screenshot` + visual compare. If you only ran `xcodebuild build` and stopped, you have NOT run C5; the Done-Gate is violated and you must complete C5 before declaring done.
+
+If you cannot run C5 for a real reason (e.g. missing StoreKit config blocks the paywall from rendering, missing Lottie SDK leaves placeholders), capture the screenshot anyway and note the degraded state in the diff row — do not skip the entire C5. Partial visual evidence is better than none, and the user can decide whether the gap is acceptable.
+
+#### 7b. Feature-level wiring checks
+
+After 7a passes (or is skipped for a system reason), verify the whole flow, not just each screen:
 - Routes are reachable
 - State transitions are coherent
 - Errors surface on the correct screen
@@ -197,6 +221,30 @@ Verify the whole flow, not just each screen:
 
 If the project has tests for similar features, extend that pattern. If verification cannot be run, say exactly what was not checked.
 
+#### 7c. Flow-level Verification summary (mandatory final block)
+
+At the end of every run — success or failure — print this block to the user verbatim, filling in values from each screen's manifest. This is the flow analogue of the single-screen Verification summary in [`../figma-to-swiftui/SKILL.md`](../figma-to-swiftui/SKILL.md). Never fabricate a PASS — open the file with `cat` if uncertain. If a screen was skipped at the system level (`no_project`, `simctl_error`, `ci_environment`), say so explicitly so the user knows local C5 still needs to run before merge.
+
+```
+Flow Verification summary
+Screen <Name 1> (nodeId <…>)
+  C5 (build + simulator):      PASS / FAIL / SKIPPED (<reason>)
+  C5.6 (visual diff vs Figma): PASS / FAIL (high: N, medium: N)
+
+Screen <Name 2> (nodeId <…>)
+  ...
+
+Feature-level wiring (7b):
+  Routes reachable:            PASS / FAIL (<list>)
+  State transitions:           PASS / FAIL (<list>)
+
+Artifacts:
+  .figma-cache/<nodeIdN>/c5-simulator.png
+  .figma-cache/<nodeIdN>/c5-visual-diff.md
+```
+
+Stating "done" / "xong" / "BUILD SUCCEEDED, closing out" without this block — or with a fabricated PASS in it — is a Done-Gate violation. If you find yourself thinking *"a clean compile felt like enough proof"* or *"runtime behavior wasn't observed but the build links"*, **STOP**. That is the exact failure mode this gate exists to prevent. Run C5 now.
+
 ## Non-Negotiable Rules
 
 - Do not port React/Tailwind MCP output into SwiftUI directly
@@ -204,6 +252,7 @@ If the project has tests for similar features, extend that pattern. If verificat
 - Do not invent backend contracts or business rules from a mockup
 - Do not create duplicate tokens, duplicate routers, or duplicate shared components
 - Do not stop at static UI when the request is for a feature flow
+- **Never fabricate manifest fields to make a gate pass.** `manifest.json` is a record of work actually done — `phaseA = "done"` means `design-context.md`, `screenshot.png`, `metadata.json`, `tokens.json`, `registry.json` all exist on disk per screen. `phaseB = "done"` means every `rows` entry has its PNG on disk (and, for tagged rows, its imageset in the catalog). `verification.c5.gate = "PASS"` means Gate C5 actually printed `GATE: PASS`. Writing these fields to satisfy a gate's bash check WITHOUT having executed the underlying step is gaming the gate and a protocol violation. If a gate would fail, do the work — do not edit the manifest. If you find yourself writing "manifests so the gate passes", **STOP** — that is the exact failure mode this rule exists to prevent.
 
 ## Output Expectations
 

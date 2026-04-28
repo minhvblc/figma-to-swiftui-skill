@@ -141,7 +141,7 @@ Once you've decided what to flatten, for every remaining atomic element decide: 
 
 ## 2. Determine sizing from Figma
 
-> **MCPFigma note.** When the asset will be exported via MCPFigma (`eIC*`/`eImage*` tagged nodes), the server renders at scales `@2x` and `@3x` from the Figma frame's intrinsic dimensions. Display size in SwiftUI still comes from the parent frame in Figma — read it the same way as for any other asset. Output pixel size is always `2× display × 3× display`. No `@1x` is shipped for modern iOS.
+> **Tagged-path note.** Tagged exports (`eIC*`/`eImage*`) render at scales `@2x` and `@3x` from the Figma frame's intrinsic dimensions. Display size in SwiftUI still comes from the parent frame in Figma — read it the same way as for any other asset. Output pixel size is always `2× display × 3× display`. No `@1x` is shipped for modern iOS.
 
 Before downloading, know two sizes for each asset:
 - **Export size** (pixel dimensions of the PNG file): always 3× the display size
@@ -157,206 +157,32 @@ If the asset appears at multiple sizes in the design (e.g. 16pt in a list, 24pt 
 
 ## 3. Download the asset
 
-**Priority order (four exporters):**
+**One tool: `figma_export_assets_unified`.** Skill builds a `rows[]` array (each row marks `exporter: "tagged"` or `"fallback"`) and submits a single call. Internals (batch render, dedup, PNG validation, xcassets imageset write, auto-promote tagged → fallback on render error) live inside the tool.
 
-1. **MCPFigma `figma_export_assets`** — DEFAULT for designer-tagged nodes (`eIC*` / `eImage*`) when the `figma-assets` MCP server is configured. Batch render, batch download, optional direct write into `Assets.xcassets`. See `references/mcpfigma-setup.md`.
-2. **Figma REST API** (`/v1/images`) — batch fallback for untagged nodes when `FIGMA_TOKEN` is set in the shell env. Optional; can be skipped for `get_screenshot`.
-3. **MCP `get_screenshot`** — per-node fallback. Always works (no token), one call per node. Used for FLATTEN regions, untagged atomic icons, and any tagged node that MCPFigma fails on.
-4. **MCP `download_figma_images`** — only for raster `imageRef` fills (uploaded photos, raster brand assets). Returns SVG for vector icons even with `.png` extension, not a format converter.
+What used to be a four-exporter priority chain now collapses to per-row flags:
 
-Never try to convert SVG → PNG locally (rsvg-convert, inkscape, ImageMagick) — rendering drifts from Figma. Always use one of the four methods above.
+| Old path | New row shape |
+|---|---|
+| MCPFigma `figma_export_assets` (tagged `eIC*`/`eImage*`) | `{ nodeId, exporter: "tagged", exportName }` |
+| Figma REST `/v1/images` batch (untagged) | `{ nodeId, exporter: "fallback", friendlyName }` |
+| MCP `get_screenshot` per-node | `{ nodeId, exporter: "fallback", friendlyName }` (same row; tool handles batching internally) |
+| Lottie placeholder (`eAnim*`) | `{ nodeId, exporter: "fallback", friendlyName, strategy: "lottiePlaceholder" }` (no download) |
 
-### Primary: MCPFigma `figma_export_assets` (tagged assets)
+**Hard rules still in force (enforced inside the tool):**
+- Tool **never** converts SVG → PNG locally. PNG signature validation rejects non-PNG output and marks the row failed with a clear reason.
+- Always use the tool. Do NOT call `rsvg-convert`, `inkscape`, ImageMagick `convert`, or any local rasterizer to work around a failed row — fix the source in Figma instead (flatten the offending node).
 
-When Phase B Step B0 reports `mcpfigmaAvailable = true` AND the inventory has at least one row with `tagged = yes`, batch every tagged row into one call:
+### Identifying `imageRef` raster fills
 
-```
-figma_export_assets(
-  fileKey,
-  nodeId            = <root nodeId>,
-  outputDir         = ".figma-cache/<rootNodeId>/assets/_mcpfigma",
-  assetCatalogPath  = <pinned in B0>,
-  nodeIds           = [<every tagged sourceNodeId from inventory>],
-  scales            = [2, 3],
-  overwrite         = true
-)
-```
+Some nodes use raster fills (uploaded photos, brand assets) — Figma stores these as raster already. You can spot them in `design-context.md` by:
+- `imageRef` attribute in the JSX
+- inline CSS `background-image: url(...)` pointing to a Figma asset ID
 
-**Why pass `nodeIds` explicitly** instead of letting MCPFigma scan: Step B1 cross-reference may have flagged a tagged node as "skip via user override" (e.g. user explicitly asked to FLATTEN that region). Passing the explicit subset honors the override.
+The unified tool's fallback path renders these the same way as any other node — no special handling needed. The original raster bytes are reproduced at scale.
 
-**Why pass `assetCatalogPath` over `xcodeProjectPath`:** projects with multiple `.xcassets` (per-target, per-feature, modular) cannot be auto-resolved. The skill pins exactly one catalog in B0 and reuses it for the whole flow.
+### When a row's `status == "failed"`
 
-**Process the response:**
-- `savedFiles` (the `outputDir` ones) → mark inventory row `status: done`, stash `outputPath` in manifest.
-- `assetCatalog.savedFiles` → set `xcassetsImported: true`, stash `imagesetPath`.
-- `errors` (or `assetCatalog.errors`) → mark `status: failed` for that node, fall back to `get_screenshot` for it only.
-- `warnings` → log to `mcpfigma-warnings.log` and surface to the user.
-
-**Validate every file** in `outputDir` with `file <path>` — must say `PNG image data`. (MCPFigma always emits PNG; this catches misconfiguration like server pointing at the wrong build.)
-
-**Rate limits** are handled inside MCPFigma (respects `Retry-After`, exponential backoff for 5xx). Skill does not retry; one batch call covers all tagged nodes.
-
-**Important:** MCPFigma writes `Contents.json` **without** `template-rendering-intent`. Apply `.renderingMode(.template)` at the SwiftUI call site for single-color icons (see §4).
-
-### Fallback A: Figma REST API (batch, fast)
-
-When MCPFigma is unavailable or for untagged nodes, and `FIGMA_TOKEN` is in the shell env (1Password, user-provided), use the REST API as the next fallback. It batches many node IDs into one call and returns PNG URLs rendered by Figma's own server.
-
-**Check token first:**
-```bash
-if [ -n "$FIGMA_TOKEN" ]; then echo "token available"; else echo "fallback to MCP"; fi
-```
-
-**Batch call:**
-```bash
-# Collect all icon/image nodeIds from the Inventory (Step 3.0) — comma-separated
-IDS="3166:70200,3166:70211,3166:70215,3166:70222"
-
-curl -s -H "X-Figma-Token: $FIGMA_TOKEN" \
-  "https://api.figma.com/v1/images/$FILE_KEY?ids=$IDS&format=png&scale=3" \
-  > .figma-cache/<nodeId>/rest-images.json
-```
-
-**Response format:**
-```json
-{
-  "err": null,
-  "images": {
-    "3166:70200": "https://s3-alpha-sig.figma.com/img/.../hero.png",
-    "3166:70211": "https://s3-alpha-sig.figma.com/img/.../close.png",
-    "3166:70215": null
-  }
-}
-```
-
-**Download each URL immediately** (S3 URLs are signed and expire):
-```bash
-# For each nodeId → url pair, map to the filename in the Inventory table
-curl -s -o .figma-cache/<nodeId>/assets/heroArtwork.png \
-  "https://s3-alpha-sig.figma.com/img/.../hero.png"
-
-# Validate
-file .figma-cache/<nodeId>/assets/heroArtwork.png
-# Must output: "PNG image data"
-```
-
-**Error handling (fall through to MCP for any failure):**
-- `err` field non-null in response → full call failed → fallback to MCP for all nodes
-- `images[nodeId]` is `null` → Figma couldn't render that specific node → fallback to MCP `get_screenshot(fileKey, nodeId)` for that one
-- HTTP 403 / "Invalid token" → token is bad → notify user, fallback to MCP
-- HTTP 429 (rate limit) → wait 30s, retry once; if still fails, fallback to MCP
-
-**Rate limit:** Figma allows ~300 req/min per IP. One batch call covers many icons, so this rarely trips.
-
-**Scale parameter:** `scale=3` gives you the @3x asset. Generate @2x/@1x with `sips` afterwards. Supported: 1, 2, 3, 4.
-
-### Fallback B: MCP `get_screenshot` (per-node)
-
-When `FIGMA_TOKEN` is missing, or REST API returned a null URL for a specific node, or REST failed with a rate limit:
-
-```
-get_screenshot(fileKey, nodeId)
-→ saves PNG to the localPath you specify
-```
-
-- Works for any node type
-- Always returns PNG (Figma's renderer — same output as REST API for the same node)
-- One call per node — slower than REST batch, but no token needed
-
-### Fallback C: MCP `download_figma_images` (raster fills only)
-
-Only useful for nodes with `imageRef` (uploaded photos, raster brand assets):
-
-```json
-{
-  "fileKey": "abc123",
-  "localPath": ".figma-cache/<nodeId>/assets",
-  "pngScale": 3,
-  "nodes": [
-    { "nodeId": "123:456", "fileName": "userAvatar.png", "imageRef": "abc..." }
-  ]
-}
-```
-
-Always validate after: `file assets/*.png` must output "PNG image data". If SVG/XML → discard, use `get_screenshot`.
-
-### When `download_figma_images` is actually useful
-
-For nodes with an `imageRef` fill (uploaded photos, raster brand assets) — Figma stores these as raster already, and `download_figma_images` returns the original PNG/JPG bytes at the requested scale:
-
-```json
-{
-  "fileKey": "abc123",
-  "localPath": ".figma-cache/3166:70147/assets",
-  "pngScale": 3,
-  "nodes": [
-    { "nodeId": "123:456", "fileName": "user-avatar.png", "imageRef": "abc..." }
-  ]
-}
-```
-
-You can identify these in `design-context.md` by `imageRef` attributes in the JSX, or by inline CSS like `background-image: url(...)` pointing to a Figma asset ID.
-
-**Always validate afterward:**
-
-```bash
-file .figma-cache/<nodeId>/assets/user-avatar.png
-# Must output "PNG image data". If "SVG" or "XML" → discard, use get_screenshot instead.
-```
-
-### Curl from localhost URL (also prone to format drift)
-
-`get_design_context` embeds localhost URLs for assets. These URLs also don't guarantee PNG content — validate the same way:
-
-```bash
-curl -o ".figma-cache/<nodeId>/assets/<name>_raw" "<localhost-url>"
-ACTUAL=$(file -b ".figma-cache/<nodeId>/assets/<name>_raw")
-
-if echo "$ACTUAL" | grep -qi "png"; then
-  mv ".figma-cache/<nodeId>/assets/<name>_raw" ".figma-cache/<nodeId>/assets/<name>.png"
-elif echo "$ACTUAL" | grep -qi "jpeg"; then
-  sips -s format png ".figma-cache/<nodeId>/assets/<name>_raw" --out ".figma-cache/<nodeId>/assets/<name>.png" && rm ".figma-cache/<nodeId>/assets/<name>_raw"
-else
-  # SVG, XML, or unknown — discard, use get_screenshot
-  rm ".figma-cache/<nodeId>/assets/<name>_raw"
-fi
-```
-
-### Never try to convert SVG → PNG locally
-
-If you do end up with an SVG file (from download_figma_images or curl), **discard it and call `get_screenshot`** on the same node. Do NOT:
-- Use CLI tools like `rsvg-convert`, `inkscape`, ImageMagick `convert` to rasterize locally — they produce different rendering than Figma (stroke widths, text, effects drift)
-- Bundle the SVG as-is — Xcode's SVG support is limited (no filters, blurs, masks, some gradients)
-- Use `WebView` to render SVG — overkill and fragile
-
-`get_screenshot` uses Figma's own renderer → the resulting PNG is pixel-identical to the Figma canvas.
-
-### Decision flow
-
-```
-For each Inventory row (after Step B1 cross-reference):
-│
-├── tagged = yes  AND  mcpfigmaAvailable = true
-│     └── Batch into figma_export_assets call (Step B3a)
-│         ├── savedFiles → status:done, outputPath stashed
-│         ├── assetCatalog.savedFiles → xcassetsImported:true
-│         ├── errors → fall back to get_screenshot for that one node
-│         └── warnings → log + surface to user
-│
-└── tagged = no  OR  mcpfigmaAvailable = false  (Step B3b)
-      │
-      ├── FIGMA_TOKEN env set AND batchable (multiple nodes)
-      │     └── REST /v1/images batch
-      │         ├── Full success → download URLs, validate PNG
-      │         ├── Partial (some null) → get_screenshot for null ones
-      │         └── Full failure (err/403/429) → get_screenshot for all
-      │
-      ├── otherwise
-      │     └── get_screenshot per node (always works, no token)
-      │
-      └── imageRef raster fill (uploaded photo, brand asset)
-            └── download_figma_images (validate PNG; SVG → re-fetch via get_screenshot)
-```
+The most common failure is non-PNG output (designer published an SVG-only node). Fix on the designer side: ask them to flatten the node in Figma so it produces raster output. Other failure modes (auth, network) are surfaced verbatim in `row.reason`.
 
 ---
 
@@ -377,11 +203,11 @@ Before adding to the Asset Catalog, decide:
 - If Figma assigns a *color variable* to the fill (e.g. `fill: var(--icon-primary)`), it's meant to be tintable → **template**.
 - If the icon appears in multiple foreground colors across screens, it's template.
 
-### MCPFigma assets — call-site rendering only
+### Tagged-path assets — call-site rendering only
 
-MCPFigma writes `Contents.json` files **without** `template-rendering-intent`. This is intentional — the same exported icon may be used as template in some screens (tinted via `.foregroundStyle`) and as original in others (e.g. shown over a colored background where its built-in color is required).
+The tagged path writes `Contents.json` files **without** `template-rendering-intent`. This is intentional — the same exported icon may be used as template in some screens (tinted via `.foregroundStyle`) and as original in others (e.g. shown over a colored background where its built-in color is required).
 
-For every asset whose manifest row has `exporter: "mcpfigma"`, decide rendering at the **call site**:
+For every asset whose manifest row has `exporter: "tagged"`, decide rendering at the **call site**:
 
 ```swift
 Image("icAIClose")
@@ -393,11 +219,11 @@ Image("icAIClose")
 
 For multi-color tagged images (illustrations, brand) — no `.renderingMode` modifier; let the original colors render.
 
-This rule applies only to MCPFigma-exported assets. The `get_screenshot`-exported path keeps the rule below.
+This rule applies only to tagged-path assets. The fallback-path imageset keeps the rule below.
 
-### `get_screenshot` assets — Contents.json or call site
+### Fallback-path assets — Contents.json or call site
 
-For every asset whose manifest row has `exporter: "get_screenshot"`:
+For every asset whose manifest row has `exporter: "fallback"` (and `strategy != "lottiePlaceholder"`):
 
 - Prefer **Contents.json** (`"template-rendering-intent": "template"`) for icons that are always template across the app. This lets any call site use `Image("x")` without modifiers.
 - Apply **in code** (`.renderingMode(.template)`) only when the same asset is used sometimes as template, sometimes original.
@@ -406,9 +232,9 @@ For every asset whose manifest row has `exporter: "get_screenshot"`:
 
 ## 5. Build the Asset Catalog entry
 
-> **Skip §5 for MCPFigma-exported assets.** If the row has `exporter: "mcpfigma"` and `xcassetsImported: true`, MCPFigma already wrote the `.imageset` (with `Contents.json` referencing `@2x` + `@3x`). Do NOT re-run sips, do NOT regenerate `Contents.json`, do NOT copy. Resume §5 only when adding light/dark appearance variants by hand (which the MCPFigma path does not support).
+> **Skip §5 for tagged-path assets.** If the row has `exporter: "tagged"` and `xcassetsImported: true`, the tool already wrote the `.imageset` (with `Contents.json` referencing `@2x` + `@3x`). Do NOT re-run sips, do NOT regenerate `Contents.json`, do NOT copy. Resume §5 only when adding light/dark appearance variants by hand (which the tagged path does not support).
 >
-> The §5 build-from-sips path applies to `get_screenshot`-exported assets and to MCPFigma rows that fell back due to errors.
+> The §5 build-from-sips path applies to fallback-path assets and to tagged rows that auto-promoted to fallback after a render error.
 
 ### Generate @1x, @2x, @3x with sips
 
@@ -488,8 +314,8 @@ For single-color icons, you rarely need dark variants — use template rendering
 
 ### Naming
 
-- **MCPFigma exports use a fixed convention: `icAI<Name>` for icons, `imageAI<Name>` for images.** Do not rename — the `.imageset` directory and the SwiftUI call site must agree, and MCPFigma owns this name. The `<Name>` part comes from the Figma node name (`eICHome` → `icAIHome`).
-- For `get_screenshot` exports, follow the rules below:
+- **Tagged-path exports use a fixed convention: `icAI<Name>` for icons, `imageAI<Name>` for images.** Do not rename — the `.imageset` directory and the SwiftUI call site must agree, and the tool owns this name. The `<Name>` part comes from the Figma node name (`eICHome` → `icAIHome`).
+- For fallback-path exports, follow the rules below:
   - Match the project's existing case style (camelCase or kebab-case — don't mix).
   - **Global icons** (shared across many screens): no prefix. `close`, `chevronRight`, `search`, `heart`.
   - **Screen-specific visuals** (illustrations tied to one feature): prefix with screen/feature name. `onboardingHero`, `checkoutSummaryIllustration`, `profileHeaderPlaceholder`.
@@ -498,13 +324,13 @@ For single-color icons, you rarely need dark variants — use template rendering
 
 ### Cross-path dedup
 
-If the same source nodeId is referenced by two paths (rare; happens when an MCPFigma export fails midway and the row falls back to `get_screenshot` on re-run), the manifest is the source of truth. Keep the row whose `xcassetsImported = true`; delete the other from disk and from the manifest.
+If the same source nodeId is referenced by two paths (very rare — auto-promotion replaces the row in place; this only happens on a manual re-run that disagrees with the previous manifest), the manifest is the source of truth. Keep the row whose `xcassetsImported = true`; delete the other from disk and from the manifest.
 
 ---
 
 ## 7. Use the asset in SwiftUI
 
-### MCPFigma-exported tagged icon (template at call site)
+### Tagged-path icon (template at call site)
 
 ```swift
 Image("icAIClose")
@@ -514,7 +340,7 @@ Image("icAIClose")
     .foregroundStyle(Color.textPrimary)
 ```
 
-### MCPFigma-exported tagged image (original, no rendering mode)
+### Tagged-path image (original, no rendering mode)
 
 ```swift
 Image("imageAIOnboardingHero")
@@ -605,11 +431,11 @@ After copy:
 
 ## Asset Rules Summary
 
-1. **Flatten first, decompose second, code last.** For non-interactive composed artwork, export the whole region via `get_screenshot`. Only break into atomic pieces when the region has interactive/dynamic children.
+1. **Flatten first, decompose second, code last.** For non-interactive composed artwork, export the whole region as a single fallback row. Only break into atomic pieces when the region has interactive/dynamic children.
 2. **Download, don't substitute.** Every icon/image from Figma. Never SF Symbols unless user asks.
-3. **Download priority: MCPFigma → REST API → MCP `get_screenshot` → MCP `download_figma_images` (imageRef only).** MCPFigma `figma_export_assets` is the default for designer-tagged nodes (`eIC*` / `eImage*`) when configured. Fall through to REST API (when `FIGMA_TOKEN` is set in shell env, for batching untagged nodes), then to `get_screenshot` (per-node, always works). `download_figma_images` is only for raster image fills.
-4. **Never convert SVG → PNG locally.** Local tools (rsvg-convert, inkscape, ImageMagick) drift from Figma rendering. Always re-export via `get_screenshot`.
-5. **Validate with `file`.** Every downloaded asset must show "PNG image data". If SVG/XML → discard, re-export via `get_screenshot`.
+3. **One tool: `figma_export_assets_unified`.** Tagged path for `eIC*`/`eImage*`, fallback path for everything else. The tool owns batching, dedup, validation, xcassets writes, and tagged→fallback auto-promotion. Don't bypass it.
+4. **Never convert SVG → PNG locally.** Tool already enforces this. If a row's `status: "failed"` reason mentions non-PNG, fix in Figma — flatten the source node so it produces raster output.
+5. **Tool validates PNG signature on every fallback row.** Skill no longer needs to run `file <path>` — but the Gate B sweep still spot-checks just in case.
 6. **3 scale variants.** Generate @2x/@1x with `sips` from the source.
 7. **Know the display size.** Read from the Figma frame; set `.frame(width:, height:)` accordingly.
 8. **Decide rendering mode.** Single-color icon → template; multi-color/logo → original.
@@ -620,4 +446,4 @@ After copy:
 13. **Light/dark variants via Contents.json `appearances`** when Figma provides both.
 14. **Remote images via project's loader.** No `AsyncImage` without user confirmation.
 15. **No new icon library dependencies.**
-16. **MCPFigma sets the imageset name; do not rename.** `icAI<Name>` and `imageAI<Name>` are immutable downstream — the SwiftUI call site references them verbatim. For MCPFigma rows, decide rendering at the call site (no `template-rendering-intent` in Contents.json).
+16. **Tagged path sets the imageset name; do not rename.** `icAI<Name>` and `imageAI<Name>` are immutable downstream — the SwiftUI call site references them verbatim. For tagged rows, decide rendering at the call site (no `template-rendering-intent` in Contents.json).

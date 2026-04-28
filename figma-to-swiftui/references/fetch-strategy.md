@@ -61,7 +61,7 @@ For one feature (single screen OR multi-screen flow), expected call counts:
 | `get_metadata` | **1 per screen (mandatory)** — needed for icon node-ID registry. Additional calls per timed-out node (circuit breaker). |
 | `get_design_context` | 1 per screen (+ extras only if split by the circuit breaker) |
 | `get_screenshot` | 1 per screen + 1 per flattened region + 1 per icon with no download URL (typical: 3–10 per screen) |
-| `get_variable_defs` | **1 total per `fileKey`**. Deduplicate across screens from the same file. |
+| `figma_extract_tokens` | **1 total per `fileKey`**. Deduplicate across screens from the same file. |
 | Code Connect lookup (if MCP exposes one) | 1 per screen — optional, skip if unavailable |
 | Code Connect register (if MCP exposes one) | 1 per newly created reusable component — optional, skip if unavailable |
 
@@ -104,7 +104,7 @@ For flows with N screens, Phase A runs **once, in a batch, for all N screens**, 
 
 1. Read source document (if any) → extract screen list and actions (Step 0).
 2. `get_metadata` on the root once, to confirm `screen → node` mapping (Step 1b).
-3. `get_variable_defs` once for the `fileKey`; stash for reuse.
+3. `figma_extract_tokens` once for the `fileKey`; stash for reuse.
 4. For each screen in the graph, in parallel where the session permits:
    - `get_design_context`
    - `get_screenshot`
@@ -146,7 +146,7 @@ The manifest makes Phase A resumable:
 ## What NOT to Do
 
 - Do not call `get_design_context` on a root/page/flow container "just to see what's there". Use `get_metadata`.
-- Do not re-run `get_variable_defs` once per screen if the screens share a `fileKey`.
+- Do not re-run `figma_extract_tokens` once per screen if the screens share a `fileKey`.
 - Do not retry a timed-out call with the same parameters.
 - Do not interleave Phase A and Phase B across screens — finish the Phase A batch first, then implement all screens in Phase B.
 - Do not skip writing the manifest — it is the only thing that makes Phase A resumable.
