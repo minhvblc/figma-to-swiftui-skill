@@ -103,18 +103,20 @@ import Lottie  // add at top of file if missing
 
 LottieView(animation: .named("placeholder_animation"))
     .playing(loopMode: .loop)
-    .frame(width: <displayW>, height: <displayH>)
+    .frame(width: 120, height: 120)
+    // Figma: eAnimLoading (3166:71000) — placeholder, replace with real Lottie filename
     // TODO: replace "placeholder_animation" with the real Lottie file name from designer.
     // Add the .json to the app bundle (drag into Xcode, "Copy items if needed").
 ```
 
 Rules:
-- Always use the literal `"placeholder_animation"` string. Do not derive from `eAnimLoading` → `"loading"` etc. — that lies to the developer.
+- Always use the literal `"placeholder_animation"` string. Do not derive from `eAnimLoading` → `"loading"` etc. — that lies to the developer (a string referenced as if it were a real asset name silently fails at runtime).
 - Always emit the `// TODO:` comment block right after the modifier chain.
+- **Always emit a `// Figma: <eAnimName> (<nodeId>) — placeholder` comment** above the TODO so the developer can map ground-truth node ↔ code without searching. Source: `registry.lottiePlaceholders[].figmaName` + `.nodeId`.
 - `import Lottie` goes at the top of the file (insert if missing). If multiple placeholders are in the same file, only one `import Lottie` is needed.
 - If the project already has a Lottie wrapper (audit in C1, e.g. `IKLottieView`, `AnimatedView`), prefer the wrapper and pass `name: "placeholder_animation"` per its API. Default to raw `LottieView` from `lottie-ios` 4.x when no wrapper exists.
 
-**Frame sizing:** read `displaySize` from the manifest row. Always set `.frame(width:height:)` explicitly — don't rely on intrinsic size of an empty Lottie view (it'd be zero).
+**Frame sizing (mandatory).** Width/height MUST come from `registry.lottiePlaceholders[].width / .height` — never guess from the parent frame, never copy from a similar screen. If those fields are null in the registry (rare; tool emits a warning), surface to the user and ask for explicit values. Don't rely on intrinsic size of an empty Lottie view (it'd be zero).
 
 **Loop mode:** default `.loop`. Other modes in the future may be inferred from designer naming convention; for now `loop` everywhere.
 

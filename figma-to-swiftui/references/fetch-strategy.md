@@ -129,9 +129,53 @@ When a source document was read in Step 0:
 
 ## Parallelism Inside Phase A
 
-- Independent endpoints on the same node can be parallelized: `get_design_context(nodeA)` + `get_screenshot(nodeA)` (+ Code Connect lookup if available) in parallel.
-- Fetches for unrelated nodes can be parallelized only if the session is not timeout-prone. If you hit any timeout this session, serialize for safety.
-- Never parallelize `get_metadata` with `get_design_context` on the same node — metadata informs whether context is safe to call.
+Phase A wall-time on a 5–8 screen flow is dominated by `get_design_context` + `get_screenshot` round-trips (~5–15s each). Sequential per-screen fetch is the #1 wall-time bottleneck. The rules below define a deterministic batch strategy that preserves the per-screen circuit breaker.
+
+### Default cluster (mandatory for flows ≥ 3 screens)
+
+Issue **one message with `parallelBudget × 2` tool calls** — `get_design_context` + `get_screenshot` for each screen in the cluster — and wait for all to land before starting the next cluster.
+
+- `parallelBudget` default = **3 screens per cluster** (6 tool calls in flight).
+- Persist `parallelBudget` in `.figma-cache/_shared/registry.json` under `fetchPolicy.parallelBudget` so re-runs stay deterministic.
+- User may override via the source document or by saying "fetch sequentially" → set `parallelBudget = 1` and note in manifest.
+- Each screen still writes its own `.figma-cache/<nodeId>/` cache + manifest entry; clusters share nothing.
+
+### Per-screen independent endpoints (always)
+
+Within a single screen, `get_design_context(nodeA)` + `get_screenshot(nodeA)` (+ Code Connect lookup, if available) are issued in the same parallel batch. They never serialize.
+
+### Same-node ordering (always)
+
+Never parallelize `get_metadata` with `get_design_context` on the **same** node — metadata informs whether context is safe to call. `get_metadata` for all screens may itself be parallelized in one cluster (it is cheap and timeout-resistant).
+
+### Cluster failure handling
+
+When a cluster lands, partition results:
+
+- **All success** → write manifest entries `phaseA: "done"` for each screen, advance to next cluster.
+- **Partial success** → succeeded screens are committed; failed screens are recorded `status: "failed"` in their manifest with the error reason, and **excluded from subsequent clusters**. Continue clustering with remaining screens.
+- **Timeout on a specific screen** → that screen drops out of the parallel path entirely. After all clusters finish, retry failed screens **one at a time using the circuit-breaker section-split** below — never retry the same parallel call shape.
+- **Auth / 401-403 (any tool, including `figma_extract_tokens`)** → STOP the entire Phase A and surface to user; this is not a per-screen issue. Do **NOT** treat `forbidden` from `figma_extract_tokens` as the "Variables API not available" case — that case is HTTP 200 with empty arrays + warnings (see "Token-extract fallback rule" below). Confusing the two leads to the agent silently proceeding without Variables data when the real fix is a token re-issue. STOP, show the verbatim error to the user, link to `references/mcpfigma-setup.md` §Troubleshooting.
+
+### Token-extract fallback rule (`figma_extract_tokens` only)
+
+`figma_extract_tokens` has three distinct outcomes. Do not collapse them:
+
+| Outcome | Signal | Allowed action |
+|---|---|---|
+| **Success** | HTTP 200, `colors[]` / `typography[]` populated, `warnings[]` empty (or per-section advisory only). | Use the returned `tokens.json` directly. |
+| **Empty (Variables API not exposed by file plan)** | HTTP 200, `colors[]` / `typography[]` empty, `warnings[]` non-empty. | Fall back to inline tokens parsed from `design-context.md` per `references/design-token-mapping.md`. Write `tokens.json` with `_note: "reconstructed from inline styles — Variables API empty + warnings"`. |
+| **Permission failure** | HTTP 401 (`unauthorized`) or HTTP 403 (`forbidden`). | **STOP**. Do NOT fall back. Surface verbatim to the user with the fix path: re-issue PAT at https://figma.com/settings with scopes `File content: Read` + `Variables: Read`, and verify the file is in the token-owner's workspace. See `references/mcpfigma-setup.md` §Troubleshooting. |
+
+The same three-outcome split applies to `figma_build_registry` and `figma_export_assets_unified` — `forbidden` is always a STOP, never a fallback trigger.
+
+### Auto-degrade on session-wide timeout pressure
+
+If two clusters in a row produce ≥ 1 timeout, halve `parallelBudget` for the rest of the run (3 → 2 → 1) and record the degrade in `fetchPolicy.degraded: true`. This keeps a flaky session from cascading.
+
+### Wall-time accounting
+
+Each screen's manifest records `timing.phaseA.startedAt` / `endedAt`; the flow-level run summary should print wall-time delta vs. theoretical sequential (sum of per-screen durations) so regressions in batch size show up immediately.
 
 ## Resume & Retry
 

@@ -12,11 +12,18 @@ How to translate Figma variables into a SwiftUI design system. **Phase A3 calls 
   "radius":  [{ "figmaName": "radius/full", "swiftName": "full", "value": 9999, "isCapsule": true }],
   "opacity": [],
   "other":   [],
+  "typography": [{
+    "figmaName": "Heading 3", "swiftName": "heading3",
+    "fontFamily": "SF Pro Rounded", "fontPostScriptName": "SFProRounded-Bold",
+    "fontWeight": 700, "fontSize": 28,
+    "lineHeightPx": 34, "letterSpacing": -0.56,
+    "textCase": "ORIGINAL", "textAlignHorizontal": "LEFT", "italic": false
+  }],
   "warnings": []
 }
 ```
 
-`warnings` non-empty + all arrays empty → file lacks Variables API access. Fall back to reading inline tokens from `design-context.md`.
+Each section (colors / numeric / typography) fails independently. `warnings` non-empty + a specific section empty = that endpoint failed; fall back to reading inline tokens from `design-context.md` for that section only. Typography requires MCPFigma ≥ 0.3.0; older binaries omit the field entirely.
 
 ## Skill's job at C2: merge with project enums
 
@@ -45,23 +52,20 @@ Figma variable "text/primary" -> Color.textPrimary
 Figma variable "surface/default" -> Color.surfaceDefault
 Figma variable "border/subtle" -> Color.borderSubtle
 
-### Adaptive Colors (Light/Dark)
+### Adaptive Colors (Light/Dark) — automated path
 
-Figma variables with mode variants (light/dark):
-- Asset Catalog: Create color set with Any Appearance + Dark Appearance
-- Code: Use @Environment(\.colorScheme) only if Asset Catalog is not an option
+For every entry in `tokens.json.colors[]` where **both** `lightHex` and `darkHex` are non-null, use `scripts/colorset-codegen.sh` to emit Asset Catalog colorsets — **never hand-write the JSON**. The script writes `<Assets.xcassets>/Colors/<swiftName>.colorset/Contents.json` with the universal (light) + dark appearances and the correct alpha extracted from the hex (`#RRGGBBAA` is honored).
 
-```swift
-// Asset Catalog approach (preferred)
-Color("textPrimary") // automatically adapts
-
-// Code approach (when needed)
-extension Color {
-    static var textPrimary: Color {
-        Color("textPrimary")
-    }
-}
+```bash
+scripts/colorset-codegen.sh .figma-cache/_shared/tokens.json <Assets.xcassets> Colors
 ```
+
+Use `Color("Colors/<swiftName>")` in views; Xcode handles the appearance switch. The colorset path is preferred over `@Environment(\.colorScheme)` branching because:
+1. iOS sets the appearance per-window (Liquid Glass, popovers, etc.) — environment branching can desync.
+2. Snapshot tests can override `.preferredColorScheme(.dark)` and the colorset still resolves.
+3. Designer dark-mode hex is preserved 1:1 from `tokens.json`; no agent typing.
+
+Light-only tokens (`darkHex == null`) stay as Color extensions in `DesignSystem/Color+Tokens.swift` (the script skips them). Mixing both is fine — the namespaced `Colors/` group keeps the asset-catalog references distinct from extension references.
 
 ## Spacing Tokens
 
@@ -150,7 +154,7 @@ Always consider Dynamic Type. Prefer .font(.headline) or .font(.body) when Figma
 
 ## Border Radius Tokens
 
-Figma corner radius variables map to CGFloat constants used with RoundedRectangle:
+Figma corner radius variables map to CGFloat constants used with RoundedRectangle. The MCPFigma `figma_extract_tokens` tool flags pill-shaped radii via `isCapsule: true` (true when value ≥ 999, designer's "full" intent). **This flag is authoritative — trust it instead of comparing the numeric value yourself.**
 
 ```swift
 enum CornerRadius {
@@ -158,11 +162,31 @@ enum CornerRadius {
     static let md: CGFloat = 8
     static let lg: CGFloat = 12
     static let xl: CGFloat = 16
-    static let full: CGFloat = 9999 // pill shape -> Capsule()
+    // Note: do NOT add a `full` case. Pill tokens go through Capsule(), not a 9999 constant.
 }
 ```
 
-When radius equals 9999 or "full", use Capsule() instead of RoundedRectangle.
+### Hard rule: `isCapsule` → `Capsule()`
+
+For every `tokens.json.radius[i]` (and `tokens.json.spacing[i]` / `opacity[i]`, where the same flag may appear) with `isCapsule: true`, codegen the SwiftUI `Capsule()` shape — never `.cornerRadius(9999)` or `RoundedRectangle(cornerRadius: 9999)`.
+
+```swift
+// ✓ correct — pill button
+Button { ... } label: { Text(Strings.cta) }
+    .frame(maxWidth: .infinity, minHeight: 48)
+    .background(Color("Colors/primary500"))
+    .clipShape(Capsule())
+
+// ✗ wrong — 9999 magic number renders identically on iPhone but breaks
+//   on shapes wider than they are tall (the rounded ends become flat).
+.cornerRadius(9999)
+```
+
+Apply the same rule to **fills, backgrounds, borders, and overlays** that use the pill token — `Capsule()` everywhere, no `RoundedRectangle`. Mixing the two on the same pill element causes 1px seams under hairline strokes.
+
+### Numeric radii (`isCapsule: false`)
+
+Use `RoundedRectangle(cornerRadius: <value>, style: .continuous)`. The `.continuous` style matches Apple's default squircle shape used in Figma's iOS template — `.circular` (the default) renders slightly different curvature.
 
 ## Shadow Tokens
 

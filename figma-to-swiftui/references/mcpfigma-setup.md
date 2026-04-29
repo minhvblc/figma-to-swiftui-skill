@@ -28,7 +28,7 @@ cd MCPFigma
 swift build -c release
 ```
 
-Binary lives at `.build/release/mcp-figma`. Server self-reports as `mcp-figma 0.2.0`.
+Binary lives at `.build/release/mcp-figma`. Server self-reports as `mcp-figma 0.3.0` — versions ≥ 0.3.0 add typography extraction (`figma_extract_tokens` now returns `tokens.json.typography[]` from `/v1/files/<key>/styles` + `/v1/files/<key>/nodes`). Older 0.2.x binaries silently skip the typography section; the skill falls back to `design-context.md` inline tokens.
 
 ---
 
@@ -217,7 +217,7 @@ Naming style:
 - Mode pairs are detected by mode name: `light` / `default` / `mode 1` → `lightHex`; `dark` → `darkHex`.
 - Color aliases (variable references) are resolved up to 4 hops; longer chains land in `warnings`.
 
-`warnings` non-empty + all tokens empty → file does not have Variables API access (plan limit or token scope). Skill falls back to reading inline tokens from `design-context.md`.
+`warnings` non-empty + all tokens empty + HTTP 200 → file does not have Variables API access (Figma plan limit). Skill falls back to reading inline tokens from `design-context.md`. **This rule applies only when the response is HTTP 200.** A `forbidden` (403) or `unauthorized` (401) error is a token-scope / file-access problem and is **NOT** a fallback trigger — STOP and ask the user to fix the token (see Troubleshooting below).
 
 ---
 
@@ -253,12 +253,17 @@ Projects with multiple `.xcassets` (per-target, per-feature, modular) cannot be 
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Missing FIGMA_ACCESS_TOKEN env var` | Env not set in MCP config | Add `"env": { "FIGMA_ACCESS_TOKEN": "..." }` to mcp.json |
-| Auth error / `unauthorized` | Token wrong or expired | Regenerate at https://www.figma.com/settings |
-| `forbidden` | Token lacks `File content read` scope or no access to the file | Re-issue with proper scope; verify file is in your workspace |
+| Auth error / `unauthorized` (HTTP 401) on any tool | Token wrong, expired, or revoked | Regenerate PAT at https://www.figma.com/settings. Skill MUST stop and ask — no fallback path is allowed for 401. |
+| `forbidden` (HTTP 403) on `figma_extract_tokens` | PAT missing `File content: Read` and/or `Variables: Read` scope, OR file is in a workspace the token-owner does not belong to | Re-issue PAT with both scopes enabled (the Variables scope is **off by default**). Verify the file opens in a browser logged in as the token-owner. Restart Claude after updating mcp config. **Do NOT fall back to inline tokens for this case** — that fallback is only for the empty-with-warnings case below. |
+| `forbidden` (HTTP 403) on `figma_build_registry` or `figma_export_assets_unified` | Same as above — token scope or workspace access | Same fix as above. STOP, do NOT improvise (do NOT enumerate sibling frames manually, do NOT swap in a substitute MCP). |
 | `notFound` | Wrong `fileKey` or `nodeId` | Re-check Figma URL; `nodeId` uses `:` not `-` |
-| `figma_build_registry` returns empty `screens` | Root is a leaf (icon or text) | Point at a parent FRAME instead |
-| Empty `taggedAssets` and `warnings` | No node in scope is tagged `eIC*`/`eImage*` | Designer needs to tag (see §9.4 in handoff) — fallback path runs anyway |
-| `figma_export_assets_unified` row `status: "failed"` reason "Output không phải PNG" | Designer published node as SVG-only with no raster | Ask designer to flatten in Figma, or accept that node won't export |
-| `figma_extract_tokens` returns empty arrays + warnings | File plan doesn't expose Variables API | Skill falls back to inline tokens from `design-context.md` |
+| `figma_build_registry` returns empty `screens[]` AND `rootNode.type` is `VECTOR` / `TEXT` / `INSTANCE` | Root is a leaf (icon, label, single component) | Point the skill at a parent FRAME instead |
+| `figma_build_registry` returns empty `screens[]` AND `rootNode.type` is `SECTION` | Section container holds the actual frames as children, but the registry tool does not currently recurse into SECTION | Surface the section's child FRAME list to the user and ask which one to point at, OR pass the parent CANVAS / PAGE node ID. **Do NOT silently enumerate the section's siblings yourself** — that bypasses the screen-detection rules (320–1024pt width range) and includes off-canvas drafts. Tracking issue: server-side recursion into SECTION should be added to MCPFigma. |
+| `figma_build_registry` returns empty `screens[]` AND `rootNode.type` is `CANVAS` / `PAGE` with > 0 FRAME children but none in 320–1024pt width range | Frames are desktop / oversize / web canvases | Ask the user which iOS frame to use, or have the designer add an iPhone-sized frame. |
+| Empty `taggedAssets` and empty `warnings` | No node in scope is tagged `eIC*`/`eImage*` | Designer needs to tag (see §9.4 in handoff) — fallback path runs anyway |
+| `figma_export_assets_unified` row `status: "failed"` reason "Output không phải PNG" | Designer published node as SVG-only with no raster | Ask designer to flatten in Figma, or accept that node won't export. **Do NOT fall back to `mcp__figma__download_figma_images`** — that path is banned per `figma-to-swiftui/SKILL.md` §"BANNED substitute MCPs". |
+| `figma_export_assets_unified` errors with `"Không tìm thấy outcome cho row"` (or any internal error not tied to an input row) | MCPFigma server bug — input rows were valid but the server failed to map a result back to a row | STOP, surface the error verbatim to the user, and ask them to file a MCPFigma issue. Do NOT fall back to a banned substitute. The skill cannot ship correct artifacts without the unified pipeline. |
+| `figma_extract_tokens` returns HTTP 200 with empty `colors[]` / `typography[]` AND `warnings[]` non-empty | Figma file plan does not expose Variables API (Free / older Starter), or no shared text styles defined | Skill falls back to inline tokens from `design-context.md` per `references/design-token-mapping.md`. Write `tokens.json` with `_note: "reconstructed from inline styles — Variables API empty + warnings"`. **This is the ONLY case where inline-token fallback is allowed.** |
 | Multiple `.xcassets` error | Project has > 1 catalog | Pass `assetCatalogPath` directly; B0 handles this |
 | Claude doesn't see the tools after install | Claude wasn't restarted | Cmd+Q and reopen |
+| `tools/list` shows `mcp__figma__get_figma_data` / `mcp__figma__download_figma_images` but not `figma_build_registry` | A different Figma MCP (Framelink / `figma-developer-mcp`) is registered instead of MCPFigma | **Do NOT use the substitute** — its output shape breaks every gate. Install MCPFigma per the steps above, then verify with `scripts/doctor.sh`. See `figma-to-swiftui/SKILL.md` §"BANNED substitute MCPs" for the full ban list. |

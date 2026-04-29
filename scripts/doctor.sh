@@ -113,9 +113,10 @@ PY
   esac
 fi
 
-# ── 3. Binary exists + executable ─────────────────────────────────────────────
+# ── 3. Binary exists + executable + responds ──────────────────────────────────
 echo
 echo "3. mcp-figma binary"
+MCP_RESPONDS=0
 if [ -z "$MCP_BIN" ]; then
   bad "No binary path to check (figma-assets not registered)"
 elif [ ! -e "$MCP_BIN" ]; then
@@ -128,6 +129,42 @@ elif [ ! -x "$MCP_BIN" ]; then
 else
   SIZE=$(stat -f%z "$MCP_BIN" 2>/dev/null || echo "?")
   ok "Binary executable (${SIZE} bytes)"
+
+  # Probe it with a real JSON-RPC handshake. The agent's "registered" check
+  # above only proves config is wired; this proves the binary actually answers
+  # tools/list AND advertises the three tools the skill depends on.
+  #
+  # The trailing `sleep 3` keeps stdin open long enough for the server to flush
+  # responses to stdout before SIGPIPE'ing on stdin close. Without it, fast
+  # exit after the last write loses the response.
+  TMP_OUT=$(mktemp -t mcpfigma-probe.XXXXXX)
+  trap 'rm -f "$TMP_OUT"' EXIT
+  {
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"doctor","version":"1"}}}'
+    printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+    sleep 3
+  } | FIGMA_ACCESS_TOKEN="${TOKEN:-stub}" "$MCP_BIN" >"$TMP_OUT" 2>/dev/null
+
+  REQUIRED_TOOLS=( figma_build_registry figma_extract_tokens figma_export_assets_unified )
+  MISSING_TOOLS=""
+  for t in "${REQUIRED_TOOLS[@]}"; do
+    grep -q "\"$t\"" "$TMP_OUT" 2>/dev/null || MISSING_TOOLS="$MISSING_TOOLS$t "
+  done
+
+  if [ -s "$TMP_OUT" ] && [ -z "$MISSING_TOOLS" ]; then
+    SERVER_VER=$(grep -oE '"version":"[0-9.]+"' "$TMP_OUT" | head -1 | sed 's/"version":"//;s/"//')
+    ok "Binary responds to JSON-RPC and advertises all 3 required tools (mcp-figma ${SERVER_VER:-?})"
+    MCP_RESPONDS=1
+  elif [ ! -s "$TMP_OUT" ]; then
+    bad "Binary did not respond to tools/list within 3s"
+    hint "Try running it manually to see startup errors:"
+    hint "  FIGMA_ACCESS_TOKEN=stub \"$MCP_BIN\" </dev/null"
+  else
+    bad "Binary responded but missing required tools: $MISSING_TOOLS"
+    hint "MCPFigma version may be < 0.3.0 (typography missing) or build is corrupted"
+    hint "Re-run scripts/install.sh to refresh the binary"
+  fi
 fi
 
 # ── 4. FIGMA_ACCESS_TOKEN works ───────────────────────────────────────────────
@@ -152,12 +189,17 @@ else
   esac
 fi
 
-# ── 5. figma-desktop MCP registered ───────────────────────────────────────────
+# ── 5. figma-desktop MCP registered (with substitute detection) ───────────────
 echo
 echo "5. figma-desktop MCP"
 if [ -z "$CONFIG_FOUND" ]; then
   bad "No config to check"
 else
+  # Categorize every figma-shaped MCP server in config:
+  #   - figma-assets               → MCPFigma (already covered in step 2)
+  #   - figma-desktop / mcp.figma.com URLs / matches Figma's official server  → REQUIRED
+  #   - figma-developer-mcp / Framelink                                       → BANNED
+  #   - anything else with "figma" in name                                    → UNKNOWN
   FD_INFO=$(python3 - "$CONFIG_FOUND" <<'PY' 2>/dev/null
 import json, sys
 try:
@@ -166,19 +208,70 @@ except Exception:
     print("ERR")
     sys.exit(0)
 servers = cfg.get("mcpServers", {})
-# figma-desktop or any server that exposes get_design_context-style tools
-candidates = [k for k in servers if "figma" in k.lower() and k != "figma-assets"]
-if not candidates:
-    print("MISSING")
+
+required = []   # likely figma-desktop (official)
+banned   = []   # known substitutes
+unknown  = []   # something figma-shaped we don't recognize
+
+for name, spec in servers.items():
+    if name == "figma-assets":
+        continue
+    if "figma" not in name.lower():
+        continue
+    blob = json.dumps(spec).lower()
+    # Required: official figma-desktop server. Recognize via:
+    #   - server name containing "desktop"
+    #   - URL pointing to mcp.figma.com (HTTP transport)
+    #   - command name matching figma-mcp-server / figma-desktop-mcp
+    is_official = (
+        "desktop" in name.lower()
+        or "mcp.figma.com" in blob
+        or "figma-mcp-server" in blob
+        or "figma-desktop" in blob
+    )
+    # Banned: known substitute MCPs
+    is_banned = (
+        "figma-developer-mcp" in blob
+        or "framelink" in blob
+        or name.lower() in ("figma", "figma-mcp")  # bare "figma" → usually Framelink
+        and not is_official
+    )
+    if is_official:
+        required.append(name)
+    elif is_banned:
+        banned.append(name)
+    else:
+        unknown.append(name)
+
+if banned:
+    print("BANNED", ",".join(banned))
+elif required:
+    print("OK", ",".join(required))
+elif unknown:
+    print("UNKNOWN", ",".join(unknown))
 else:
-    print("OK", ",".join(candidates))
+    print("MISSING")
 PY
 )
   case "$FD_INFO" in
     "MISSING")
       bad "No figma-desktop MCP detected (only figma-assets is registered)"
       hint "Install per https://developers.figma.com/docs/figma-mcp-server/"
-      hint "Without it, the skill cannot fetch get_design_context / get_screenshot — Pass 2 + C5 will not run"
+      hint "Without it the skill MUST stop — get_design_context / get_screenshot / get_metadata are required"
+      hint "Do NOT install Framelink / figma-developer-mcp as a substitute — it is BANNED (incompatible artifacts)"
+      ;;
+    BANNED*)
+      NAMES=$(echo "$FD_INFO" | cut -d' ' -f2-)
+      bad "Banned substitute Figma MCP registered: $NAMES"
+      hint "Known substitutes (e.g. figma-developer-mcp / Framelink) produce incompatible artifacts"
+      hint "Remove from $CONFIG_FOUND and install figma-desktop MCP per https://developers.figma.com/docs/figma-mcp-server/"
+      hint "See figma-to-swiftui/SKILL.md §\"BANNED substitute MCPs\" for why this matters"
+      ;;
+    UNKNOWN*)
+      NAMES=$(echo "$FD_INFO" | cut -d' ' -f2-)
+      bad "Unrecognized Figma MCP registered ($NAMES) — could not verify it is figma-desktop"
+      hint "If this is the official figma-desktop server, rename it to include 'desktop' so doctor recognizes it"
+      hint "If it is a third-party server, it is likely BANNED — see figma-to-swiftui/SKILL.md §\"BANNED substitute MCPs\""
       ;;
     OK*)
       NAMES=$(echo "$FD_INFO" | cut -d' ' -f2-)

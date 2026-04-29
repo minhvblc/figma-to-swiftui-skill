@@ -30,7 +30,7 @@ Every visible icon, logo, illustration, image, and decorative graphic in the scr
 - iOS system chrome the user explicitly said to keep system-default (back chevron in NavigationStack toolbar, share sheet icons)
 - The user explicitly tells you to substitute for a missing asset
 
-**Failure-mode self-check.** If you catch yourself thinking *"SF Symbol is close enough"*, *"the user won't notice"*, *"I'll skip the pipeline this time"*, *"there's no FIGMA_TOKEN so I can't download"*, or *"I'll mark this as approximation in the summary"* — **STOP**. That is the exact failure mode this skill exists to prevent. Go run Phase B via `figma_export_assets_unified` (MCPFigma). If MCPFigma is not connected, STOP and ask the user to install it — do not silently downgrade to substitutions.
+**Failure-mode self-check.** If you catch yourself thinking *"SF Symbol is close enough"*, *"the user won't notice"*, *"I'll skip the pipeline this time"*, *"there's no FIGMA_TOKEN so I can't download"*, *"the third-party Figma MCP gives me roughly the same data, I'll use it just for this run"*, *"I'll mark this as approximation in the summary"*, or *"I had to flex the non-negotiables"* — **STOP**. That is the exact failure mode this skill exists to prevent. Go run Phase B via `figma_export_assets_unified` (MCPFigma). If MCPFigma is not connected, STOP and ask the user to install it — do not silently downgrade to substitutions. **Disclosing the bypass in the final summary does not redeem it** — the rule is "STOP and surface BEFORE acting", not "act first and confess after". A run that ships with the "non-negotiables flexed" disclaimer is a failed run, not a successful one with a footnote.
 
 If an asset truly cannot be fetched (node missing from Figma, MCP returns error after retry), **STOP and tell the user** — do not improvise. Improvisation = task failure.
 
@@ -64,14 +64,29 @@ Figma frames often include a mockup of iOS system chrome (status bar, Dynamic Is
 | `figma-desktop` (official) | `get_metadata`, `get_design_context`, `get_screenshot`, `get_variable_defs` | Reads design spec, FRAME screenshot, design context, raw variable defs from the open Figma file. |
 | `figma-assets` (MCPFigma) | `figma_build_registry`, `figma_extract_tokens`, `figma_export_assets_unified` (and legacy `figma_list_assets` / `figma_export_assets` — **do not use, see Step 5 of flow skill**) | Discovers screen graph, extracts SwiftUI-ready tokens, exports per-node PNG assets into `Assets.xcassets`. |
 
-Connection check (mandatory, **probe first** — do not ask upfront):
+### BANNED substitute MCPs (do NOT use as a fallback)
 
-1. Call `get_metadata` on the target node (or current selection). Failure → figma-desktop MCP missing → STOP, ask user to install/connect.
+These third-party Figma MCP servers expose superficially-similar tools but produce **incompatible artifacts**. They MUST NOT be used as a substitute for the two required servers above, even when the required ones are missing. Detect-and-STOP, do not silently degrade:
+
+| Tool name (substring match) | Origin | Why banned |
+|---|---|---|
+| `mcp__figma__get_figma_data` | `figma-developer-mcp` (Framelink) | Returns raw REST JSON; not the JSX/Tailwind output that `design-context.md` requires; downstream prefill scripts (`c3-pass2-prefill.sh`) and the C3 Pass 1 banned-phrase grep cannot read it. |
+| `mcp__figma__download_figma_images` | `figma-developer-mcp` (Framelink) | Renders raw PNGs but skips the tagged-asset naming convention (`icAI*` / `imageAI*`), the `_shared/assets/` dedup, the imageset emission, and the lottie-placeholder routing that `figma_export_assets_unified` performs. Result: the agent then hand-builds imagesets, which violates Phase B's "single source of truth" rule. |
+| Any tool named `mcp__figma_*__*` whose server is not `figma-desktop` or `figma-assets` | various | Same blast radius — the gates and Pass 2/C3/C5 reports assume artifacts produced by the required servers. |
+
+If any of these tools appear in the available tool list AND `get_design_context` / `figma_build_registry` are missing → **STOP**. Tell the user verbatim: *"Banned substitute MCP detected (`<tool name>`). The skill requires `figma-desktop` MCP and `figma-assets` (MCPFigma). Install both per `references/mcpfigma-setup.md` and `references/figma-mcp-setup.md`. I will not improvise."* Do not call the banned tool, even once, to "see what's there".
+
+The agent's own thought *"the third-party MCP gives me roughly the same data, I'll use it just for this run"* is the exact failure mode this rule exists to prevent. Output may compile and screenshot well, but the artifacts on disk are wrong shape and every subsequent gate (C3 Pass 1, Pass 2, Pass 4) loses its grounding.
+
+### Connection check (mandatory, probe first — do not ask upfront)
+
+1. Call `get_metadata` on the target node (or current selection) **using the figma-desktop MCP namespace explicitly** (e.g. `mcp__figma-desktop__get_metadata`, not the bare `get_metadata` from a third-party server). Failure → figma-desktop MCP missing → STOP, ask user to install/connect.
 2. Call `figma_build_registry(fileKey, nodeId, depth=10)` (Step A2). Failure with "tool not registered" → MCPFigma missing → STOP, ask user to install per `references/mcpfigma-setup.md`.
+3. **Sanity-check the response shape**, not just the HTTP/JSON-RPC success. `get_design_context` MUST return the JSX/Tailwind block headed by `## Design context for "<node-name>"` — if the response is a plain JSON tree, you are talking to a banned substitute MCP, not figma-desktop. STOP per the rule above. Same for `figma_build_registry`: response MUST contain `rootNode`, `screens`, `taggedAssets`, `lottiePlaceholders`, `warnings` keys (see `references/mcpfigma-setup.md` §"figma_build_registry").
 
 **If only one of the two is connected → STOP. Do not improvise a fallback.** Specifically:
-- Missing `get_screenshot` / `get_design_context` → no Pass 2 / C5 visual diff is possible; agent MUST NOT proceed by "reading metadata + guessing styles". That is exactly the failure mode banned above.
-- Missing `figma_build_registry` / `figma_export_assets_unified` → Phase B asset pipeline cannot run; agent MUST NOT fall back to `Image(systemName:)` or hand-drawn shapes.
+- Missing `get_screenshot` / `get_design_context` → no Pass 2 / C5 visual diff is possible; agent MUST NOT proceed by "reading metadata + guessing styles" or by swapping in a banned substitute MCP. That is exactly the failure mode banned above.
+- Missing `figma_build_registry` / `figma_export_assets_unified` → Phase B asset pipeline cannot run; agent MUST NOT fall back to `Image(systemName:)`, to hand-drawn shapes, or to `mcp__figma__download_figma_images` for "just downloading the PNGs and writing imagesets manually".
 
 Other inputs:
 - Figma URL `figma.com/design/:fileKey/:fileName?node-id=...`, or current selection in figma-desktop MCP (no URL needed)
@@ -134,11 +149,11 @@ This check is mandatory before Step A3 batch fetch — if you don't run it, you 
 
 ### Step A3 — Batch Fetch Spec
 
-Run in parallel where possible; save to `.figma-cache/<nodeId>/`:
+For a single screen, issue calls 1+2+4 in **one parallel message** (`get_design_context` + `get_screenshot` + `get_metadata` on the same node land independently). Call 3 (`figma_extract_tokens`) is per-`fileKey` — issue it once and reuse via symlink. For multi-screen flows, the flow skill clusters across screens (default 3 screens × 2 calls per cluster); see [references/fetch-strategy.md](references/fetch-strategy.md) §"Parallelism Inside Phase A". Save to `.figma-cache/<nodeId>/`:
 
 1. `get_design_context(fileKey, nodeId, prompt="generate for iOS using SwiftUI")` → `design-context.md` *(figma-desktop MCP)*
 2. `get_screenshot(fileKey, nodeId)` at **scale 3** (fine details visible) → `screenshot.png` *(figma-desktop MCP — this is the FRAME screenshot used for visual diff in C3 Pass 2 and C5; it is NOT an asset. Per-asset PNG export happens in Phase B via `figma_export_assets_unified`.)*
-3. `figma_extract_tokens(fileKey)` → `tokens.json` *(MCPFigma — once per `fileKey`, dedup by copying/symlinking)*. This replaces `get_variable_defs` + manual SwiftUI naming. Output already has `swiftName`, `lightHex`/`darkHex`, `isCapsule` for radius. Empty `colors`+`spacing`+… with non-empty `warnings` = file has no Variables API access; fall back to reading `design-context.md` inline tokens at C2.
+3. `figma_extract_tokens(fileKey)` → `tokens.json` *(MCPFigma 0.3.0+ — once per `fileKey`, dedup by copying/symlinking)*. This replaces `get_variable_defs` + manual SwiftUI naming. Output has `swiftName`, `lightHex`/`darkHex`, `isCapsule` for radius, plus a `typography[]` array (sourced from `/v1/files/<key>/styles` + `/v1/files/<key>/nodes`) carrying `fontFamily`, `fontPostScriptName`, `fontWeight`, `fontSize`, `lineHeightPx`, `letterSpacing`, `textCase`, `textAlignHorizontal`, `italic`. Each pass (variables, typography) fails independently — empty + non-empty `warnings` for one section means fall back to `design-context.md` inline tokens for that section only.
 4. `get_metadata(fileKey, nodeId)` → `metadata.json` *(figma-desktop MCP — kept for design-context cross-ref in Phase C; A2's registry handles asset discovery)*
 5. Optional: Code Connect mapping — only if your Figma MCP exposes such a tool. Skip silently if unavailable.
 
@@ -207,33 +222,60 @@ Inline English literals (`Text("Continue")`, `Text("Welcome")`) in view files ar
 
 Read `tokens.json` (from A3 `figma_extract_tokens`). Generate **read-only** Swift token files in the project's `DesignSystem/` directory. Files are auto-generated; never edit by hand:
 
-1. **`DesignSystem/Color+Tokens.swift`** — one extension on `Color` per token. Figma slash names map to Swift via `swiftName` field. Each declaration carries a `// Figma: <token-name>` comment.
+1. **Color tokens** — split by mode coverage:
+
+   **1a. Dual-mode tokens (`lightHex` AND `darkHex` both present in `tokens.json`)** — emit Asset Catalog colorsets via:
+   ```bash
+   scripts/colorset-codegen.sh .figma-cache/_shared/tokens.json <Assets.xcassets> Colors
+   ```
+   Each token becomes `<Assets.xcassets>/Colors/<swiftName>.colorset/Contents.json` with universal (light) + dark appearances. Use `Color("Colors/<swiftName>")` in views — Xcode auto-adapts to the user's appearance setting. This avoids manual `@Environment(\.colorScheme)` branching and prevents the common "dark mode lệch" failure.
+
+   **1b. Light-only tokens (`darkHex` is null)** — emit `DesignSystem/Color+Tokens.swift` with one Color extension per token:
 
    ```swift
    extension Color {
-       static let primary1000 = Color(red: 0x3B/255, green: 0x7B/255, blue: 0xFD/255)  // Figma: Primary/1000
        static let lightText900 = Color(red: 0x1A/255, green: 0x1A/255, blue: 0x1A/255)  // Figma: Light/Text/900
        // ...
    }
    ```
 
-2. **`DesignSystem/AppFont.swift`** — one static method per Figma typography token. Use the exact `family / weight / size / lineHeight / letterSpacing` from the token. Do NOT consolidate fonts ("close enough"); preserve every distinct token.
+   The colorset script skips light-only tokens (it only emits dual-mode entries), so the two outputs never collide. Use `Color.lightText900` for these.
+
+2. **`DesignSystem/AppFont.swift`** — one static method per Figma typography token. Source: `tokens.json.typography[]` (MCPFigma 0.3.0+ — emitted by `figma_extract_tokens` from Figma's `/styles` + `/nodes` text styles). Each entry carries `family / postScriptName / weight / size / lineHeightPx / letterSpacing / textCase / italic`. Do NOT consolidate fonts ("close enough"); preserve every distinct token.
 
    ```swift
    enum AppFont {
-       /// Figma: Heading 3 28px — SF Pro Rounded Bold 28 / lh 1.3
-       static func heading3() -> Font { .system(size: 28, weight: .bold, design: .rounded) }
-       /// Figma: Body Normal 18px Regular — SF Pro Rounded Regular 18 / lh 1.7
-       static func body18() -> Font { .system(size: 18, weight: .regular, design: .rounded) }
+       /// Figma: Heading 3 — SFProRounded-Bold 28 / lh 34 / tracking -0.56
+       static func heading3() -> Font {
+           Font.custom("SFProRounded-Bold", size: 28)
+       }
+       static let heading3LineSpacing: CGFloat = 34 - 28      // lineHeightPx − fontSize
+       static let heading3Tracking:    CGFloat = -0.56
+
+       /// Figma: Body 18 — SFProRounded-Regular 18 / lh 30
+       static func body18() -> Font {
+           Font.custom("SFProRounded-Regular", size: 18)
+       }
+       static let body18LineSpacing: CGFloat = 30 - 18
        // ...
    }
    ```
+
+   Apply to text views:
+   ```swift
+   Text(Strings.Welcome.title)
+       .font(AppFont.heading3())
+       .lineSpacing(AppFont.heading3LineSpacing)
+       .tracking(AppFont.heading3Tracking)
+   ```
+
+   If `tokens.json.typography[]` is empty **AND** `tokens.json.warnings[]` shows the section ran cleanly (HTTP 200, just no shared styles), fall back to the inline `## These styles are contained in the design` block of `design-context.md`. Empty + non-empty `warnings` from the typography pass = degrade gracefully and surface to the user. **403 / 401 from the typography pass is NOT a fallback case** — STOP, ask the user to fix token scope (same rule as the colors pass; see "MCPFigma edge cases" below).
 
 3. **`DesignSystem/Spacing.swift`** — only emit cases that actually appear in tokens. Do NOT add a generic 8pt grid (`xxs/xs/s/m/l/xl…`) unless those literal values exist in `tokens.json`.
 
 **Hard rule from this point onward**: every `Color(...)`, `.font(...)`, padding/spacing literal in a generated view file MUST come from these enums OR carry an explicit `// Figma: <node-id>` comment justifying the inline value (rare — typically one-off layout positions). Made-up tokens (`surfaceCard`, `textTertiary`, `cardGap` without a Figma source) are **banned** by C3 Pass 1 review.
 
-If `tokens.json` is missing or has empty `colors[]` despite the file having a Variables API → fall back to inline tokens parsed from `design-context.md`'s "These styles are contained in the design: …" block. Never invent.
+If `tokens.json` has empty `colors[]` **and** the run reported HTTP 200 (warnings non-empty, errors empty) → fall back to inline tokens parsed from `design-context.md`'s "These styles are contained in the design: …" block. Never invent. If `tokens.json` is **missing entirely** OR the run reported `forbidden` / `unauthorized` → **STOP**, do NOT invent and do NOT fall back; this is a token-scope or file-access issue per `references/mcpfigma-setup.md` §Troubleshooting.
 
 ### Step B0 — Read registry, pin asset catalog
 
@@ -366,6 +408,17 @@ Key notes:
 - Each `nodeId` appears exactly once — auto-promotion happens inside the tool, the row just reports its final `exporter` value.
 - A row with `status: "failed"` → tell the user the `reason`, do not silently drop. Re-run after fixing the cause.
 
+**Resume on partial failure (mandatory).** If a previous `figma_export_assets_unified` call left some rows `failed` (network blip, transient 5xx), do **NOT** resubmit the full row list. Read `manifest.rows[].status` and rebuild the `rows` argument from only `status != "done"` entries (`failed`, plus any not yet attempted). The tool's per-row dedup + `skipIfExistsInCatalog: true` would silently skip already-imported imagesets, but resubmitting wastes round trips and blows the call budget on flows of 30+ assets. Pseudocode:
+
+```python
+m = json.load(open(".figma-cache/<nodeId>/manifest.json"))
+done    = {r["nodeId"] for r in m.get("rows", []) if r.get("status") == "done"}
+pending = [orig_row for orig_row in original_rows if orig_row["nodeId"] not in done]
+# resubmit only `pending`; merge new results back into manifest.rows by nodeId
+```
+
+Idempotency contract: every row must keep its original `exporter` / `strategy` / `exportName` on resubmit so the merged manifest stays consistent. If you change those fields between attempts, treat it as a fresh row (full resubmit) and clear the old entry.
+
 ### Gate B — Phase B Exit (BASH, mandatory and STRICT)
 
 You MUST run this. If it does not print `GATE: PASS`, you may NOT write any `.swift` file. Improvising assets is a hard violation.
@@ -463,6 +516,11 @@ Goal: SwiftUI code that matches the screenshot pixel-for-pixel, using only asset
    List each enum's available cases (greps `case <token>` lines). Stash in run flags `hasSpacingEnum`, `hasIKFont`, `hasIKCoreApp` plus the case lists. C2 routes Figma values through these per `references/swiftui-pro-bridge.md` §7.
 7. **Lottie SDK** — grep `import Lottie` or `Package.resolved` for `lottie-ios`. If present → flag `hasLottieSDK = true`; eAnim* placeholders codegen `LottieView`. Else warn user before C2 starts (see `references/lottie-placeholders.md` §9).
 8. **swiftui-pro snapshot present** — confirm `references/swiftui-pro/SOURCE.md` exists. Skill MUST read at minimum `references/swiftui-pro/api.md`, `views.md`, `data.md`, `accessibility.md` before C2; full set on demand. Bridge: `references/swiftui-pro-bridge.md`.
+9. **Project color audit (mandatory).** Run:
+   ```bash
+   scripts/c1-project-color-audit.sh <project-root> .figma-cache/_shared/project-colors.json
+   ```
+   Emits a `{hex, swiftPath, source, lightHex, darkHex}` map of every color already in the project (Asset Catalog colorsets + `Color.<name>` extensions + `Color(hex:)` literals). C2 routing prefers this map over inventing new tokens: when a Figma hex matches a project entry, codegen `<swiftPath>` directly. Without the audit the agent eyeballs the project, misses matches, and emits parallel tokens that drift over time.
 
 **Print resolved flags at end of C1** so the user can verify routing decisions before any code is written:
 
@@ -477,6 +535,7 @@ hasLottieSDK             = <bool>
 deploymentTarget         = iOS <N>
 localizationStyle        = xcstrings | strings
 darkModeScope            = enabled | disabled | unspecified
+projectColorMap          = .figma-cache/_shared/project-colors.json (<N> entries)
 ```
 
 **Visual Inventory (mandatory).** Follow `references/visual-fidelity.md` §1–3. Every visible element → row with source tag `[tokens|inline|class|screenshot]`. Never skip `lineHeight`, `letterSpacing`, `shadow`, `border`, `renderingMode`.
@@ -501,6 +560,8 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 **Critical rules:**
 - MCP output = spec, not code. Parse values (see `references/visual-fidelity.md` §1), build native SwiftUI.
 - **Token usage.** `tokens.json` (from `figma_extract_tokens` in A3) already has `swiftName`, `lightHex`, `darkHex`, `isCapsule`. Use those directly — do NOT re-derive names from Figma slash strings. Then merge with project enums (`Spacing`, `IKFont`, `IKCoreApp`) per the routing rules below: prefer existing enum case → fallback to extracted token → inline literal as last resort.
+- **`isCapsule` → `Capsule()` (hard rule).** For any radius/spacing token with `isCapsule: true` in `tokens.json`, codegen `.clipShape(Capsule())` (and `Capsule()` for fills/backgrounds/overlays) — never `.cornerRadius(9999)` or `RoundedRectangle(cornerRadius: 9999)`. Magic-number 9999 renders correctly only when width ≈ height; pills wider than tall flatten the ends. See `references/design-token-mapping.md` §"Border Radius Tokens".
+- **Dual-mode colors → Asset Catalog.** Run `scripts/colorset-codegen.sh .figma-cache/_shared/tokens.json <Assets.xcassets> Colors` to emit colorsets for every token with both `lightHex` and `darkHex`; reference them via `Color("Colors/<swiftName>")`. Light-only tokens stay as `Color.<swiftName>` extensions in `DesignSystem/Color+Tokens.swift`. Never hand-write the colorset JSON — the script preserves alpha and namespace correctly.
 - `Text` → `LocalizedStringKey`; `Text(verbatim:)` for dynamic data.
 - `Color(hex:)` only if project has the extension; else Asset Catalog or `Color(red:green:blue:)`.
 - Respect iOS deployment target — don't use iOS 17+ APIs if target lower.
@@ -556,9 +617,9 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 Mental walk-throughs are too easy to fake. Pass 2 produces a verifiable artifact: `.figma-cache/<nodeId>/c3-pass2-diff.md`, written using the template in `references/verification-loop.md` §1.
 
 Procedure:
-1. Open `screenshot.png` and `design-context.md` side by side.
-2. For every check code (LH, LS, SH, BD, OP, RM, IS, DV, BG, TR, GR, SA, CH, PD, BS — defined in `references/visual-fidelity.md` §5) walk every section of the screen.
-3. Write one Findings row per check with: `Source quote` (verbatim from design-context.md or inventory — no paraphrasing), `Code value` (verbatim SwiftUI modifier), `File:Line` (real line in a generated swift file), `Match` (PASS/FAIL/N/A), `Severity` (high/medium/low for FAIL).
+1. **Prefill mechanical rows first** (recommended): run `scripts/c3-pass2-prefill.sh <nodeId>`. This writes 8 rows decided by grep (CH, PD, GR, DV, BG, TR, SA, BS) and 7 TODO rows for the Figma-grounded checks (LH, LS, SH, BD, OP, RM, IS) — see `references/verification-loop.md` §4.0.
+2. Open `screenshot.png` and `design-context.md` side by side.
+3. Walk every section of the screen. Replace each TODO row with `Source quote` (verbatim from design-context.md or inventory — no paraphrasing), `Code value` (verbatim SwiftUI modifier), `File:Line` (real line in a generated swift file), `Match` (PASS/FAIL/N/A), `Severity` (high/medium/low for FAIL). Flip any prefilled PASS/NA to FAIL if the script's mechanical decision was wrong for this screen.
 4. Every check letter must appear ≥1 time. No instance on screen → one N/A row with reason. Minimum 12 rows total.
 
 Then run **Gate C3-Pass2** (BASH, mandatory). Full block + 6 anti-hallucination checks: `references/verification-loop.md` §4.1.
@@ -734,6 +795,14 @@ for h in $USED; do
   echo "$NAMES" | grep -qx "$h" || echo "ORPHAN: Image(\"$h\") not in manifest"
 done
 
+# (a2) Inverse — every manifest asset must be referenced by at least one Image("...") in code.
+# Orphan assets bloat the catalog and usually mean the agent extracted a node it later flattened away.
+# This is a WARNING, not a FAIL: the user decides whether to remove or keep the unused entry.
+for n in $NAMES; do
+  [ -z "$n" ] && continue
+  echo "$USED" | grep -qx "$n" || echo "UNUSED: manifest entry $n not referenced by any Image(\"...\")"
+done
+
 # (b) Every lottie-placeholder row must have a matching LottieView call.
 PLACEHOLDER_COUNT=$(python3 -c "
 import json
@@ -767,6 +836,7 @@ After C3 finishes (Pass 2 clean report, Pass 3/3b grep clean, C4 assets copied),
 - `no_project` — no `.xcodeproj` / `.xcworkspace` after walking up 3 levels.
 - `simctl_error` — `xcrun simctl` errors (no simulator runtime, Xcode CLT missing, etc.).
 - `ci_environment` — `CI=true` or `GITHUB_ACTIONS=true` env var present (no GUI simulator in CI).
+- `no_entry_path` — screen is not the launch screen, no existing `#Preview` / scheme / test target reaches it, and no driver (`ios-simulator-verify` skill or `computer-use` MCP) is available. Adding a launch-arg / env-var route override to the binary is **banned** — see `references/verification-loop.md` §"C5 Verification Integrity".
 
 User phrases like `skip C5`, `bỏ qua C5`, `no build`, `không cần build` are NOT honored — the agent must explain the Done-Gate (Key Principle #12) and proceed with C5 anyway. The only legitimate way to bypass is one of the three system reasons above.
 
@@ -804,7 +874,9 @@ Check manifest. `phaseA` and `phaseB` both `done` → skip to Phase C. Some `fai
 - **Lottie placeholder (`eAnim*`) — Lottie SDK missing.** C1 project pre-flight should detect whether `lottie-ios` is in dependencies. If not, surface before C2: *"Lottie SDK not detected — add `lottie-ios` (Airbnb) via SPM or CocoaPods, or convert these placeholders to static images."* Do NOT auto-install; do NOT silently swap in `Image(systemName:)`. See `references/lottie-placeholders.md` §9.
 - **Lottie placeholder inside a flatten region.** The flattened parent exports as a static raster (animation is frozen in one frame). The placeholder `LottieView` overlays on top in `ZStack`. Tell the user the artwork would be cleaner if the designer pulled the `eAnim*` node out of the flatten region.
 - **Custom Lottie wrapper in project.** If C1 audit finds `IKLottieView`/`AnimatedView`/etc., prefer the wrapper at C2 codegen. The placeholder name string `"placeholder_animation"` stays unchanged.
-- **Variables API not available** (Figma file is not on a plan that exposes Variables, or token has no scope). `figma_extract_tokens` returns empty arrays + a `warnings[]` entry. Skill falls back to reading inline tokens from `design-context.md` per `references/design-token-mapping.md` General Rules.
+- **Variables API not available** (Figma file is not on a plan that exposes Variables — Free / older Starter). `figma_extract_tokens` returns empty arrays + a `warnings[]` entry **with HTTP 200**. Only this case is allowed to fall back to reading inline tokens from `design-context.md` per `references/design-token-mapping.md` General Rules. The fallback writes a `tokens.json` with `_note: "reconstructed from inline styles — Variables API empty + warnings"` so downstream gates can see it was a fallback.
+- **`figma_extract_tokens` returns `forbidden` (HTTP 403)** — this is **NOT** the "Variables API not available" case. It means the PAT is missing the `File content read` scope and/or `variables:read` scope, OR the file is in a workspace the token-owner does not belong to. **STOP**. Do NOT fall back to inline tokens — that path is reserved for the empty-with-warnings case. Tell the user to re-issue their token at https://figma.com/settings (scopes: File content `Read`, Variables `Read`) per `references/mcpfigma-setup.md` §Troubleshooting. Same rule for `unauthorized` (HTTP 401) — STOP, do not fall back.
+- **`figma_build_registry` returns empty `screens[]`** — root may be a leaf (icon / text node) **or** a `SECTION` container holding the actual frames. Inspect `rootNode.type`. If `SECTION`, the registry tool has not recursed into its children: surface to the user with the section's child FRAME list and ask which one to point the skill at, or pass the parent CANVAS / PAGE node ID. Do NOT silently substitute by enumerating the section's siblings yourself — that bypasses A2's screen-detection rules (320-1024pt width range) and lands you with stray non-screen frames.
 
 ## Strongly recommended hooks (hard enforcement)
 
@@ -814,7 +886,7 @@ These hooks turn the in-skill gates into OS-level enforcement. Without them, gat
 
 2. **PostToolUse hook — auto-run Gate C3-Pass2 on `c3-pass2-diff.md` write.** Saves one round-trip per attempt and surfaces structural bugs immediately.
 
-3. **Stop hook — block session termination when C5 not satisfied.** Reads `manifest.verification.c5`. Allows stop only when `gate == "PASS"` OR `skipped` is set to one of `no_project`, `simctl_error`, `ci_environment`. Otherwise prints to the agent: *"Done-Gate violated (Key Principle #12). Run C5 or set a system skip reason before declaring done."* This is the OS-level twin of Principle #12 and the strongest fix for "agent says done but C5 was never run".
+3. **Stop hook — block session termination when C5 not satisfied.** Reads `manifest.verification.c5`. Allows stop only when `gate == "PASS"` OR `skipped` is set to one of `no_project`, `simctl_error`, `ci_environment`, `no_entry_path`. Otherwise prints to the agent: *"Done-Gate violated (Key Principle #12). Run C5 or set a system skip reason before declaring done."* This is the OS-level twin of Principle #12 and the strongest fix for "agent says done but C5 was never run".
 
 Ask the assistant to set them up via the `update-config` skill.
 
@@ -831,7 +903,7 @@ Ask the assistant to set them up via the `update-config` skill.
 9. **Flatten composed artwork.** Don't reassemble atoms via `.offset()`. When in doubt → flatten.
 10. **Two-MCP split is mandatory.** `get_screenshot(nodeId)` (figma-desktop MCP) gives the FRAME screenshot used by Pass 2 / C5 visual diff — never use it as an asset exporter. Per-asset PNG export goes through `figma_export_assets_unified` (MCPFigma). If either MCP is missing → STOP and ask the user; never improvise a substitute.
 11. **Verification produces artifacts.** Pass 2 writes a structured diff report; C5 captures a simulator screenshot and writes a visual diff report. Both are gated and feed a self-fix loop. Mental walk-throughs are not enough — the agent can lie, but `file <path>` cannot.
-12. **Done-Gate.** A task is NOT complete until either `manifest.verification.c5.gate == "PASS"` OR `manifest.verification.c5.skipped` is set to one of `no_project`, `simctl_error`, `ci_environment`. Stating "done" / "implemented" / "xong" / "ship it" without one of these is a protocol violation. The agent MUST surface the C5 status (PASS, FAIL, or SKIPPED with reason) in its final user-facing message — see the **Verification summary** template below.
+12. **Done-Gate.** A task is NOT complete until either `manifest.verification.c5.gate == "PASS"` OR `manifest.verification.c5.skipped` is set to one of `no_project`, `simctl_error`, `ci_environment`, `no_entry_path`. Stating "done" / "implemented" / "xong" / "ship it" without one of these is a protocol violation. The agent MUST surface the C5 status (PASS, FAIL, or SKIPPED with reason) in its final user-facing message — see the **Verification summary** template below.
 
 ## Verification summary (mandatory final block)
 

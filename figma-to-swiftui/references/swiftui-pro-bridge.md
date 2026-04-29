@@ -53,13 +53,14 @@ If the project's xcstrings symbols haven't been generated yet, fall back to `Tex
 ### 1e. Re-using project tokens — search order
 
 For every Figma value (color, font, spacing, radius, animation), search project in this order:
-1. `IKCoreApp.colors.*`, `IKCoreApp.spacing.*`, etc. — top-level app tokens
-2. `Spacing.*`, `IKFont.*` — domain-specific enums
-3. Asset catalog symbol (`Color(.x)` if `useGeneratedSymbols`)
-4. Local computed constant in the same module
-5. Inline literal (last resort)
+1. **Project color audit map** (`.figma-cache/_shared/project-colors.json`, emitted by `scripts/c1-project-color-audit.sh`) — for colors only, when the Figma hex matches an entry in `colors[].hex`, emit the entry's `swiftPath` directly (e.g. `Color("Colors/primary500")` or `Color.brandSecondary`). This is the cheapest match and prevents inventing a parallel token.
+2. `IKCoreApp.colors.*`, `IKCoreApp.spacing.*`, etc. — top-level app tokens
+3. `Spacing.*`, `IKFont.*` — domain-specific enums
+4. Asset catalog symbol (`Color(.x)` if `useGeneratedSymbols`)
+5. Local computed constant in the same module
+6. Inline literal (last resort)
 
-C1 audit lists what's available; C2 picks the highest-priority match per value.
+C1 audit lists what's available **and** writes the color audit map; C2 picks the highest-priority match per value. For colors that survived to step 5+ but appear in `tokens.json` with both `lightHex` and `darkHex`, run `scripts/colorset-codegen.sh` to materialize them as colorsets first — that turns step 5 into step 4 for the next run.
 
 ---
 

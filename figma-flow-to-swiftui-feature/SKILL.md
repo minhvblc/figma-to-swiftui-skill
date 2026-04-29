@@ -51,8 +51,8 @@ All Figma MCP calls in this workflow follow [../figma-to-swiftui/references/fetc
 - `get_metadata` per screen as needed (kept for design-context cross-ref in C3); the registry already covers screen detection.
 - If `figma_build_registry` errors (server not configured, token bad), surface to user — do not silently proceed; the registry is mandatory for the unified pipeline.
 - **Lottie placeholders (`eAnim*`)** are already in `registry.lottiePlaceholders[]` — no separate walk per screen. Each screen's Phase B inventory ends up with `strategy: "lottiePlaceholder"` rows; Phase C2 codegens `LottieView` stubs using the literal name `"placeholder_animation"`. See `../figma-to-swiftui/references/lottie-placeholders.md`. The flow skill surfaces a combined end-of-run summary across all screens listing every placeholder the developer needs to replace.
-- Run `figma-to-swiftui`'s **Phase A for ALL screens** in one batch (populates `.figma-cache/<nodeId>/` + manifest per screen), then run Phase B for each screen in graph order. Do not interleave A and B across screens.
-- If any call times out, apply the circuit breaker in fetch-strategy.md. Do not retry the same node — split into sections instead.
+- Run `figma-to-swiftui`'s **Phase A for ALL screens** in one batch — clustered in parallel, default 3 screens per cluster — then run Phase B for each screen in graph order. Do not interleave A and B across screens. Cluster mechanics: see Step 5 below + [`../figma-to-swiftui/references/fetch-strategy.md`](../figma-to-swiftui/references/fetch-strategy.md) §"Parallelism Inside Phase A".
+- If any call times out, apply the circuit breaker in fetch-strategy.md. Do not retry the same node — split into sections instead. A single timeout removes that screen from the parallel path; remaining screens continue clustering normally.
 - Manifests make Phase A resumable — re-fetch only the entries marked `failed`.
 
 ## Workflow
@@ -137,6 +137,8 @@ Use `figma-to-swiftui`'s two-phase workflow across the whole flow.
 
 If `figma_extract_tokens` / `figma_build_registry` / `figma_export_assets_unified` are unavailable in the session, surface this to the user and stop — do not silently fall back to the older tools. The strict-fidelity rules in `figma-to-swiftui` Step C2 (no inline strings / no inline hex / no inline font sizes / no made-up token names) and the C3 Pass 1 banned-phrase grep depend on the artifacts the unified tools produce.
 
+**Equally banned: substitute third-party Figma MCP servers.** When the required MCPs (`figma-desktop` + `figma-assets`/MCPFigma) are missing, do NOT swap in a different Figma MCP "for this run only". The Framelink / `figma-developer-mcp` server in particular advertises `mcp__figma__get_figma_data` and `mcp__figma__download_figma_images` — these tools return data in the wrong shape for this skill's gates and will produce a run that **looks** complete but fails every grounding check (registry coverage, token provenance, asset naming convention, banned-phrase grep). See `figma-to-swiftui/SKILL.md` §"Prerequisites — BANNED substitute MCPs" for the full ban list. STOP-and-tell-the-user is the only correct action; calling the substitute even once to "see what's there" is a violation. A run summary that ends *"figma-desktop MCP not present — used `mcp__figma__get_figma_data` as a functional equivalent"* is a failed run, not a successful one with a footnote.
+
 **Self-attestation block (mandatory before writing any Swift view file).** When you reach Phase B, emit this table to the user. Every screen must show all four artifacts present. If even one row has `missing`, you are not allowed to proceed:
 
 ```
@@ -163,6 +165,8 @@ If `figma_build_registry` returns auth error or is not registered, surface and s
 - Minimizes total MCP exposure time (ephemeral asset URLs, session windows).
 - Lets the manifest checkpoint partial progress — if a fetch fails, retry only the failed node instead of losing work.
 - Keeps Phase B free of MCP calls, so it is unaffected by timeouts.
+
+**Cluster the fetches in parallel** (mandatory for flows ≥ 3 screens). Issue one message with `parallelBudget × 2` tool calls (`get_design_context` + `get_screenshot` for each screen in the cluster), wait for all to land, then start the next cluster. Default `parallelBudget = 3` (6 tool calls in flight). Failure of one screen does NOT abort the cluster — that screen is recorded `status: "failed"` and retried serially with the circuit-breaker section-split at the end. See [`../figma-to-swiftui/references/fetch-strategy.md`](../figma-to-swiftui/references/fetch-strategy.md) §"Parallelism Inside Phase A" for the full rules (auto-degrade on repeated timeouts, wall-time accounting, override). On flows ≥ 3 screens this typically cuts Phase A wall-time by 30–50% vs. sequential per-screen fetching.
 
 **Dedup the file-scoped data.** `figma_extract_tokens` is per `fileKey`, not per node. If all screens come from the same Figma file, fetch tokens once and copy/symlink the same `tokens.json` into each screen's cache folder.
 
@@ -234,7 +238,7 @@ For every screen in the flow, run **Step C5** from the single-screen skill — s
 
 C5 is **mandatory**. The flow's **Done-Gate** (the feature-level analogue of `figma-to-swiftui` Key Principle #12) requires every screen to satisfy one of:
 - `manifest.verification.c5.gate == "PASS"`, OR
-- `manifest.verification.c5.skipped` set to one of `no_project`, `simctl_error`, `ci_environment` (auto-detected, persisted; user phrases like `skip C5` / `bỏ qua C5` are NOT honored).
+- `manifest.verification.c5.skipped` set to one of `no_project`, `simctl_error`, `ci_environment`, `no_entry_path` (auto-detected, persisted; user phrases like `skip C5` / `bỏ qua C5` are NOT honored). See `../figma-to-swiftui/references/verification-loop.md` §"C5 Verification Integrity" — adding a debug route override to the binary to bypass `no_entry_path` is **banned**.
 
 A flow is NOT done while any screen has neither. **A successful `xcodebuild build` is not C5** — C5 requires `simctl boot` + `simctl install` + `simctl launch` + `simctl io screenshot` + visual compare. If you only ran `xcodebuild build` and stopped, you have NOT run C5; the Done-Gate is violated and you must complete C5 before declaring done.
 
@@ -245,6 +249,23 @@ If you cannot run C5 for a real reason (e.g. missing StoreKit config blocks the 
 7a (C5) proves each screen renders correctly in isolation. **It does not prove the journey works.** A user does not stop on Welcome and visually compare it to Figma — they tap Next, then enter a PIN, then mismatch it, then recover. That sequence is what 7b verifies, and it is a separate concern from per-screen visual fidelity.
 
 After 7a passes (or is skipped for a system reason), invoke the **`ios-simulator-verify` skill** to drive the simulator through the planned walkthrough. The flow skill's job at this step is to hand the verify skill a concrete walkthrough plan — not to re-implement simulator orchestration here.
+
+**BANNED verification shortcuts.** None of the following count as 7b. They produce screenshots without proving the journey works, and several change the binary in ways that ship debug surface to production:
+
+1. **Adding a launch-arg / env-var route override** (e.g. `VERIFY_ROUTE=PINSetup`, `--initial-screen=Welcome`, a `#if DEBUG` deep-link parser) and rebuilding to "jump" to each screen, then screenshotting. Reasons banned:
+   - Each screen is then mounted in isolation. Navigation push, state initialization, and prerequisite-screen side effects are bypassed → the journey is NOT verified, only the views.
+   - The override stays compiled into the binary (every Swift `#if DEBUG` reaches the simulator unless build configuration is `Release`). User now ships a debug entrypoint to TestFlight.
+   - It teaches the agent that "if `osascript` / `computer-use` is blocked, just edit the app to make verification easier." That is the exact failure mode the rule exists to prevent.
+2. **Adding `#Preview` macros to drive each screen in Xcode previews and counting that as 7b.** Previews skip real navigation, real state, and real lifecycle events. Use them for design iteration, not for journey verification.
+3. **Reading the code and asserting transitions "from logic"** (e.g. *"matching confirm pushes Face ID — verified by reading `OnboardingState.handlePINComplete`"*). Code reading is C3 Pass 1 / Pass 4, not 7b. 7b requires the simulator to actually transition.
+4. **Stopping at `xcodebuild build` and treating BUILD SUCCEEDED as 7b.** A clean compile fails 7b by definition.
+
+The only allowed paths for 7b are:
+- `ios-simulator-verify` skill (preferred — drives via accessibility identifiers, no binary changes).
+- `computer-use` MCP with `request_access` for the Simulator app (drives by pixel taps; requires explicit user approval).
+- A pre-existing test target (XCUITest / Swift Testing UI tests) that the project already ships — invoking it is fine, adding new test code purely to satisfy 7b is not.
+
+If none of the allowed paths is available, state explicitly which axes were not driven and why, and mark the affected coverage rows `not-checked` in the verify table. **Do not silently downgrade to a banned shortcut and call the result PASS.**
 
 What you must hand to `ios-simulator-verify`:
 

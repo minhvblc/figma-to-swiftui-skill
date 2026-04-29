@@ -78,6 +78,20 @@ Minimum 12 rows total. Every check letter must appear ≥1 time.
 
 Self-fix loop triggers on `high` only by default. If `medium` count > 2, also trigger (see §4). `low` rows are reported but never retried.
 
+### Match column rules — when "PASS with note" is banned
+
+The `Match` column is ternary (`PASS` / `FAIL` / `N/A`). It is **not** a place for "PASS with caveat", "PASS-ish", or "PASS — minor difference noted". Any of those collapse to **FAIL** at the corresponding severity:
+
+| What you observed | Correct row |
+|---|---|
+| Code matches Figma exactly | `Match=PASS`, no note needed |
+| Code differs from Figma but you think the user won't notice | `Match=FAIL`, `Severity=low` (or higher if you're not sure) |
+| Code differs from Figma and the difference is ≤ 2pt / ≤ 0.05 opacity / cosmetic | `Match=FAIL`, `Severity=medium` |
+| Code differs from Figma in a way a user notices | `Match=FAIL`, `Severity=high` |
+| Element doesn't exist on this screen | `Match=N/A`, reason in Section column |
+
+Writing `Match=PASS` and adding a Note like *"position slightly upper-left vs Figma center; minor"* is a graded protocol violation — it inflates the PASS count, hides the real high/medium/low distribution, and prevents the self-fix loop from running on the issue you just observed. The agent's instinct to soften FAIL into "PASS-with-note" is the most common way C3 Pass 2 lies to itself; the rule above closes it.
+
 ---
 
 ## 3. Source Quote Rules
@@ -96,6 +110,22 @@ Gate C3-Pass2 verifies that ≥50% of quoted strings (between backticks) actuall
 ---
 
 ## 4. Self-Fix Loop
+
+### 4.0 — Prefill mechanical rows (recommended)
+
+Before writing the report by hand, run:
+
+```bash
+scripts/c3-pass2-prefill.sh <nodeId>
+```
+
+This emits `.figma-cache/<nodeId>/c3-pass2-diff.md` with 8 rows already decided mechanically (CH, PD, GR, DV, BG, TR, SA, BS — based on greps over `design-context.md` and the listed swift files) plus 7 TODO rows for the checks that **must** be cross-checked against Figma values (LH, LS, SH, BD, OP, RM, IS). The agent only fills the TODO rows.
+
+The script never invents `Source quote` text — TODO rows ship with explicit `<verbatim>` placeholders that the agent replaces with strings copied verbatim from `design-context.md`. Gate C3-Pass2 still validates the final report unchanged (structure, 15-letter coverage, ≥12 rows, ≥50% quote anchor, valid file:line refs). If the script's mechanical PASS/NA is wrong for a given screen (rare), the agent flips it to FAIL and adds a justification — same as any manual row.
+
+Expected token saving on flows of 5+ screens: ~30–50% off Phase C, because the verification step is what dominates per-screen token cost.
+
+If `.figma-cache/<nodeId>/c3-pass2-diff.md` already exists (a prior attempt), the script refuses to overwrite. Pass `--force` only when starting fresh.
 
 ### 4.1 — Gate C3-Pass2 (BASH, mandatory)
 
@@ -223,11 +253,12 @@ User abort phrases (`stop fixing`, `ship as-is`) → mark `manifest.verification
 
 ## 5. C5 Simulator Workflow
 
-**C5 is mandatory.** It runs unconditionally after Gate C3-Pass2 prints `GATE: PASS`. There are no user opt-out phrases. The agent only skips C5 when one of three system reasons applies (auto-detected, persisted in `manifest.verification.c5.skipped`):
+**C5 is mandatory.** It runs unconditionally after Gate C3-Pass2 prints `GATE: PASS`. There are no user opt-out phrases. The agent only skips C5 when one of four system reasons applies (auto-detected, persisted in `manifest.verification.c5.skipped`):
 
 - `no_project` — no `.xcodeproj` / `.xcworkspace` after walking up 3 levels (handled in C5.1).
 - `simctl_error` — `xcrun simctl` errors, missing simulator runtime, missing Xcode CLT (handled in C5.2 / C5.4).
 - `ci_environment` — `CI=true` or `GITHUB_ACTIONS=true` env present (no GUI simulator in CI).
+- `no_entry_path` — the screen is not the app's launch screen, no existing `#Preview` / scheme / test target reaches it, and no `ios-simulator-verify` / `computer-use` driver is available. Adding a debug route override to the binary to bypass this is **banned** per §"C5 Verification Integrity" — surfacing the limitation truthfully is the correct action.
 
 User phrases like `skip C5` / `bỏ qua C5` / `không cần build` are NOT honored. Reply with the Done-Gate (`SKILL.md` Key Principle #12) and proceed.
 
@@ -259,18 +290,40 @@ for runtime, devs in data['devices'].items():
 
 Prefer a Booted iPhone. Else pick the highest-iOS iPhone 15/16 generic. Stash UDID in `manifest.verification.c5.udid`.
 
-### C5.3 — Build for simulator
+### C5.3 — Build for simulator (with fast-fail)
+
+`xcodebuild` typically prints `error:` lines mid-stream and only finalizes with `BUILD FAILED` after another 30–60s of cleanup. Watch the log live and exit early when failure is certain — saves wall-time + spares the user a long wait that ends the same way.
 
 ```bash
 mkdir -p ".figma-cache/<nodeId>"
-xcodebuild -scheme "$SCHEME" \
-  -destination "platform=iOS Simulator,id=$UDID" \
-  -configuration Debug \
-  -derivedDataPath ".figma-cache/<nodeId>/derived" \
-  build 2>&1 | tee ".figma-cache/<nodeId>/c5-build.log"
+LOG=".figma-cache/<nodeId>/c5-build.log"
+
+(
+  xcodebuild -scheme "$SCHEME" \
+    -destination "platform=iOS Simulator,id=$UDID" \
+    -configuration Debug \
+    -derivedDataPath ".figma-cache/<nodeId>/derived" \
+    build 2>&1
+) | tee "$LOG" | (
+  # Fast-fail: kill the pipeline on first ❌ error: line that doesn't look
+  # like a warning. xcodebuild's own exit code still lands in the log via tee.
+  awk '
+    /^[[:space:]]*error:/        { print; bad=1; exit 0 }
+    /BUILD FAILED/               { print; exit 0 }
+    /^\*\* BUILD SUCCEEDED \*\*/ { print; exit 0 }
+    { print }
+  '
+)
 ```
 
 On build failure: parse the last 50 lines of `c5-build.log` for compile errors. Surface each error as a FAIL row in `c5-visual-diff.md` (Section: `build`, Severity: `high`). Trigger self-fix loop on those. Do NOT proceed to install.
+
+Common early-exit signals to grep for (any one ⇒ build is dead, stop waiting):
+- `error:` not followed by `warning:` on the same logical line
+- `Linker command failed`
+- `Undefined symbol:`
+- `❌` (Xcode 16+ pretty-printed errors)
+- `cannot find type ... in scope` / `use of unresolved identifier`
 
 ### C5.4 — Boot, install, launch
 
@@ -285,6 +338,28 @@ open -a Simulator
 ```
 
 If the app's default screen is NOT the Figma screen we just built (very common — most apps boot into Login/Home), we have a navigation problem. ASK user once: "Which scheme/target shows the new view? Or add a `#Preview` and tell me the file." Stash the answer in `manifest.verification.c5.previewEntry`. Reuse on subsequent runs.
+
+### C5 Verification Integrity (banned shortcuts)
+
+C5 must screenshot the app **as it will ship**. The following shortcuts are banned even when they would make verification easier:
+
+1. **Adding a launch-arg / env-var route override to "jump" to the screen.** For example: `LaunchEnvironment["VERIFY_ROUTE"] = "PINSetup"`, a `--initial-screen` CLI flag, or a `#if DEBUG` deep-link parser added solely to make C5 reachable. Reasons banned:
+   - The override compiles into the binary unless it is gated by `#if DEBUG` AND the build configuration is strictly `Debug` AND the user is informed it must be removed before TestFlight. Even then, it ships a debug entrypoint that an attacker / curious user can trigger via `xcrun simctl launch <bundle> --args VERIFY_ROUTE=PINSetup` on a jailbroken / development-provisioned device.
+   - The screenshot then shows the screen **mounted in isolation** without the navigation push, prerequisite-screen state, and lifecycle events that real users will hit. C5's job is to catch what offline diff cannot (real font rendering, real safe area, real animation start state) — bypassing those defeats it.
+   - It teaches the agent that "if the simulator is hard to drive, change the binary." Once that's normalized, every future C5 quietly carries debug surface.
+
+2. **Adding `#Preview` macros purely to satisfy C5.** Previews skip real navigation, real state initialization, and real lifecycle events. They are a design tool, not a verification tool. Existing `#Preview`s the project already shipped are fine to use; new ones added solely to make C5 reachable are not.
+
+3. **Stating C5 PASS without `simctl launch` + `simctl io screenshot` + visual compare.** A clean `xcodebuild build` is not C5. Compile-passed alone fails C5 by definition.
+
+4. **Reading code and asserting "the transition works because `OnboardingState.handlePINComplete` pushes Face ID".** Code-reading is C3 Pass 1 / Pass 4. C5 requires the simulator to actually transition.
+
+The only allowed paths for getting to a non-default screen during C5:
+- The user provides a `previewEntry` value (existing `#Preview`, existing test target entry, scheme that boots directly into the screen). Stash and reuse.
+- The `ios-simulator-verify` skill drives via accessibility identifiers (no binary changes).
+- The `computer-use` MCP drives by pixel taps (with `request_access` for Simulator.app — explicit user approval required).
+
+If none of those is available and the screen is not the app's default → mark `manifest.verification.c5.skipped = "no_entry_path"` and tell the user verbatim: *"C5 cannot reach <ScreenName> from launch. Provide an existing #Preview / scheme / test target entry, or install the `ios-simulator-verify` skill, or grant `computer-use` access to Simulator. I will NOT add a debug route to the binary to bypass this."*
 
 ### C5.5 — Capture
 
@@ -318,11 +393,13 @@ The Figma screenshot and the simulator screenshot will have different pixel size
 | No Xcode project found | Skip C5, mark `manifest.verification.c5.skipped = "no_project"`. |
 | Multiple schemes | Ask user once, stash in `manifest.verification.c5.scheme`. |
 | Build fails | Surface compile errors as FAIL high rows, self-fix loop. |
-| App boots wrong screen | Ask once for `previewEntry`, stash and reuse. |
+| App boots wrong screen, existing `#Preview` / scheme / test target reaches the screen | Ask once for `previewEntry`, stash and reuse. |
+| App boots wrong screen, no existing entry, no driver MCP | Mark `manifest.verification.c5.skipped = "no_entry_path"` and tell the user verbatim per §"C5 Verification Integrity". **Do NOT add a debug route override to the binary** — banned. |
+| `osascript` / Simulator clicks blocked (sandbox / permission) | Use the `ios-simulator-verify` skill or `computer-use` MCP (with `request_access`). Do NOT add a launch-arg / env-var override to the binary as a workaround — banned. |
 | Simulator unavailable / `simctl` errors | Tell user, mark `manifest.verification.c5.skipped = "simctl_error"`, do not block. |
 | Re-run after fix | Reuse `scheme`, `udid`, `previewEntry` from manifest. |
 | CI / headless | Detect `CI=true` or `GITHUB_ACTIONS=true` → mark `manifest.verification.c5.skipped = "ci_environment"`. Rely on a follow-up local C5 run before merge. |
-| User says "skip C5" / "bỏ qua C5" | NOT honored. Reply with Done-Gate (`SKILL.md` Principle #12) and proceed. The only valid bypass is one of the three system reasons above. |
+| User says "skip C5" / "bỏ qua C5" | NOT honored. Reply with Done-Gate (`SKILL.md` Principle #12) and proceed. The only valid bypasses are the four system reasons listed above. |
 
 ### 5.7 — Gate C5 (BASH, mandatory after C5.6)
 

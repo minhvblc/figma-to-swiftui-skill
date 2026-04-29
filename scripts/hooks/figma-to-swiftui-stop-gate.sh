@@ -5,7 +5,7 @@
 # For every .figma-cache/<nodeId>/manifest.json found under cwd (walks up 5 levels),
 # requires one of:
 #   - manifest.verification.c5.gate == "PASS"
-#   - manifest.verification.c5.skipped IN ("no_project", "simctl_error", "ci_environment")
+#   - manifest.verification.c5.skipped IN ("no_project", "simctl_error", "ci_environment", "no_entry_path")
 #
 # Only screens with phaseB == "done" are gated — pre-Phase-B caches are
 # in-progress work, not finished tasks.
@@ -57,7 +57,7 @@ for DIR in "${SCREEN_DIRS[@]}"; do
     PASS) continue ;;
   esac
   case "$SKIPPED" in
-    no_project|simctl_error|ci_environment) continue ;;
+    no_project|simctl_error|ci_environment|no_entry_path) continue ;;
   esac
 
   VIOLATIONS+="  $BASE/  (gate=${GATE:-unset}, skipped=${SKIPPED:-unset})\n"
@@ -75,13 +75,18 @@ done
   echo "A task is NOT complete until each screen has either:"
   echo "  - manifest.verification.c5.gate == \"PASS\", OR"
   echo "  - manifest.verification.c5.skipped set to one of:"
-  echo "      no_project | simctl_error | ci_environment   (system-detected only)"
+  echo "      no_project | simctl_error | ci_environment | no_entry_path   (system-detected only)"
   echo ""
   echo "Run Step C5 from figma-to-swiftui SKILL.md:"
   echo "  build → simctl boot → install → launch → screenshot → write c5-visual-diff.md"
   echo "  → run Gate C5"
   echo ""
   echo "User phrases like \"skip C5\" / \"bỏ qua C5\" / \"không cần build\" are NOT"
-  echo "honored — only the three system reasons above bypass this gate."
+  echo "honored — only the four system reasons above bypass this gate."
+  echo ""
+  echo "Adding a launch-arg / env-var route override to the binary to make C5 reachable"
+  echo "is BANNED — see references/verification-loop.md §\"C5 Verification Integrity\"."
+  echo "If the screen is unreachable from launch and no driver is available, set"
+  echo "skipped = \"no_entry_path\" and surface that to the user truthfully."
 } >&2
 exit 2
