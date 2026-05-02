@@ -125,11 +125,34 @@ Screen detection rule: any direct-child FRAME of root (or root itself, if root i
   "scales":              [2, 3],
   "fallbackScale":       3,
   "overwrite":           true,
-  "skipIfExistsInCatalog": true
+  "skipIfExistsInCatalog": true,
+  "autoDiscover":        true
 }
 ```
 
 `outputDir` and `sharedAssetsDir` are absolute paths. `assetCatalogPath` is required when any tagged row is present.
+
+#### `autoDiscover: true` (recommended)
+
+When set, the server walks the subtree under `nodeId` via `AssetScanner` and auto-builds tagged rows (`exporter: "tagged"`, `strategy: "atomic"`) for every `eIC*` / `eImage*` it finds. Auto-built rows are **merged** with `rows[]` — caller-supplied rows win on duplicate `nodeId`. With `autoDiscover: true`, `rows` may be empty (`[]`) — the server discovers everything itself.
+
+The response gains a `coverage` block proving completeness:
+
+```json
+{
+  "rows": [ ... ],
+  "warnings": [],
+  "assetCatalogPath": "/abs/.../Assets.xcassets",
+  "coverage": {
+    "discoveredCount": 12,
+    "exportedCount":   12,
+    "autoAddedRows":   ["3166:70211", "3166:70300", "..."],
+    "skippedNodeIds":  []
+  }
+}
+```
+
+Use this for Phase B unless you have a specific reason to lock the row set manually. It is the single mitigation for the "icons quietly missing from xcassets" failure mode that script `c6-asset-completeness.sh` detects.
 
 **Output:**
 ```json

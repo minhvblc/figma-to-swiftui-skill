@@ -301,13 +301,44 @@ if [ "$SKILL_FOUND" -eq 0 ]; then
   hint "Run scripts/install.sh, or copy figma-to-swiftui/ and figma-flow-to-swiftui-feature/ to ~/.claude/skills/"
 fi
 
-# ── 7. Enforcement hooks ──────────────────────────────────────────────────────
+# ── 7. Verification gate scripts (C5 + C6 + C7) ──────────────────────────────
 echo
-echo "7. Enforcement hooks"
+echo "7. Verification gate scripts"
+SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
+              c6-asset-completeness.sh c7-no-system-chrome.sh; do
+  path="$SCRIPTS_DIR/$script"
+  if [ ! -f "$path" ]; then
+    bad "$script missing at $path"
+    hint "Re-run scripts/install.sh, or restore from the skill repo"
+  elif [ ! -x "$path" ]; then
+    bad "$script not executable"
+    hint "Fix: chmod +x \"$path\""
+  else
+    ok "$script present and executable"
+  fi
+done
+
+# Image cropping tool — c5-crop-sections.sh prefers ImageMagick, falls back
+# to macOS sips. macOS always ships sips, so this is a soft check that warns
+# only when neither is found (rare).
+if   command -v magick  >/dev/null 2>&1; then ok "image crop tool: magick (preferred)"
+elif command -v convert >/dev/null 2>&1; then ok "image crop tool: convert (ImageMagick)"
+elif command -v sips    >/dev/null 2>&1; then ok "image crop tool: sips (macOS built-in)"
+else
+  bad "no image crop tool found (need magick / convert / sips)"
+  hint "Install ImageMagick: brew install imagemagick"
+fi
+
+# ── 8. Enforcement hooks ──────────────────────────────────────────────────────
+echo
+echo "8. Enforcement hooks"
 HOOKS_DIR="$HOME/.claude/hooks"
 SETTINGS_PATH="$HOME/.claude/settings.json"
 EXPECTED_HOOKS=(
   "figma-to-swiftui-gate.sh:PreToolUse"
+  "figma-to-swiftui-banned-pattern-gate.sh:PreToolUse"
+  "figma-to-swiftui-entry-bypass-gate.sh:PreToolUse"
   "figma-to-swiftui-pass2-gate.sh:PostToolUse"
   "figma-to-swiftui-stop-gate.sh:Stop"
 )

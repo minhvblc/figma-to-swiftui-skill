@@ -330,6 +330,8 @@ cfg.setdefault("hooks", {})
 
 GATES = [
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-gate.sh"),
+    ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-banned-pattern-gate.sh"),
+    ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-entry-bypass-gate.sh"),
     ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-pass2-gate.sh"),
     ("Stop",        None,         "~/.claude/hooks/figma-to-swiftui-stop-gate.sh"),
 ]
@@ -359,9 +361,14 @@ with open(path, "w") as f:
 print(f"REGISTERED {added}")
 PY
     echo "  $(green ✓) Patched $SETTINGS — gates run automatically next session"
-    echo "      (PreToolUse blocks .swift writes when assets missing,"
-    echo "       PostToolUse auto-runs Gate C3-Pass2,"
-    echo "       Stop blocks termination when C5 Done-Gate unsatisfied)"
+    echo "      (PreToolUse — Phase A+B coverage gate, blocks .swift writes when"
+    echo "         assets missing or registry coverage incomplete;"
+    echo "       PreToolUse — banned-pattern detector, blocks Image(systemName:),"
+    echo "         status-bar/home-indicator redraws, letter-as-logo;"
+    echo "       PreToolUse — entry-path bypass detector, blocks edits that set"
+    echo "         initial route on App.swift/ContentView.swift for verification;"
+    echo "       PostToolUse — auto-runs Gate C3-Pass2;"
+    echo "       Stop — blocks termination when C5/C6/C7 Done-Gate unsatisfied)"
   fi
 fi
 

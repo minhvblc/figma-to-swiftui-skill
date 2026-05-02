@@ -82,3 +82,35 @@ Preferred order:
 3. reasoning pass over the state graph if runtime checks are unavailable
 
 If you cannot run verification, say that clearly and list the highest-risk unverified pieces.
+
+### 8.0 Per-screen visual compare: C5.6
+
+Every screen runs the same 6-step C5.6 procedure as the single-screen skill — section inventory, element census, per-section crop pairs, free-form "what's wrong" pass, 3-axis diff table, negative spot-check, 4-anchor proportional check, attestation. See [`../../figma-to-swiftui/references/verification-loop.md` §C5.6](../../figma-to-swiftui/references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory).
+
+```bash
+for nodeId in <every screen nodeId in the flow>; do
+  scripts/c5-crop-sections.sh   --cache .figma-cache/$nodeId
+  scripts/c5-coverage-check.sh  --cache .figma-cache/$nodeId
+done
+```
+
+The flow does not advance to journey-level verification (7b in `SKILL.md`) for any screen whose `c5-coverage-check.sh` exits non-zero. Cross-screen concerns (navigation, state) live in 7b — they do not change C5.6 per-screen.
+
+### 8a. Mandatory cross-screen gates: C6 + C7
+
+After every screen has run its per-screen verification (C3 Pass 2 + C5), invoke the two cross-screen scripts once at the feature level. Both are hard fails — a flow is not done while either reports violations.
+
+```bash
+# Once per screen — uses that screen's registry.json:
+for nodeId in <every screen nodeId in the flow>; do
+  scripts/c6-asset-completeness.sh \
+    --registry .figma-cache/$nodeId/registry.json \
+    --xcassets <project>/Assets.xcassets \
+    --src      <project-swift-src-root>
+done
+
+# Once for the whole feature src tree:
+scripts/c7-no-system-chrome.sh --src <project-swift-src-root>
+```
+
+Both gates are documented in [`../figma-to-swiftui/references/verification-loop.md`](../figma-to-swiftui/references/verification-loop.md) §6 and §7. Neither has a user opt-out. Failures block the Done-Gate the same way C5 does.

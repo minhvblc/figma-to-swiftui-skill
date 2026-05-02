@@ -4,6 +4,17 @@ The executable procedures behind C3 Pass 2 (offline diff report) and C5 (build +
 
 Read this when you reach Step C3 Pass 2 or Step C5.
 
+## Canonical gate letters
+
+| Letter | Gate                                    | Where defined  | Hard fail? |
+|--------|-----------------------------------------|----------------|------------|
+| C3-Pass2 | Code-vs-screenshot diff report      | §1, §4         | yes        |
+| C5     | Build + simulator screenshot + diff     | §5             | yes        |
+| C6     | Asset completeness (registry ↔ xcassets, `Image(systemName:)` allow-list) | §6 | yes (mandatory after codegen) |
+| C7     | No system chrome (status bar, home indicator, Dynamic Island, notch redraws) | §7 | yes (mandatory after codegen) |
+
+**C6 and C7 are mandatory.** Both run after codegen and before declaring the task done. Either gate failing blocks the run from finishing — same status as C3 Pass 2 / C5. There is no user opt-out.
+
 ---
 
 ## 1. C3 Pass 2 — Diff Report Template
@@ -370,21 +381,129 @@ file ".figma-cache/<nodeId>/c5-simulator.png" | grep -q "PNG image data" \
   || { echo "FAIL: simctl screenshot did not produce PNG"; exit 1; }
 ```
 
-### C5.6 — Side-by-side compare
+### C5.6 — Side-by-side compare (6-step procedure, MANDATORY)
 
-The skill does not ship a pixel-diff binary. Use the model's vision:
-
-1. Open `.figma-cache/<nodeId>/screenshot.png` (Figma) and `.figma-cache/<nodeId>/c5-simulator.png` (actual) in context.
-2. Walk the screen top-down. For each visual section, write one row in `.figma-cache/<nodeId>/c5-visual-diff.md` using the same table format as C3 Pass 2 (replace the `Source quote` column with a `Note` column for free-text observations like "actual is 4pt taller, looks like extra padding above subtitle").
-3. Special focus on items Pass 2 cannot see — these are the reasons C5 exists at all:
-   - Real font rendering at simulator DPI (Pass 2 can't see this; the font may render lighter than expected).
-   - Real shadow appearance (radius 16 in code may look different from the Figma render at 1×).
-   - Real safe-area on the chosen simulator (iPhone 15 Pro vs iPhone SE).
-   - Real keyboard avoidance (if the screen has a TextField, focus it and re-screenshot).
-   - Real animation start state (sheet/popover entry).
-4. Run Gate C5 (BASH).
+The skill does not ship a pixel-diff binary; the agent's vision is the diff engine. The previous version of this step let the agent write 0–3 generic rows and declare PASS even when whole sections were missing. The procedure below is anti-confirmation-bias by construction: each step produces a file artifact that Gate C5 greps. **Walk every step in order. No shortcuts.**
 
 The Figma screenshot and the simulator screenshot will have different pixel sizes / scales. Compare composition and values, not absolute pixel positions.
+
+#### C5.6.1 — Section inventory (MANDATORY first step)
+
+Open `.figma-cache/<nodeId>/screenshot.png` and write `.figma-cache/<nodeId>/c5-sections.md`. One row per visible section, top-down. Schema:
+
+```markdown
+| # | section            | bbox_pct                  | expected_count | notes                              |
+|---|--------------------|---------------------------|----------------|------------------------------------|
+| 1 | top nav bar        | x:0 y:0 w:100 h:6         | 1              | Edit / + / title / search          |
+| 2 | section header     | x:5 y:8 w:60 h:5          | 1              | "My Tokens 4"                      |
+| 3 | account row        | x:5 y:15 w:90 h:11        | 4              | logo + label + countdown + code    |
+| 4 | bottom tab bar     | x:0 y:90 w:100 h:10       | 5              | 5 icons + labels                   |
+```
+
+Rules:
+- `bbox_pct` is in **percentages of canvas** (`x`, `y` = top-left corner; `w`, `h` = width/height). Resolution-agnostic on purpose — the same row works for the Figma render and the simulator capture.
+- Element-bearing sections (rows, lists, grids) include `expected_count`. Background, padding, dividers are NOT sections — only things the user looks at.
+- **Write at least 4 sections.** Single-section screens are vanishingly rare. If you genuinely think there are <4, justify in a `## Why fewer than 4` block at the bottom of the file. Gate C5 fails the run if neither condition holds.
+
+#### C5.6.2 — Element census
+
+Write `.figma-cache/<nodeId>/c5-census.md` — explicit counts of:
+
+- buttons
+- text labels (rough estimate, ±2 OK)
+- icons (anything that looks like a glyph)
+- input fields
+- images / illustrations
+
+Count from the Figma screenshot first, then from the simulator. **Mismatch = high FAIL.** This is the cheap catch for missing/extra elements (e.g. 6 brand icons in Figma vs 5 in the simulator) that section-by-section comparison routinely misses because the difference is a single column in a row.
+
+#### C5.6.3 — Per-section crop pairs (MANDATORY)
+
+For each row in `c5-sections.md`, run:
+
+```bash
+scripts/c5-crop-sections.sh --cache .figma-cache/<nodeId>
+```
+
+Produces:
+- `.figma-cache/<nodeId>/crops/<N>-<section-slug>-figma.png`
+- `.figma-cache/<nodeId>/crops/<N>-<section-slug>-sim.png`
+
+Both crops are normalized to width 1024 so the agent's vision sees them at comparable scale. Open each crop **pair** and look at the section in isolation — full-image comparison routinely misses small-section differences because the section is a few percent of the canvas. The script prefers ImageMagick if available, falls back to `sips` on macOS, and exits 2 if neither is found (so Gate C5 can distinguish "tool missing" from "real failure").
+
+#### C5.6.4 — Free-form "what's wrong first" pass (anti-confirmation)
+
+Before writing the structured diff table, write a free-form paragraph at the top of `.figma-cache/<nodeId>/c5-visual-diff.md`:
+
+```markdown
+## What's wrong (free-form, before structured analysis)
+Pretend a hostile stranger wrote this code. List the 3–5 most obvious visual differences you see, in plain prose. No PASS verdicts here, only differences. If you genuinely see 0 differences, write "0 differences observed because:" and provide concrete pixel-level evidence (which colors, which text strings, which positions match).
+```
+
+This forces difference-first thinking before the structured table induces confirmation bias. Confirmation bias is the #1 reason visual diffs get missed — once a row reads PASS, every other row is biased toward PASS.
+
+#### C5.6.5 — Structured 3-axis diff table
+
+For each row in `c5-sections.md`, produce **3 rows** in `c5-visual-diff.md` — one per axis:
+
+- `PR` — **Presence** (does the simulator show it; count matches `expected_count`)
+- `LY` — **Layout** (position, size, internal spacing relative to siblings — use `bbox_pct` from `c5-sections.md`)
+- `ST` — **Styling** (color, typography weight/size, icon shape, shadows, borders)
+
+Each row carries Match (`PASS` / `FAIL` / `N/A`) and Severity. Schema mirrors C3 Pass 2 (replace `Source quote` with `Note`):
+
+```markdown
+## Findings
+| # | Axis | Section          | Figma                        | Actual                       | Match | Severity | Note                                |
+|---|------|------------------|------------------------------|------------------------------|-------|----------|-------------------------------------|
+| 1 | PR   | top nav bar      | 4 trailing controls          | 3 trailing controls          | FAIL  | high     | search icon missing in sim          |
+| 2 | LY   | top nav bar      | x:0 y:0 w:100 h:6            | h ≈ 8 (pushed down by inset) | FAIL  | medium   | likely safe-area treatment off      |
+| 3 | ST   | top nav bar      | title weight regular         | title weight semibold        | FAIL  | high     | .fontWeight(.semibold) on Text     |
+| 4 | PR   | section header   | 1 label + 1 count            | 1 label + 1 count            | PASS  | -        | -                                   |
+...
+```
+
+**Banned weasel language in PASS rows.** If a `Match=PASS` row contains any of: `approximately`, `roughly`, `looks similar`, `close enough`, `minor difference`, `slightly`, `nearly`, `almost identical` — Gate C5 auto-converts it to `FAIL medium`. Decisive verdicts only. The list lives in `scripts/c5-weasel-detect.sh` (single source of truth, also called by Gate C5).
+
+The same `Match=PASS` rule from C3 Pass 2 §2 applies: PASS-with-caveat is banned. Either the section matches and you write PASS with no hedge, or it doesn't and you write FAIL at the appropriate severity.
+
+#### C5.6.6 — Negative spot-check + 4-anchor proportional check
+
+Append two explicit Q&A blocks to `c5-visual-diff.md`:
+
+```markdown
+## Negative spot-check
+Q: Is there anything visible in the simulator screenshot that is NOT in the Figma screenshot?
+A: <enumerate or "none">
+
+Q: Is there anything visible in the Figma screenshot that is NOT in the simulator screenshot?
+A: <enumerate or "none">
+
+## 4-anchor proportional check
+| anchor               | figma (x%,y%) | sim (x%,y%) | delta | verdict |
+|----------------------|---------------|-------------|-------|---------|
+| top-left element     | 4,3           | 4,4         | 0,1   | PASS    |
+| top-right element    | 92,3          | 88,4        | 4,1   | PASS    |
+| primary CTA center   | 50,82         | 50,86       | 0,4   | PASS    |
+| bottom-most element  | 50,95         | 50,98       | 0,3   | PASS    |
+```
+
+Anchor delta > 5pp on either axis = `FAIL high`. If primary CTA isn't present, write `n/a — no CTA` in that row and explain.
+
+The negative spot-check exists because the structured table is biased toward "does Figma's element appear in the simulator" — it never asks the inverse, so spurious extra simulator content (e.g. system-chrome redraws, debug overlays, leftover placeholder text) routinely escapes detection.
+
+#### C5.6.7 — Self-attestation
+
+End of `c5-visual-diff.md`:
+
+```markdown
+## Attestation
+I opened both screenshots and each crop pair, walked the 6-step procedure, and the differences listed above are real. I did not skip any section in c5-sections.md. — verifier
+```
+
+Missing attestation = Gate C5 fails. The block is short on purpose — the cost is not the typing, it is signing the audit trail.
+
+After C5.6.7, run Gate C5 (§5.7).
 
 ### C5 Edge Cases
 
@@ -403,22 +522,37 @@ The Figma screenshot and the simulator screenshot will have different pixel size
 
 ### 5.7 — Gate C5 (BASH, mandatory after C5.6)
 
+The build / screenshot checks live here. The structural C5.6 checks (sections file, census, crop count, free-form block, 3-axis row count, negative spot-check, 4-anchor table, attestation, weasel detection) are encapsulated in `scripts/c5-coverage-check.sh` so this block stays short.
+
 ```bash
 CACHE=".figma-cache/<nodeId>"
 FAIL=0
+
+# 1. Build succeeded
 [ -s "$CACHE/c5-build.log" ] && grep -qE 'BUILD SUCCEEDED' "$CACHE/c5-build.log" \
   && echo "PASS: build" || { echo "FAIL: build"; FAIL=1; }
+
+# 2. Simulator screenshot is a real PNG
 file "$CACHE/c5-simulator.png" 2>/dev/null | grep -q "PNG image data" \
   && echo "PASS: simulator screenshot" || { echo "FAIL: simulator screenshot"; FAIL=1; }
-[ -s "$CACHE/c5-visual-diff.md" ] && grep -q '^## Summary' "$CACHE/c5-visual-diff.md" \
-  && echo "PASS: visual diff report" || { echo "FAIL: visual diff report"; FAIL=1; }
+
+# 3. C5.6 coverage (delegates to script — single source of truth)
+if scripts/c5-coverage-check.sh --cache "$CACHE"; then
+  echo "PASS: C5.6 coverage"
+else
+  echo "FAIL: C5.6 coverage"
+  FAIL=1
+fi
+
+# 4. Surface high-severity FAIL count (informational — drives self-fix loop)
 HIGH=$(grep -cE '\| *FAIL *\| *high *\|' "$CACHE/c5-visual-diff.md" 2>/dev/null)
 [ "${HIGH:-0}" -eq 0 ] && echo "PASS: no high-severity diffs" \
   || echo "INFO: $HIGH high-severity diffs — trigger self-fix"
+
 [ $FAIL -eq 0 ] && echo "GATE: PASS (Phase C5)" || echo "GATE: FAIL (Phase C5)"
 ```
 
-High-severity diffs feed into the same self-fix loop as C3 Pass 2 (shared counter, `MAX_RETRIES=2`, scoped edits only). Build failures count as FAIL high.
+High-severity diffs feed into the same self-fix loop as C3 Pass 2 (shared counter, `MAX_RETRIES=2`, scoped edits only). Build failures count as FAIL high. A C5.6-coverage FAIL is a structural failure (the agent skipped a step); regen the missing artifacts, do NOT touch code, do NOT bump the retry counter — same handling as a Gate C3-Pass2 structural FAIL.
 
 ---
 
@@ -471,6 +605,8 @@ This report has 3 high FAILs (rows 2, 3, 6) → triggers self-fix loop. After re
 
 ## 7. Example C5 Visual Diff Report
 
+This shape mirrors what the C5.6 procedure produces — sections inventory, free-form pass, 3-axis structured table, negative spot-check, 4-anchor proportional check, attestation. Use it as a reference, not a template (the actual artifact lives at `.figma-cache/<nodeId>/c5-visual-diff.md` and references the sibling `c5-sections.md` + `c5-census.md` files).
+
 ```markdown
 # C5 Visual Diff Report — Figma vs Simulator
 nodeId: 3166:70147
@@ -478,21 +614,131 @@ generatedAt: 2026-04-26T11:30:14Z
 scheme: MyApp
 udid: 9F8E7D6C-...
 previewEntry: OnboardingView_Previews
+sections: 4 (see c5-sections.md)
+
+## What's wrong (free-form, before structured analysis)
+The headline weight is clearly wrong — Figma is regular-expanded, simulator
+renders semibold-default. The hero CTA's drop shadow has a hard edge in the
+simulator vs the soft Figma blur. There is also a white gap at the top of
+the simulator screen above the gradient, suggesting `.ignoresSafeArea` is
+applied to the container rather than the background.
 
 ## Findings
-| # | Section        | Figma                        | Actual                              | Match | Severity | Note                                              |
-|---|----------------|------------------------------|-------------------------------------|-------|----------|---------------------------------------------------|
-| 1 | Hero gradient  | smooth #FF6B6B → #FFD93D     | banding visible at midpoint         | FAIL  | medium   | Likely 8-bit color compression — acceptable on device |
-| 2 | Headline       | regular weight, expanded     | semibold weight rendered            | FAIL  | high     | .fontWeight(.semibold) on text — should be .regular.fontWidth(.expanded) |
-| 3 | CTA shadow     | soft blur                    | hard edge, no blur                  | FAIL  | high     | .shadow(radius:8) renders sharp; need explicit color+opacity |
-| 4 | Safe area top  | gradient extends behind      | white gap above gradient            | FAIL  | high     | .ignoresSafeArea applied wrong — on container, not background |
-| 5 | Close icon     | tinted secondary             | full color (untinted)               | FAIL  | high     | matches C3 Pass 2 row 6 — same root cause       |
-| 6 | Bottom spacing | 16pt above home indicator    | matches                             | PASS  | -        | .safeAreaInset working as expected               |
+| # | Axis | Section          | Figma                        | Actual                              | Match | Severity | Note                                                         |
+|---|------|------------------|------------------------------|-------------------------------------|-------|----------|--------------------------------------------------------------|
+| 1 | PR   | Hero card        | 1 illustration + 1 headline  | 1 illustration + 1 headline         | PASS  | -        | -                                                            |
+| 2 | LY   | Hero card        | x:0 y:8 w:100 h:38           | y ≈ 12 (top gap)                    | FAIL  | high     | safe-area gap at top                                         |
+| 3 | ST   | Hero card        | gradient #FF6B6B → #FFD93D   | banding at midpoint                 | FAIL  | medium   | likely 8-bit color compression                               |
+| 4 | PR   | Headline         | 1 line                       | 1 line                              | PASS  | -        | -                                                            |
+| 5 | LY   | Headline         | x:8 y:50 w:84 h:6            | matches                             | PASS  | -        | -                                                            |
+| 6 | ST   | Headline         | regular, expanded            | semibold, default                   | FAIL  | high     | .fontWeight(.semibold) — needs .regular.fontWidth(.expanded) |
+| 7 | PR   | Primary CTA      | 1 button                     | 1 button                            | PASS  | -        | -                                                            |
+| 8 | LY   | Primary CTA      | x:8 y:80 w:84 h:6            | matches                             | PASS  | -        | -                                                            |
+| 9 | ST   | Primary CTA      | shadow blur=16, y=4          | hard edge, no blur                  | FAIL  | high     | .shadow(radius:8) — needs explicit color+opacity             |
+| 10| PR   | Bottom inset     | -                            | -                                   | PASS  | -        | matches safeAreaInset                                        |
+| 11| LY   | Bottom inset     | 16pt above home indicator    | matches                             | PASS  | -        | -                                                            |
+| 12| ST   | Bottom inset     | transparent                  | transparent                         | PASS  | -        | -                                                            |
+
+## Negative spot-check
+Q: Is there anything visible in the simulator screenshot that is NOT in the Figma screenshot?
+A: none.
+
+Q: Is there anything visible in the Figma screenshot that is NOT in the simulator screenshot?
+A: none — both have hero card, headline, primary CTA, bottom inset.
+
+## 4-anchor proportional check
+| anchor               | figma (x%,y%) | sim (x%,y%) | delta | verdict |
+|----------------------|---------------|-------------|-------|---------|
+| top-left element     | 4,3           | 4,7         | 0,4   | PASS    |
+| top-right element    | 92,3          | 92,7        | 0,4   | PASS    |
+| primary CTA center   | 50,82         | 50,84       | 0,2   | PASS    |
+| bottom-most element  | 50,95         | 50,96       | 0,1   | PASS    |
+
+## Attestation
+I opened both screenshots and each crop pair, walked the 6-step procedure, and the differences listed above are real. I did not skip any section in c5-sections.md. — verifier
 
 ## Summary
-- total: 6
-- pass:  1
-- fail:  5   (high: 4, medium: 1, low: 0)
+- total: 12
+- pass:  7
+- fail:  5   (high: 3, medium: 2, low: 0)
 ```
 
-Note: row 5 here is the same root cause as C3 Pass 2 row 6, but C5 catches it visually if Pass 2 missed it (or confirms the fix worked). Row 4 (safe-area gap) is a runtime-only issue Pass 2 cannot see — it requires the simulator to render. This is the value of C5.
+Note: rows 6 and 9 are the same root cause as C3 Pass 2 high FAILs, but C5 catches them visually if Pass 2 missed them (or confirms the fix worked). Row 2 (safe-area gap) is a runtime-only issue Pass 2 cannot see — it requires the simulator to render. This is the value of C5.
+
+---
+
+## 6. C6 — Asset Completeness (mandatory)
+
+Every Figma-tagged asset MUST land in `Assets.xcassets`, and `Image(systemName:)` MUST NOT silently substitute a Figma asset. This gate is the executable form of the "Assets come from Figma" ABSOLUTE RULE in `SKILL.md`. It runs after codegen + asset copy (Step C4) and before declaring the task done.
+
+```bash
+scripts/c6-asset-completeness.sh \
+  --registry .figma-cache/<nodeId>/registry.json \
+  --xcassets <project>/Assets.xcassets \
+  --src      <project-swift-src-root>
+```
+
+The script (1) lists every `taggedAssets[].exportName` from `registry.json` and confirms a matching `*.imageset/` directory exists under `--xcassets`, and (2) greps `--src` for `Image(systemName:` violations.
+
+Allow-list (no comment required) for `Image(systemName:)`:
+- `chevron.backward` / `chevron.left` — only when the file uses `NavigationStack` or `.toolbar` (heuristic match in the same file).
+- `square.and.arrow.up` — for `ShareLink`.
+- `xmark.circle.fill` — for `.searchable` clear button.
+- `keyboard*` — keyboard control glyphs.
+
+Anything else MUST carry an explicit opt-in comment on the same line OR the previous line: `// allow-systemName: <reason>`. When in doubt, require the comment.
+
+### Example FAIL output → fix → re-run
+
+```
+$ scripts/c6-asset-completeness.sh --registry .figma-cache/3166:70147/registry.json --xcassets MyApp/Assets.xcassets --src MyApp/Sources
+MISSING IMAGESETS (registry says 12 tagged, 2 not in xcassets):
+  - icAIShield.imageset (expected under MyApp/Assets.xcassets)
+  - imageAIHero.imageset (expected under MyApp/Assets.xcassets)
+SYSTEMNAME VIOLATIONS (1):
+  - MyApp/Sources/Onboarding.swift:42: Image(systemName: "shield.fill") — needs Figma asset OR allow comment
+FAIL: 2 missing assets, 1 systemName violations
+```
+
+Fix:
+1. Re-run B3 (`figma_export_assets_unified` with `autoDiscover: true`) to import the missing imagesets — the autoDiscover flag scans the subtree under `nodeId`, so missed icons get picked up automatically.
+2. Replace `Image(systemName: "shield.fill")` with `Image("icAIShield")` (the Figma source). If a system glyph is genuinely correct, add `// allow-systemName: <reason>` directly above the call site.
+
+Re-run the script — `PASS` is the only acceptable outcome before declaring done.
+
+---
+
+## 7. C7 — No System Chrome (mandatory)
+
+Generated SwiftUI MUST NOT redraw iOS system chrome (status bar, home indicator, Dynamic Island, notch). iOS already renders these. Drawing them is the executable form of the "Do NOT draw iOS system chrome" ABSOLUTE RULE in `SKILL.md`. This gate runs after codegen and before declaring the task done.
+
+```bash
+scripts/c7-no-system-chrome.sh --src <project-swift-src-root>
+```
+
+The script greps `*.swift` files for:
+- Banned identifiers: `FakeStatusBar`, `HomeIndicator`, `DynamicIsland(...)` used as a custom view, `NotchView`, any `*StatusBar*` view name (excluding UIKit's `UIStatusBar`).
+- Status-bar clock literal: `Text("9:41")` and similar.
+- Status-bar icons: `Image(systemName: "wifi" | "cellularbars" | "battery.*")`.
+- Home-indicator-ish capsule: `Capsule().<...>.frame(...height: 1..6)`.
+
+Apple APIs that legitimately use these names (e.g. `ToolbarItem(placement: .dynamicIsland)`) are excluded by the regex.
+
+### Example FAIL output → fix → re-run
+
+```
+$ scripts/c7-no-system-chrome.sh --src MyApp/Sources
+SYSTEM CHROME REDRAWS DETECTED (4 hit(s)):
+MyApp/Sources/Components.swift:189: [FakeStatusBar] struct FakeStatusBar: View {
+MyApp/Sources/Components.swift:192: [status-clock]               Text("9:41")
+MyApp/Sources/HomeView.swift:23:     [FakeStatusBar]                   FakeStatusBar()
+MyApp/Sources/HomeView.swift:135:    [HomeIndicator]                   HomeIndicator()
+fix: delete these views — iOS renders status bar / home indicator / Dynamic Island.
+```
+
+Fix:
+1. Delete the `FakeStatusBar` / `HomeIndicator` view structs entirely.
+2. Remove every call site that mounts them.
+3. If the original Figma frame showed content extending behind the status bar, replace with `.ignoresSafeArea(edges: .top)` on the background only — never on the content layer.
+
+Re-run the script — `PASS` is the only acceptable outcome before declaring done.

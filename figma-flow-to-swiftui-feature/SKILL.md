@@ -7,6 +7,17 @@ description: "Orchestrate one or more Figma nodes plus a user-provided feature f
 
 Turn one or more Figma nodes plus a feature-flow brief into a complete SwiftUI feature. This skill owns orchestration, completeness, and integration. It does not replace `figma-to-swiftui`; it coordinates feature-level work around it.
 
+## Mandatory Output Checklist
+
+Every flow run MUST satisfy these four items. Cite each item by number in the verification report.
+
+1. **Every visible icon, logo, illustration, and image is sourced from Figma.** No `Image(systemName:)` or hand-drawn `Path` / `Shape` substituting for a Figma node. Allow-list exceptions documented in [`../figma-to-swiftui/references/verification-loop.md` §6](../figma-to-swiftui/references/verification-loop.md#6-c6--asset-completeness-mandatory). Enforced per screen by `scripts/c6-asset-completeness.sh` AND at write-time by `scripts/hooks/figma-to-swiftui-banned-pattern-gate.sh`.
+2. **No iOS system chrome is redrawn in SwiftUI.** Status bar, home indicator, Dynamic Island, notch are rendered by iOS. Enforced by `scripts/c7-no-system-chrome.sh` over the entire feature src tree — see [`../figma-to-swiftui/references/verification-loop.md` §7](../figma-to-swiftui/references/verification-loop.md#7-c7--no-system-chrome-mandatory).
+3. **Asset export is exhaustive on every screen.** Each `figma_export_assets_unified` call passes `autoDiscover: true` so the server scans the subtree under that screen's `nodeId` and auto-builds rows for every `eIC*` / `eImage*` found. The response's `coverage` block is the proof. See [`../figma-to-swiftui/references/mcpfigma-setup.md` §"figma_export_assets_unified"](../figma-to-swiftui/references/mcpfigma-setup.md). Enforced at write-time by `scripts/hooks/figma-to-swiftui-gate.sh`: every `registry.taggedAssets[].nodeId` MUST appear in `manifest.rows[]` with `status: "done"` before any `*.swift` Write/Edit is allowed.
+4. **Visual diff is decisive, not weasel-worded — per screen.** Every screen's C5.6 must produce `c5-sections.md`, `c5-census.md`, per-section crop pairs, free-form "what's wrong" paragraph, 3-axis diff table, negative spot-check, 4-anchor proportional check, and attestation. No "approximately", "roughly", "close enough" in PASS rows. See [`../figma-to-swiftui/references/verification-loop.md` §C5.6](../figma-to-swiftui/references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory). Enforced per screen by `scripts/c5-coverage-check.sh` and `scripts/c5-weasel-detect.sh`.
+
+**Concrete failure modes catalogued:** [`../figma-to-swiftui/references/anti-patterns.md`](../figma-to-swiftui/references/anti-patterns.md) lists the exact agent justifications that produced broken multi-screen runs ("downloaded major assets, built the rest with shapes", "build → screenshot → looks great without C5.6", "edit ContentView to jump between screens for verification"). Read once before Phase B and once before writing the Flow Verification summary.
+
 ## Use This Skill When
 
 - The user provides multiple Figma nodes for a single journey
@@ -236,6 +247,8 @@ Read [references/feature-completeness.md](references/feature-completeness.md) to
 
 For every screen in the flow, run **Step C5** from the single-screen skill — see [`../figma-to-swiftui/SKILL.md`](../figma-to-swiftui/SKILL.md) Step C5 + [`../figma-to-swiftui/references/verification-loop.md`](../figma-to-swiftui/references/verification-loop.md) §5. C5 builds the project, boots a simulator, installs the app, screenshots each screen, and writes a visual diff vs the Figma render to `.figma-cache/<nodeId>/c5-visual-diff.md`. Persists `manifest.verification.c5.gate` per screen.
 
+The C5.6 visual-compare procedure is the **same 6-step structured walk** the single-screen skill uses — section inventory, element census, per-section crop pairs, free-form "what's wrong" pass, 3-axis diff table, negative spot-check, 4-anchor proportional check, attestation. See [`../figma-to-swiftui/references/verification-loop.md` §C5.6](../figma-to-swiftui/references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory). Run `scripts/c5-coverage-check.sh --cache .figma-cache/<nodeId>` per screen as part of Gate C5; the flow does not advance to 7b for any screen whose Gate C5 is not PASS or system-skipped. Cross-screen flow concerns (navigation, state) are 7b's job — they do not change C5.6 per-screen.
+
 C5 is **mandatory**. The flow's **Done-Gate** (the feature-level analogue of `figma-to-swiftui` Key Principle #12) requires every screen to satisfy one of:
 - `manifest.verification.c5.gate == "PASS"`, OR
 - `manifest.verification.c5.skipped` set to one of `no_project`, `simctl_error`, `ci_environment`, `no_entry_path` (auto-detected, persisted; user phrases like `skip C5` / `bỏ qua C5` are NOT honored). See `../figma-to-swiftui/references/verification-loop.md` §"C5 Verification Integrity" — adding a debug route override to the binary to bypass `no_entry_path` is **banned**.
@@ -256,9 +269,12 @@ After 7a passes (or is skipped for a system reason), invoke the **`ios-simulator
    - Each screen is then mounted in isolation. Navigation push, state initialization, and prerequisite-screen side effects are bypassed → the journey is NOT verified, only the views.
    - The override stays compiled into the binary (every Swift `#if DEBUG` reaches the simulator unless build configuration is `Release`). User now ships a debug entrypoint to TestFlight.
    - It teaches the agent that "if `osascript` / `computer-use` is blocked, just edit the app to make verification easier." That is the exact failure mode the rule exists to prevent.
-2. **Adding `#Preview` macros to drive each screen in Xcode previews and counting that as 7b.** Previews skip real navigation, real state, and real lifecycle events. Use them for design iteration, not for journey verification.
-3. **Reading the code and asserting transitions "from logic"** (e.g. *"matching confirm pushes Face ID — verified by reading `OnboardingState.handlePINComplete`"*). Code reading is C3 Pass 1 / Pass 4, not 7b. 7b requires the simulator to actually transition.
-4. **Stopping at `xcodebuild build` and treating BUILD SUCCEEDED as 7b.** A clean compile fails 7b by definition.
+   - Enforced at write-time by `scripts/hooks/figma-to-swiftui-entry-bypass-gate.sh`: edits to `*App.swift`/`*ContentView.swift`/`*RootView.swift`/etc. that set `initialStep`/`currentStep`/`verifyStep` to a screen literal, look up `VERIFY_ROUTE`, or add `#if DEBUG` deep-link handlers are blocked. Legitimate flow-state initialization carries `// figma-entry-bypass-gate: legitimate-flow-state` to bypass.
+2. **Repeated rebuild-with-different-initial-step pattern.** A common variant of #1: change `ContentView`'s initial step to `.splash`, rebuild, screenshot. Change to `.intro1`, rebuild, screenshot. Repeat for each screen. The agent justifies this as "the simulator CLI can't tap, so I'll boot each screen separately." This is the same bypass as #1 spread over N rebuilds — each individual edit triggers `figma-to-swiftui-entry-bypass-gate.sh`.
+3. **Adding `#Preview` macros to drive each screen in Xcode previews and counting that as 7b.** Previews skip real navigation, real state, and real lifecycle events. Use them for design iteration, not for journey verification.
+4. **Reading the code and asserting transitions "from logic"** (e.g. *"matching confirm pushes Face ID — verified by reading `OnboardingState.handlePINComplete`"*). Code reading is C3 Pass 1 / Pass 4, not 7b. 7b requires the simulator to actually transition.
+5. **Stopping at `xcodebuild build` and treating BUILD SUCCEEDED as 7b.** A clean compile fails 7b by definition.
+6. **Build → screenshot → "looks great" without running C5.6.** Capturing a simulator PNG and asserting visual fidelity from a glance is not C5. C5.6 requires `c5-sections.md` (≥ 4 sections), `c5-census.md` (element counts), per-section crop pairs, free-form "what's wrong first" pass, 3-axis diff table (≥ 3 × section count rows), negative spot-check, 4-anchor proportional check, and attestation. Skipping any of these → `c5-coverage-check.sh` fails → Stop hook blocks termination.
 
 The only allowed paths for 7b are:
 - `ios-simulator-verify` skill (preferred — drives via accessibility identifiers, no binary changes).

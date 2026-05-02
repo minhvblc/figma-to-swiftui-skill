@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
 # PreToolUse hook for Write/Edit on *.swift
 # Blocks Swift view-file writes when the working directory looks like a figma-to-swiftui task
-# but Phase A artifacts are missing for ANY screen in the cache.
+# but Phase A OR Phase B artifacts are incomplete for ANY screen in the cache.
 #
 # Phase A artifacts required per <screen-cache>/:
-#   - manifest.json with phaseA: "done"  (Phase A actually completed)
-#   - design-context.md non-empty, no "truncated" markers (real Figma copy/layout available)
-#   - tokens.json present (or symlinked from _shared) — real Figma color/font tokens
-#   - screenshot.png valid PNG — visual ground truth
+#   - manifest.json with phaseA: "done"
+#   - design-context.md non-empty, no "truncated" markers
+#   - tokens.json present (or symlinked from _shared)
+#   - screenshot.png valid PNG
+#   - registry.json present with rootNode (proves figma_build_registry ran)
 #
-# Rationale: every "build succeeded but doesn't match Figma" failure traces back to one of
-# these four artifacts being absent at codegen time. The agent invents copy, invents tokens,
-# guesses layout. Hard-block the write until Phase A is real.
+# Phase B artifacts required per <screen-cache>/:
+#   - manifest.phaseB: "done"
+#   - manifest.rows[] non-empty
+#   - No row has status: "failed"
+#   - Coverage: every registry.taggedAssets[].nodeId has a matching manifest.rows[]
+#     entry with status == "done". Missing tagged assets = agent skipped Phase B for
+#     icons that ARE in Figma (the exact failure mode this hook exists to prevent —
+#     "downloaded 2 raster + 1 SVG, built the rest with SwiftUI shapes").
+#
+# Rationale: every "build succeeded but doesn't match Figma" failure traces back to
+# either Phase A artifacts being absent (agent invents copy/tokens) OR Phase B asset
+# export being skipped (agent substitutes SF Symbols / hand-drawn shapes for Figma
+# icons). Hard-block the write until BOTH phases are real.
+#
+# Escape hatch: paths containing the segment `_NoFigma_` bypass this hook (for
+# scaffolding files unrelated to Figma UI — e.g. a shared NetworkClient).
 #
 # Exit codes:
 #   0 — allow
@@ -27,6 +41,11 @@ FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')
 case "$FILE_PATH" in
   *.swift) ;;
   *) exit 0 ;;
+esac
+
+# Escape hatch — path explicitly opted out.
+case "$FILE_PATH" in
+  *_NoFigma_*) exit 0 ;;
 esac
 
 # Walk up looking for .figma-cache. If none, this is not a figma task — allow.
@@ -48,7 +67,7 @@ if [ -z "$CACHE_ROOT" ]; then
   exit 0
 fi
 
-# Iterate every screen-cache subdirectory (excluding _shared) and check the four artifacts.
+# Iterate every screen-cache subdirectory (excluding _shared) and check artifacts.
 shopt -s nullglob
 SCREEN_DIRS=( "$CACHE_ROOT"/*/ )
 shopt -u nullglob
@@ -70,23 +89,18 @@ for DIR in "${SCREEN_DIRS[@]}"; do
 
   PROBLEMS=""
 
-  # 1. manifest.json with phaseA: "done"
   MANIFEST="$DIR/manifest.json"
+
+  # ─── Phase A artifacts ────────────────────────────────────────────────────────
   if [ ! -f "$MANIFEST" ]; then
     PROBLEMS+="    - manifest.json missing\n"
   else
     PHASE_A=$(jq -r '.phaseA // empty' "$MANIFEST" 2>/dev/null)
     if [ "$PHASE_A" != "done" ]; then
-      # Allow legacy minimal manifests with non-empty assetList (back-compat with older runs)
-      ASSET_COUNT=$(jq -r '(.assetList // []) | length' "$MANIFEST" 2>/dev/null || echo 0)
-      if [ "${ASSET_COUNT:-0}" -lt 1 ]; then
-        PROBLEMS+="    - manifest.phaseA != \"done\" and assetList empty\n"
-      fi
-      # Even with legacy manifest, the other three artifacts are still required below.
+      PROBLEMS+="    - manifest.phaseA != \"done\" (run Phase A end-to-end, persist phaseA: \"done\")\n"
     fi
   fi
 
-  # 2. design-context.md non-empty, no truncation
   DCTX="$DIR/design-context.md"
   if [ ! -s "$DCTX" ]; then
     PROBLEMS+="    - design-context.md missing or empty (run get_design_context for this screen)\n"
@@ -94,19 +108,64 @@ for DIR in "${SCREEN_DIRS[@]}"; do
     PROBLEMS+="    - design-context.md is truncated (split the screen into sections and re-fetch)\n"
   fi
 
-  # 3. tokens.json (real file or symlink to _shared)
   TOKENS="$DIR/tokens.json"
   SHARED_TOKENS="$CACHE_ROOT/_shared/tokens.json"
   if [ ! -e "$TOKENS" ] && [ ! -e "$SHARED_TOKENS" ]; then
-    PROBLEMS+="    - tokens.json missing (run figma_extract_tokens or get_variable_defs once for this fileKey, save to _shared/tokens.json)\n"
+    PROBLEMS+="    - tokens.json missing (run figma_extract_tokens once for this fileKey, save to _shared/tokens.json)\n"
   fi
 
-  # 4. screenshot.png valid PNG
   SHOT="$DIR/screenshot.png"
   if [ ! -f "$SHOT" ]; then
     PROBLEMS+="    - screenshot.png missing (run get_screenshot at scale 3 for this screen)\n"
   elif ! file "$SHOT" 2>/dev/null | grep -q "PNG image data"; then
     PROBLEMS+="    - screenshot.png is not a valid PNG\n"
+  fi
+
+  REG="$DIR/registry.json"
+  if [ ! -s "$REG" ] || ! grep -q '"rootNode"' "$REG" 2>/dev/null; then
+    PROBLEMS+="    - registry.json missing or invalid (run figma_build_registry — mandatory)\n"
+  fi
+
+  # ─── Phase B artifacts (only check when manifest exists) ──────────────────────
+  if [ -f "$MANIFEST" ]; then
+    PHASE_B=$(jq -r '.phaseB // empty' "$MANIFEST" 2>/dev/null)
+    ROWS_LEN=$(jq -r '(.rows // []) | length' "$MANIFEST" 2>/dev/null || echo 0)
+    FAILED_ROWS=$(jq -r '[(.rows // [])[] | select(.status == "failed") | .nodeId] | join(", ")' "$MANIFEST" 2>/dev/null)
+
+    if [ "$PHASE_B" != "done" ]; then
+      PROBLEMS+="    - manifest.phaseB != \"done\" (run figma_export_assets_unified with autoDiscover: true, persist phaseB: \"done\")\n"
+    fi
+
+    if [ "${ROWS_LEN:-0}" -lt 1 ]; then
+      PROBLEMS+="    - manifest.rows[] empty (Phase B never ran — every visible icon/logo/illustration must be a row)\n"
+    fi
+
+    if [ -n "$FAILED_ROWS" ]; then
+      PROBLEMS+="    - manifest.rows[] has failed entries: $FAILED_ROWS (resolve before writing Swift)\n"
+    fi
+
+    # Coverage: every registry.taggedAssets[].nodeId must be in manifest.rows[] with status: "done".
+    if [ -s "$REG" ] && grep -q '"taggedAssets"' "$REG"; then
+      UNCOVERED=$(python3 - "$REG" "$MANIFEST" <<'PY' 2>/dev/null
+import json, sys
+try:
+    reg = json.load(open(sys.argv[1]))
+    man = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(0)
+tagged = {a.get("nodeId") for a in (reg.get("taggedAssets") or []) if a.get("nodeId")}
+done   = {r.get("nodeId") for r in (man.get("rows") or []) if r.get("status") == "done"}
+missing = sorted(tagged - done)
+if missing:
+    print(",".join(missing))
+PY
+)
+      if [ -n "$UNCOVERED" ]; then
+        COUNT=$(echo "$UNCOVERED" | tr ',' '\n' | wc -l | tr -d ' ')
+        PROBLEMS+="    - $COUNT tagged asset(s) in registry NOT exported to manifest.rows[] as done: $UNCOVERED\n"
+        PROBLEMS+="      → re-run figma_export_assets_unified with autoDiscover:true; do NOT substitute with Image(systemName:) or hand-drawn shapes\n"
+      fi
+    fi
   fi
 
   if [ -n "$PROBLEMS" ]; then
@@ -123,7 +182,7 @@ fi
 
 # At least one screen has missing artifacts → block.
 {
-  echo "BLOCKED: figma-to-swiftui Phase A artifacts incomplete."
+  echo "BLOCKED: figma-to-swiftui Phase A/B artifacts incomplete."
   echo ""
   echo "Cache: $CACHE_ROOT"
   echo "Screens passing: $PASSED_COUNT / $TOTAL"
@@ -131,23 +190,27 @@ fi
   echo "Failing screens:"
   printf "%b" "$FAILED"
   echo ""
-  echo "A clean compile is not the bar — Figma fidelity is. Without these four"
-  echo "artifacts you will invent copy, invent tokens, and guess layout. Stop now."
+  echo "A clean compile is not the bar — Figma fidelity is. Without these artifacts"
+  echo "you will invent copy, invent tokens, guess layout, and substitute SF Symbols"
+  echo "or hand-drawn shapes for icons that ARE in Figma. Stop now."
   echo ""
-  echo "Required Phase A per screen (run figma-to-swiftui Step A3 in full):"
+  echo "Required Phase A per screen (figma-to-swiftui Step A3 in full):"
   echo "  1. get_design_context(fileKey, nodeId)         → design-context.md"
   echo "  2. get_screenshot(fileKey, nodeId) at scale 3  → screenshot.png"
   echo "  3. figma_extract_tokens(fileKey)               → tokens.json (cache once in _shared/)"
-  echo "  4. figma_build_registry(fileKey, nodeId)       → registry.json"
-  echo "  5. Write manifest.json with phaseA: \"done\""
+  echo "  4. get_metadata(fileKey, nodeId)               → metadata.json"
+  echo "  5. figma_build_registry(fileKey, rootNodeId)   → registry.json"
+  echo "  6. Persist manifest.json with phaseA: \"done\""
   echo ""
-  echo "Then re-run Gate A (BASH block in figma-to-swiftui SKILL.md Step A3)."
-  echo "Only after Gate A prints 'GATE: PASS (Phase A)' may you write Swift view files."
+  echo "Required Phase B per screen (figma-to-swiftui Step B3):"
+  echo "  1. Build Visual Inventory from screenshot + registry.taggedAssets[]"
+  echo "  2. Call figma_export_assets_unified(autoDiscover: true)"
+  echo "  3. Every registry.taggedAssets[] entry MUST land in manifest.rows[] with status: \"done\""
+  echo "  4. Persist manifest.json with phaseB: \"done\""
   echo ""
-  echo "If you intentionally want to skip Phase A for ONE screen (e.g. shared-component"
-  echo "scaffolding that doesn't render Figma UI), name the file with prefix '_NoFigma_'"
-  echo "in its directory path, or write to a path that is not under a directory containing"
-  echo "a .figma-cache/ — both bypass this hook by design."
+  echo "If you intentionally want to skip Figma artifacts for a non-UI scaffolding"
+  echo "file (NetworkClient, AppDelegate, etc.), include the segment '_NoFigma_' in"
+  echo "the file path — that bypasses this hook by design."
 } >&2
 
 exit 2

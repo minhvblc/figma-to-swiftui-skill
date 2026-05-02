@@ -214,6 +214,8 @@ The screenshot is the final arbiter. Use it actively.
 
 This section provides the underlying checklist; the executable procedure that produces a verifiable diff report (and the gates that catch report bugs) lives in `references/verification-loop.md`. The bullet codes below (LH, LS, ...) are the canonical names used by that report.
 
+> **Confirmation bias is the #1 reason visual diffs get missed.** Always run the free-form "what's wrong" pass FIRST — before any structured analysis. Once a row reads PASS, every subsequent row biases toward PASS. The 6-step procedure in [`verification-loop.md` §C5.6](verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory) is built around this — section inventory, element census, per-section crop pairs, free-form pass, 3-axis diff table, negative spot-check, 4-anchor proportional check, attestation. Do not duplicate that procedure here; defer to it.
+
 ### Before implementing a section
 1. Look at `screenshot.png`.
 2. **Identify & strip iOS system chrome first.** The frame often includes a mockup of status bar (time "9:41", Dynamic Island, signal/wifi/battery) and home indicator (~134×5pt bar at bottom). These are NOT content — iOS renders them. Do not inventory them, do not code them. See SKILL.md **ABSOLUTE RULE — Do NOT draw iOS system chrome**.

@@ -15,6 +15,17 @@ Turn Figma nodes into production SwiftUI with pixel-matching fidelity. **Three p
 
 ---
 
+## Mandatory Output Checklist
+
+Every run MUST satisfy these four items. Cite each item by number in the verification report.
+
+1. **Every visible icon, logo, illustration, and image is sourced from Figma.** No `Image(systemName:)` or hand-drawn `Path` / `Shape` substituting for a Figma node. Allow-list exceptions are documented in `references/verification-loop.md#6` and require an explicit `// allow-systemName:` opt-in for anything outside the canonical list. Enforced by `scripts/c6-asset-completeness.sh` (see [verification-loop.md §6](references/verification-loop.md#6-c6--asset-completeness-mandatory)).
+2. **No iOS system chrome is redrawn in SwiftUI.** Status bar (time, signal/wifi/battery), home indicator, Dynamic Island, and notch are rendered by iOS. Enforced by `scripts/c7-no-system-chrome.sh` (see [verification-loop.md §7](references/verification-loop.md#7-c7--no-system-chrome-mandatory)).
+3. **Asset export is exhaustive.** When calling `figma_export_assets_unified`, pass `autoDiscover: true` so the server scans the subtree under `nodeId` and auto-builds rows for every `eIC*` / `eImage*` it finds — caller-supplied rows still win on duplicates. The response's `coverage` block (`discoveredCount`, `exportedCount`, `autoAddedRows`, `skippedNodeIds`) is the proof. See `references/mcpfigma-setup.md` §"figma_export_assets_unified" for the flag.
+4. **Visual diff is decisive, not weasel-worded.** C5.6 must produce `c5-sections.md`, `c5-census.md`, per-section crop pairs, free-form "what's wrong" paragraph, 3-axis diff table, negative spot-check, 4-anchor proportional check, and attestation. No "approximately", "roughly", "close enough" in PASS rows. See [verification-loop.md §C5.6](references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory). Enforced by `scripts/c5-coverage-check.sh` and `scripts/c5-weasel-detect.sh`.
+
+---
+
 ## ABSOLUTE RULE — Assets come from Figma
 
 Every visible icon, logo, illustration, image, and decorative graphic in the screenshot **MUST** be downloaded from Figma in Phase B. No exceptions, no shortcuts.
@@ -30,7 +41,9 @@ Every visible icon, logo, illustration, image, and decorative graphic in the scr
 - iOS system chrome the user explicitly said to keep system-default (back chevron in NavigationStack toolbar, share sheet icons)
 - The user explicitly tells you to substitute for a missing asset
 
-**Failure-mode self-check.** If you catch yourself thinking *"SF Symbol is close enough"*, *"the user won't notice"*, *"I'll skip the pipeline this time"*, *"there's no FIGMA_TOKEN so I can't download"*, *"the third-party Figma MCP gives me roughly the same data, I'll use it just for this run"*, *"I'll mark this as approximation in the summary"*, or *"I had to flex the non-negotiables"* — **STOP**. That is the exact failure mode this skill exists to prevent. Go run Phase B via `figma_export_assets_unified` (MCPFigma). If MCPFigma is not connected, STOP and ask the user to install it — do not silently downgrade to substitutions. **Disclosing the bypass in the final summary does not redeem it** — the rule is "STOP and surface BEFORE acting", not "act first and confess after". A run that ships with the "non-negotiables flexed" disclaimer is a failed run, not a successful one with a footnote.
+**Failure-mode self-check.** If you catch yourself thinking *"SF Symbol is close enough"*, *"the user won't notice"*, *"I'll skip the pipeline this time"*, *"there's no FIGMA_TOKEN so I can't download"*, *"the third-party Figma MCP gives me roughly the same data, I'll use it just for this run"*, *"I'll mark this as approximation in the summary"*, *"I had to flex the non-negotiables"*, *"the major assets are downloaded, I'll build the minor ones (tab bar / PIN dots / timer ring / social logos) with SwiftUI shapes for maintainability"*, *"these icons are simple — `Image(systemName:)` is fine"*, or *"build → screenshot → it looks great" without the C5.6 procedure* — **STOP**. That is the exact failure mode this skill exists to prevent. Go run Phase B via `figma_export_assets_unified(autoDiscover: true)` (MCPFigma) for every visible icon, then run the full C5.6 procedure. If MCPFigma is not connected, STOP and ask the user to install it — do not silently downgrade to substitutions. **Disclosing the bypass in the final summary does not redeem it** — the rule is "STOP and surface BEFORE acting", not "act first and confess after". A run that ships with the "non-negotiables flexed" disclaimer is a failed run, not a successful one with a footnote.
+
+**Concrete failure modes seen in real runs** are catalogued in [`references/anti-patterns.md`](references/anti-patterns.md). Read it once before Phase B and once again before writing the Verification summary — it lists the exact agent justifications that produced broken runs ("build the rest with SwiftUI shapes", "edit ContentView to jump screens for screenshot", "LSP is stale", "disclose in summary"), the rule each violates, and the gate that should have caught it.
 
 If an asset truly cannot be fetched (node missing from Figma, MCP returns error after retry), **STOP and tell the user** — do not improvise. Improvisation = task failure.
 
@@ -882,13 +895,17 @@ Check manifest. `phaseA` and `phaseB` both `done` → skip to Phase C. Some `fai
 
 These hooks turn the in-skill gates into OS-level enforcement. Without them, gates rely on the agent honoring them; with them, the tool call is denied at the harness layer.
 
-1. **PreToolUse hook — block `Write`/`Edit` on `*.swift` when assets missing.** Triggers when `.figma-cache/<nodeId>/manifest.json` is missing or has empty `rows`. Forces Phase B to complete before any SwiftUI is written.
+1. **PreToolUse hook — Phase A+B coverage gate.** `figma-to-swiftui-gate.sh`: blocks `Write`/`Edit` on `*.swift` when any screen-cache lacks Phase A artifacts (manifest, design-context, screenshot, tokens, registry) OR Phase B is incomplete (`phaseB != "done"`, empty `rows[]`, failed rows, OR `registry.taggedAssets[].nodeId` not all present in `manifest.rows[]` with `status: "done"`). Closes the "downloaded the hero, built the rest with SwiftUI shapes" failure mode.
 
-2. **PostToolUse hook — auto-run Gate C3-Pass2 on `c3-pass2-diff.md` write.** Saves one round-trip per attempt and surfaces structural bugs immediately.
+2. **PreToolUse hook — banned-pattern detector.** `figma-to-swiftui-banned-pattern-gate.sh`: scans the Swift content the agent is about to write. Blocks `Image(systemName:)` outside the four-name allow-list (no `// allow-systemName:` comment), `Text("9:41")` and other status-bar redraws, `Capsule()` with height ≤ 6pt (home-indicator lookalike), `FakeStatusBar` / `HomeIndicator` / `NotchView` / `DynamicIslandView` struct names, and letter-as-logo (`Text("G")` near a small frame). Prevents the absolute-rule violations from landing on disk in the first place.
 
-3. **Stop hook — block session termination when C5 not satisfied.** Reads `manifest.verification.c5`. Allows stop only when `gate == "PASS"` OR `skipped` is set to one of `no_project`, `simctl_error`, `ci_environment`, `no_entry_path`. Otherwise prints to the agent: *"Done-Gate violated (Key Principle #12). Run C5 or set a system skip reason before declaring done."* This is the OS-level twin of Principle #12 and the strongest fix for "agent says done but C5 was never run".
+3. **PreToolUse hook — entry-path bypass detector.** `figma-to-swiftui-entry-bypass-gate.sh`: blocks edits to `*App.swift` / `*ContentView.swift` / `*RootView.swift` / `*MainView.swift` / `*AppRouter.swift` / `*AppCoordinator.swift` when the new content sets `initialStep`/`currentStep`/`verifyStep` to a screen literal, looks up `VERIFY_ROUTE` env vars, or adds `#if DEBUG` deep-link parsers. Closes the C5 verification-integrity bypass per `references/verification-loop.md` §"C5 Verification Integrity". Legitimate flow-state initialization carries `// figma-entry-bypass-gate: legitimate-flow-state` to bypass.
 
-Ask the assistant to set them up via the `update-config` skill.
+4. **PostToolUse hook — auto-run Gate C3-Pass2 on `c3-pass2-diff.md` write.** `figma-to-swiftui-pass2-gate.sh`: saves one round-trip per attempt and surfaces structural bugs immediately.
+
+5. **Stop hook — block session termination when Done-Gate unsatisfied.** `figma-to-swiftui-stop-gate.sh`: for every screen-cache with `phaseA == "done"`, requires `phaseB == "done"` + `rows[]` non-empty + `verification.c5.gate == "PASS"` (or one of four system skip reasons) + C5.6 coverage script passing + project-wide C6 (asset completeness) and C7 (no system chrome) passing. The previous "only enforce when phaseB done" gate left a hole — agents skipped Phase B entirely and stopped freely. This version closes it.
+
+`scripts/install.sh` registers all five hooks idempotently into `~/.claude/settings.json`. Re-running it after pulling new hook scripts is safe.
 
 ## Key Principles
 

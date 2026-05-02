@@ -1,0 +1,45 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./scripts/doctor.sh)",
+      "Bash(./scripts/doctor.sh:*)",
+      "Bash(./scripts/install.sh --help)",
+      "Bash(./scripts/install.sh --version:*)",
+
+      "Bash(./scripts/c1-project-color-audit.sh:*)",
+      "Bash(./scripts/c3-pass2-prefill.sh:*)",
+      "Bash(./scripts/c5-coverage-check.sh:*)",
+      "Bash(./scripts/c5-crop-sections.sh:*)",
+      "Bash(./scripts/c5-weasel-detect.sh:*)",
+      "Bash(./scripts/c6-asset-completeness.sh:*)",
+      "Bash(./scripts/c7-no-system-chrome.sh:*)",
+      "Bash(./scripts/colorset-codegen.sh:*)",
+
+      "Bash(bash -n scripts/*.sh)",
+      "Bash(bash -n ./scripts/*.sh)",
+      "Bash(bash -n scripts/hooks/*.sh)",
+      "Bash(chmod +x scripts/*.sh)",
+      "Bash(chmod +x scripts/hooks/*.sh)",
+      "Bash(chmod +x scripts/hooks/*)",
+
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote -v)",
+      "Bash(git remote:*)",
+
+      "Bash(wc -l:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find . -name:*)",
+      "Bash(find . -type:*)",
+      "Bash(find . -maxdepth:*)",
+      "Bash(ls:*)",
+      "Bash(cat scripts/*.sh)",
+      "Bash(head:*)",
+      "Bash(tail:*)"
+    ]
+  }
+}
