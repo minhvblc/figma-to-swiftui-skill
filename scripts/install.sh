@@ -9,22 +9,31 @@
 #        a) Try downloading the latest pre-built release from GitHub
 #        b) If no release exists OR --build-from-source is passed, clone+build
 #   3. Get FIGMA_ACCESS_TOKEN (env var or interactive prompt) + validate
-#   4. Patch Claude config (project-level if .claude/ exists in cwd, else user-level)
+#   4. Patch Claude config — user-level (~/.claude.json) by default. Project-level
+#      ($PWD/.claude/mcp.json) only when --project is passed AND $PWD is not this
+#      skill repo. (Auto-detect of project-level was removed because the skill
+#      repo itself contains a .claude/ dev config that misled the heuristic.)
 #   5. Install skills into ~/.claude/skills/ (copy by default; --symlink for dev)
 #   6. Install enforcement hooks (PreToolUse / PostToolUse / Stop) and register
 #      them in ~/.claude/settings.json. Skip with --no-hooks.
-#   7. Run doctor.sh
+#   7. Detect Figma.app + run doctor.sh + print test command
 #
 # Usage:
-#   ./scripts/install.sh                          # download latest pre-built binary
+#   ./scripts/install.sh                          # default — download binary, install everything
+#   ./scripts/install.sh --yes                    # non-interactive: auto-overwrite, default scope
+#   ./scripts/install.sh --user                   # force user-level config (~/.claude.json)
+#   ./scripts/install.sh --project                # force project-level ($PWD/.claude/mcp.json)
 #   ./scripts/install.sh --build-from-source      # always clone + swift build
 #   ./scripts/install.sh --version v0.3.0         # download a specific tag
 #   ./scripts/install.sh --symlink                # symlink skills (re-run git pull to update)
 #   ./scripts/install.sh --no-hooks               # skip hook installation
 #   FIGMA_ACCESS_TOKEN=figd_xxx ./scripts/install.sh   # non-interactive token
 #
+# Headless / CI install (no prompts at all):
+#   FIGMA_ACCESS_TOKEN=figd_xxx ./scripts/install.sh --yes --user
+#
 # What this script CANNOT do:
-#   - Install the figma-desktop MCP (Figma's own product) — link printed at end
+#   - Install the figma-desktop MCP (Figma's own product) — instructions printed at end
 #   - Install Xcode / Swift (we abort with instructions if --build-from-source is needed)
 
 set -eu
@@ -34,16 +43,21 @@ SYMLINK_SKILLS=0
 BUILD_FROM_SOURCE=0
 INSTALL_HOOKS=1
 PINNED_VERSION=""
+ASSUME_YES=0
+FORCE_SCOPE=""   # "" (default user-level) | "user" | "project"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --symlink) SYMLINK_SKILLS=1; shift ;;
     --build-from-source) BUILD_FROM_SOURCE=1; shift ;;
     --no-hooks) INSTALL_HOOKS=0; shift ;;
+    -y|--yes) ASSUME_YES=1; shift ;;
+    --user) FORCE_SCOPE="user"; shift ;;
+    --project) FORCE_SCOPE="project"; shift ;;
     --version)
       [ "$#" -ge 2 ] || { echo "--version needs a tag, e.g. --version v0.3.0" >&2; exit 2; }
       PINNED_VERSION="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,30p' "$0"; exit 0 ;;
+      sed -n '2,38p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -177,8 +191,18 @@ fi
 say "3/6  Figma access token"
 TOKEN="${FIGMA_ACCESS_TOKEN:-}"
 if [ -z "$TOKEN" ]; then
+  if [ "$ASSUME_YES" = "1" ]; then
+    abort "--yes set but FIGMA_ACCESS_TOKEN env var is empty.
+    Headless install must pass the token: FIGMA_ACCESS_TOKEN=figd_xxx ./scripts/install.sh --yes"
+  fi
   echo "  Need a Figma Personal Access Token with 'File content read' scope."
-  echo "  Create one at: https://www.figma.com/settings"
+  echo "  Steps to create one (1-2 min):"
+  echo "    1. Open https://www.figma.com/settings"
+  echo "    2. Scroll to 'Personal access tokens' → click 'Generate new token'"
+  echo "    3. Name it (e.g. 'mcp-figma'), set scope: $(bold "File content → Read only")"
+  echo "    4. Click 'Generate token' and copy the value (starts with 'figd_')"
+  echo "       — Figma only shows it once; if you lose it, regenerate."
+  echo
   printf "  Paste token (input hidden): "
   stty -echo
   read TOKEN
@@ -200,21 +224,44 @@ esac
 # ── 4. Patch Claude config ────────────────────────────────────────────────────
 say "4/6  Claude config"
 
-if [ -d "$PWD/.claude" ]; then
+# Resolve canonical paths so we can compare $PWD vs the skill repo reliably.
+PWD_REAL="$( cd "$PWD" && pwd -P )"
+REPO_ROOT_REAL="$( cd "$REPO_ROOT" && pwd -P )"
+
+# Decide config scope.
+# Default = user-level (~/.claude.json). Project-level requires explicit
+# --project flag AND $PWD must NOT be the skill repo itself (the repo ships a
+# .claude/ dev config that previously misled auto-detection into installing
+# figma-assets into the skill repo's local mcp.json instead of globally).
+if [ "$FORCE_SCOPE" = "project" ]; then
+  if [ "$PWD_REAL" = "$REPO_ROOT_REAL" ]; then
+    abort "--project refused: \$PWD is the skill repo itself ($REPO_ROOT_REAL).
+    Project-level config would write into the skill's dev .claude/, not your
+    iOS project. cd into your iOS project first, or drop --project."
+  fi
+  mkdir -p "$PWD/.claude"
   CONFIG="$PWD/.claude/mcp.json"
-  echo "  Project-level config detected: $CONFIG"
+  echo "  --project: writing $CONFIG"
+elif [ "$FORCE_SCOPE" = "user" ]; then
+  CONFIG="$HOME/.claude.json"
+  echo "  --user: writing $CONFIG"
 elif [ -f "$HOME/Library/Application Support/Claude/claude_desktop_config.json" ]; then
-  echo "  Both Claude Code (~/.claude.json) and Claude Desktop config exist."
-  echo "  Which to patch?"
-  echo "    1) ~/.claude.json (Claude Code)"
-  echo "    2) ~/Library/Application Support/Claude/claude_desktop_config.json (Claude Desktop)"
-  printf "  Choice [1]: "
-  read CHOICE
-  echo
-  if [ "$CHOICE" = "2" ]; then
-    CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
-  else
+  if [ "$ASSUME_YES" = "1" ]; then
     CONFIG="$HOME/.claude.json"
+    echo "  Both Claude Code and Claude Desktop configs exist; defaulting to $CONFIG (--yes)"
+  else
+    echo "  Both Claude Code (~/.claude.json) and Claude Desktop config exist."
+    echo "  Which to patch?"
+    echo "    1) ~/.claude.json (Claude Code)"
+    echo "    2) ~/Library/Application Support/Claude/claude_desktop_config.json (Claude Desktop)"
+    printf "  Choice [1]: "
+    read CHOICE
+    echo
+    if [ "$CHOICE" = "2" ]; then
+      CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+    else
+      CONFIG="$HOME/.claude.json"
+    fi
   fi
 else
   CONFIG="$HOME/.claude.json"
@@ -265,12 +312,17 @@ install_one() {
   fi
 
   if [ -e "$dst" ] || [ -L "$dst" ]; then
-    printf "  '$name' already installed at $dst. Overwrite? [y/N] "
-    read REPLY
-    case "$REPLY" in
-      y|Y) rm -rf "$dst" ;;
-      *) echo "  $(yellow skip) keeping existing $dst"; return ;;
-    esac
+    if [ "$ASSUME_YES" = "1" ]; then
+      echo "  '$name' already at $dst — overwriting (--yes)"
+      rm -rf "$dst"
+    else
+      printf "  '$name' already installed at $dst. Overwrite? [y/N] "
+      read REPLY
+      case "$REPLY" in
+        y|Y) rm -rf "$dst" ;;
+        *) echo "  $(yellow skip) keeping existing $dst"; return ;;
+      esac
+    fi
   fi
 
   if [ "$SYMLINK_SKILLS" = "1" ]; then
@@ -393,20 +445,64 @@ PY
   fi
 fi
 
-# ── Final ─────────────────────────────────────────────────────────────────────
+# ── Figma desktop app detection ───────────────────────────────────────────────
 echo
-bold "Almost done — one manual step left:"
+bold "figma-desktop MCP — required, install separately"
 echo
-echo "  Install the figma-desktop MCP server (provides get_metadata, get_design_context, get_screenshot)."
-echo "  This skill cannot run without it."
-echo "  Guide: $(yellow https://developers.figma.com/docs/figma-mcp-server/)"
+if [ -d "/Applications/Figma.app" ]; then
+  echo "  $(green ✓) Figma.app detected at /Applications/Figma.app"
+  echo "  Enable Figma's official local MCP server:"
+  echo "    1. Open Figma → menu Figma → Preferences (⌘,)"
+  echo "    2. Toggle ON 'Enable Dev Mode MCP Server' (Dev Mode required)"
+  echo "    3. Claude will auto-discover it via http://127.0.0.1:3845/mcp"
+  echo "       — no config edit needed if Claude Code ≥ recent version."
+  echo "  Reference: $(yellow https://developers.figma.com/docs/figma-mcp-server/)"
+else
+  echo "  $(yellow ⚠) Figma.app NOT found in /Applications/."
+  echo "  Browser-only Figma cannot host the MCP server. Download Figma Desktop:"
+  echo "    $(yellow https://www.figma.com/downloads/)"
+  echo "  Then re-open this guide: $(yellow https://developers.figma.com/docs/figma-mcp-server/)"
+fi
 echo
-echo "Then restart Claude (Cmd+Q) so it picks up the new MCP config."
+echo "  After enabling figma-desktop, $(bold "restart Claude") (Cmd+Q + reopen) so both MCPs load."
+
+# ── Doctor verify ─────────────────────────────────────────────────────────────
 echo
 say "Running doctor to verify..."
 echo
-"$REPO_ROOT/scripts/doctor.sh" || {
-  echo
-  echo "$(yellow "Doctor reported issues — fix them and re-run: ./scripts/doctor.sh")"
-  exit 0
-}
+DOCTOR_RC=0
+"$REPO_ROOT/scripts/doctor.sh" || DOCTOR_RC=$?
+
+# ── Final summary + test command ──────────────────────────────────────────────
+echo
+bold "Install summary"
+echo
+[ -n "$BIN_PATH" ] && echo "  • mcp-figma binary  : $BIN_PATH"
+echo "  • Skills installed  : ~/.claude/skills/figma-to-swiftui"
+echo "                        ~/.claude/skills/figma-flow-to-swiftui-feature"
+echo "  • Claude config     : $CONFIG"
+if [ "$INSTALL_HOOKS" = "1" ]; then
+  echo "  • Enforcement hooks : 6 gates registered in ~/.claude/settings.json"
+else
+  echo "  • Enforcement hooks : $(yellow "skipped (--no-hooks)")"
+fi
+echo "  • Doctor status     : $([ "$DOCTOR_RC" = "0" ] && green "all checks passed" || yellow "issues reported above")"
+echo
+bold "Test it end-to-end"
+echo
+echo "  1. Make sure figma-desktop is running with Dev Mode MCP enabled (see above)."
+echo "  2. cd into your iOS SwiftUI project:"
+echo "       $(yellow "cd ~/path/to/your-ios-project")"
+echo "  3. Open Claude Code:"
+echo "       $(yellow "claude")"
+echo "  4. Run the skill with a Figma URL that has a node-id:"
+echo "       $(yellow "/figma-to-swiftui https://www.figma.com/design/<fileKey>/...?node-id=<nodeId>")"
+echo
+echo "  Re-verify any time: $(yellow "$REPO_ROOT/scripts/doctor.sh")"
+echo "  Re-install headless: $(yellow "FIGMA_ACCESS_TOKEN=figd_xxx $REPO_ROOT/scripts/install.sh --yes")"
+echo
+
+if [ "$DOCTOR_RC" != "0" ]; then
+  echo "$(yellow "Doctor reported issues — fix them and re-run: $REPO_ROOT/scripts/doctor.sh")"
+fi
+exit 0

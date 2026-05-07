@@ -32,7 +32,33 @@ Plus the obvious:
 
 ## Install
 
-### Easy path — one script
+### One-line install (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/minhvblc/figma-to-swiftui-skill/master/scripts/bootstrap.sh \
+  | FIGMA_ACCESS_TOKEN=figd_xxx bash
+```
+
+The bootstrap clones this repo to `~/.local/share/figma-to-swiftui-skill/`, then runs `install.sh --yes --user` for you. Idempotent — re-running fast-forwards the checkout.
+
+Pin a release or pass extra flags through:
+
+```bash
+# pin to a specific tag
+curl -fsSL <URL> | FIGMA_ACCESS_TOKEN=figd_xxx BOOTSTRAP_REF=v0.3.0 bash
+
+# forward install.sh flags after bash -s --
+curl -fsSL <URL> | FIGMA_ACCESS_TOKEN=figd_xxx bash -s -- --no-hooks --version v0.3.0
+```
+
+After it finishes, do the two manual steps the bootstrap **cannot** do for you (Figma's product, Claude is a separate process):
+
+1. Open Figma → Preferences (⌘,) → enable **Dev Mode MCP server** (Dev Mode required). Bootstrap detects whether `/Applications/Figma.app` exists and prints the exact steps.
+2. Restart Claude Code (⌘Q + reopen) so the new MCP config loads.
+
+### Easy path — clone + run script
+
+If you'd rather review the source first or you don't want to set the env var inline:
 
 ```bash
 git clone https://github.com/minhvblc/figma-to-swiftui-skill.git
@@ -44,22 +70,28 @@ The installer is idempotent and safe to re-run. It will:
 
 1. Check toolchain (macOS, curl, python3 — and git+swift only if it has to build from source)
 2. **Download the latest pre-built `mcp-figma` binary** from the [MCPFigma releases page](https://github.com/minhvblc/MCPFigma/releases) (universal binary for arm64 + x86_64). Falls back to clone+`swift build` if no release is available — or pass `--build-from-source` to force the build path.
-3. Prompt for your `FIGMA_ACCESS_TOKEN` and validate it against the Figma API
-4. Back up your existing Claude config, then patch in the `figma-assets` MCP entry (project-level if a `.claude/` exists in cwd, else `~/.claude.json`)
+3. Prompt for your `FIGMA_ACCESS_TOKEN` (with step-by-step instructions) and validate it against the Figma API
+4. Back up your existing Claude config, then patch in the `figma-assets` MCP entry — **user-level (`~/.claude.json`) by default**. Use `--project` to register inside a specific iOS project's `.claude/mcp.json` instead.
 5. Copy the two skill folders into `~/.claude/skills/` (use `--symlink` if you want to `git pull` to update later)
-6. Run `scripts/doctor.sh` to verify everything
+6. Install + register 6 enforcement hooks (PreToolUse / PostToolUse / Stop) into `~/.claude/settings.json` — disable with `--no-hooks`
+7. Detect Figma.app + run `scripts/doctor.sh` + print a copy-paste test command
 
 Useful flags:
 
 ```bash
-./scripts/install.sh                    # download latest pre-built binary (default)
-./scripts/install.sh --version v0.3.0   # pin a specific release
-./scripts/install.sh --build-from-source # always clone + swift build (for hacking on MCPFigma)
-./scripts/install.sh --symlink          # symlink skills (re-run git pull to update)
-FIGMA_ACCESS_TOKEN=figd_xxx ./scripts/install.sh   # non-interactive token
+./scripts/install.sh                       # default — download binary, install everything
+./scripts/install.sh --yes                 # non-interactive (re-install / CI / scripts)
+./scripts/install.sh --user                # force user-level config (~/.claude.json)
+./scripts/install.sh --project             # force project-level ($PWD/.claude/mcp.json)
+./scripts/install.sh --version v0.3.0      # pin a specific release
+./scripts/install.sh --build-from-source   # always clone + swift build (for hacking on MCPFigma)
+./scripts/install.sh --symlink             # symlink skills (re-run git pull to update)
+./scripts/install.sh --no-hooks            # skip hook installation
+FIGMA_ACCESS_TOKEN=figd_xxx ./scripts/install.sh                # non-interactive token
+FIGMA_ACCESS_TOKEN=figd_xxx ./scripts/install.sh --yes --user   # fully headless (CI / onboarding)
 ```
 
-After it finishes, install the **figma-desktop MCP** separately (see step 2 of Manual install below — Figma's installer is outside our scope) and restart Claude.
+After it finishes, install the **figma-desktop MCP** separately (Figma Preferences → enable Dev Mode MCP server — the installer prints exact steps once it detects `/Applications/Figma.app`) and restart Claude.
 
 You can verify any time with:
 
