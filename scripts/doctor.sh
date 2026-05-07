@@ -301,12 +301,14 @@ if [ "$SKILL_FOUND" -eq 0 ]; then
   hint "Run scripts/install.sh, or copy figma-to-swiftui/ and figma-flow-to-swiftui-feature/ to ~/.claude/skills/"
 fi
 
-# ── 7. Verification gate scripts (C5 + C6 + C7) ──────────────────────────────
+# ── 7. Verification gate scripts (C5 + C6 + C7 + C8) ─────────────────────────
 echo
 echo "7. Verification gate scripts"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
-              c6-asset-completeness.sh c7-no-system-chrome.sh; do
+              c6-asset-completeness.sh c7-no-system-chrome.sh \
+              c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
+              c8-iknavigation.sh c8-ikfont.sh c8-weak-self.sh; do
   path="$SCRIPTS_DIR/$script"
   if [ ! -f "$path" ]; then
     bad "$script missing at $path"
@@ -318,6 +320,22 @@ for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
     ok "$script present and executable"
   fi
 done
+
+# Verify the same scripts are also installed under ~/.claude/scripts/ so the
+# stop hook's fallback resolution finds them when the user is running the
+# skill in an iOS project unrelated to this repo.
+INSTALLED_SCRIPTS_DIR="$HOME/.claude/scripts"
+if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
+  for script in c5-coverage-check.sh c6-asset-completeness.sh c7-no-system-chrome.sh \
+                c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
+                c8-iknavigation.sh c8-ikfont.sh; do
+    p="$INSTALLED_SCRIPTS_DIR/$script"
+    if [ ! -x "$p" ]; then
+      bad "$script not installed at $p (stop-gate fallback may miss it)"
+      hint "Re-run scripts/install.sh — it copies gate scripts to ~/.claude/scripts/"
+    fi
+  done
+fi
 
 # Image cropping tool — c5-crop-sections.sh prefers ImageMagick, falls back
 # to macOS sips. macOS always ships sips, so this is a soft check that warns
@@ -340,6 +358,7 @@ EXPECTED_HOOKS=(
   "figma-to-swiftui-banned-pattern-gate.sh:PreToolUse"
   "figma-to-swiftui-entry-bypass-gate.sh:PreToolUse"
   "figma-to-swiftui-pass2-gate.sh:PostToolUse"
+  "figma-to-swiftui-c8-gate.sh:PostToolUse"
   "figma-to-swiftui-stop-gate.sh:Stop"
 )
 

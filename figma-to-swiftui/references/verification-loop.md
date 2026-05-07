@@ -41,14 +41,18 @@ or be marked N/A in a Findings row with a reason.
 - OP    opacity on sub-elements
 - RM    icon rendering mode (template vs original)
 - IS    icon exact pixel size
+- AL    text alignment + fill-width drawing rect (parent-aware: Text-layer for non-Button stacks; Button-outer-layer for Button parents)
 - DV    divider color/opacity/height
 - BG    background material (blur) behind text
-- TR    text truncation / line limit
+- TR    text truncation / line limit + minimumScaleFactor on single-line Text
 - GR    gradient direction & stops
-- SA    safe-area behavior
+- SA    safe-area behavior (background extends under chrome)
 - CH    no system chrome drawn
 - PD    explicit padding (no SwiftUI defaults)
 - BS    .buttonStyle(.plain) on custom buttons
+- IF    image fill mode (resizable + scaledToFill/scaledToFit + frame)
+- SS    spacing-safe-area normalization (raw figma y minus inset, not raw)
+- BW    button width source-of-truth (Figma primaryAxisSizingMode → Button outer frame; no maxWidth on inner Text/HStack)
 
 ## Findings
 | # | Check | Section | Figma Spec | Source quote | Code value | File:Line | Match | Severity |
@@ -65,8 +69,8 @@ or be marked N/A in a Findings row with a reason.
 ```
 
 Required fields per row:
-- **Check** — one of the 15 codes (LH..BS).
-- **Section** — visual section name (e.g. "Headline", "Primary CTA", "Card row 2"). Use `-` only when the row is `CH` or otherwise screen-wide.
+- **Check** — one of the 19 codes (LH/LS/SH/BD/OP/RM/IS/AL/DV/BG/TR/GR/SA/CH/PD/BS/IF/SS/BW).
+- **Section** — visual section name (e.g. "Headline", "Primary CTA", "Card row 2"). Use `-` only when the row is `CH` / `SS` (screen-root) or otherwise screen-wide.
 - **Figma Spec** — the value as Figma intends it (e.g. `font-size 28, line-height 34`).
 - **Source quote** — verbatim string from `design-context.md` (with line number) OR from the inventory in scratch context. See §3.
 - **Code value** — verbatim copy of the relevant SwiftUI modifier(s).
@@ -74,7 +78,7 @@ Required fields per row:
 - **Match** — `PASS`, `FAIL`, or `N/A`.
 - **Severity** — `high`, `medium`, `low` for FAIL; `-` for PASS; `-` for N/A.
 
-Minimum 12 rows total. Every check letter must appear ≥1 time.
+Minimum 15 rows total. Every check letter must appear ≥1 time.
 
 ---
 
@@ -130,9 +134,28 @@ Before writing the report by hand, run:
 scripts/c3-pass2-prefill.sh <nodeId>
 ```
 
-This emits `.figma-cache/<nodeId>/c3-pass2-diff.md` with 8 rows already decided mechanically (CH, PD, GR, DV, BG, TR, SA, BS — based on greps over `design-context.md` and the listed swift files) plus 7 TODO rows for the checks that **must** be cross-checked against Figma values (LH, LS, SH, BD, OP, RM, IS). The agent only fills the TODO rows.
+This emits `.figma-cache/<nodeId>/c3-pass2-diff.md` with 9 rows already decided mechanically (CH, PD, GR, DV, BG, TR, SA, BS, SS — based on greps over `design-context.md` and the listed swift files) plus 9 TODO rows for the checks that **must** be cross-checked against Figma values (LH, LS, SH, BD, OP, RM, IS, **AL**, **IF**). The agent only fills the TODO rows.
 
-The script never invents `Source quote` text — TODO rows ship with explicit `<verbatim>` placeholders that the agent replaces with strings copied verbatim from `design-context.md`. Gate C3-Pass2 still validates the final report unchanged (structure, 15-letter coverage, ≥12 rows, ≥50% quote anchor, valid file:line refs). If the script's mechanical PASS/NA is wrong for a given screen (rare), the agent flips it to FAIL and adds a justification — same as any manual row.
+`AL` (text alignment + fill-width drawing rect, parent-aware): for any text whose Figma `textAlignHorizontal` is `CENTER` / `RIGHT` / `JUSTIFIED` AND whose layout is fill-width, the agent must verify code emits BOTH `.multilineTextAlignment(...)` AND a fill-width drawing rect for the Text. The fill-width rect comes from one of two layers depending on parent context:
+  - **Parent is a non-Button stack (VStack/HStack/ZStack/screen-root)** → `.frame(maxWidth: .infinity, alignment: ...)` ON THE TEXT
+  - **Parent is `Button { ... }`** → `.frame(maxWidth: .infinity)` ON THE BUTTON's OUTER frame (NOT on inner Text — that cascades up and bloats the button — banned by Check 8 + check letter `BW` below). The Button's outer fill propagates the drawing rect down to the Text for free, so `.multilineTextAlignment(.center)` works without an inner-Text maxWidth.
+
+  The common bug is emitting `.multilineTextAlignment(.center)` only without any fill-width rect anywhere in the chain — Text hugs its intrinsic width and the alignment is visually invisible (reads as left-aligned). Second-most-common bug is putting maxWidth on the Text inside a Button — the alignment looks right but the Button bloats to screen width. If the screen has zero text with non-LEFT alignment, mark the row N/A with reason. Source `references/visual-fidelity.md` §Text + §"Stack alignment" + §"`.frame(maxWidth: .infinity)` cascade trap".
+
+`IF` (image fill mode): for every Image whose Figma node fills its parent (fill-width / fill-height / both), the agent must verify code emits ALL THREE — `.resizable()` + content mode (`.scaledToFill()` / `.scaledToFit()` / `.aspectRatio(_:contentMode:)`) + `.frame(...)`. Common bug is `Image("hero").frame(maxWidth: .infinity, height: 240)` without `.resizable()` and `.scaledToFill()` — image stays at intrinsic size, frame reserves blank space. If the screen has no fill-* images (only hug icons), mark N/A with reason. Source `references/visual-fidelity.md` §1 "Image fill mode" + §4 Image + `references/layout-translation.md` §"Image content-mode → SwiftUI".
+
+`SS` (spacing-safe-area normalization): the prefill script's mechanical detector greps for screen-root `.padding(.top, N)` / `Spacer().frame(height: N)` where N ∈ {44, 47, 59, 64, 67, 79, 88}; if any hit lacks a `// safe-area-adjusted: ...` comment, prefill emits FAIL high. Otherwise PASS. The agent verifies inventory CONTAINER row had `mockupChrome` + `safeAreaInsets` set; if not, the row is incomplete regardless of grep result. Source `references/visual-fidelity.md` §4 "Safe area & spacing normalization" + `references/layout-translation.md` §"Safe Area Normalization for Mockup Frames".
+
+`BW` (button width source-of-truth): for every Button in the Visual Inventory, the agent verifies the WIDTH of the button comes from the Button's OWN Figma `primaryAxisSizingMode`, applied on the Button's OUTER frame:
+  - Figma `primaryAxisSizingMode: FILL` → code emits `.frame(maxWidth: .infinity)` on Button outer; **no maxWidth on inner Text or inner HStack**
+  - Figma `primaryAxisSizingMode: FIXED` (button width is W) → code emits `.frame(width: W)` on Button outer; **no width on inner Text/HStack**
+  - Figma `primaryAxisSizingMode: AUTO/HUG` (button hugs its label) → no width modifier; let Button intrinsic-size to its label
+
+The prefill script's mechanical detector greps for the inner-Text bug specifically: a `Text(...).frame(maxWidth: .infinity)` whose enclosing scope is `Button { ... }` body without `// allow-text-fill:` justification. When detected → FAIL high (this is the same condition as banned-pattern Check 8; if Check 8 was somehow bypassed, BW catches it on the verification side). When clean → TODO (the agent must still verify the Button's OUTER frame matches the Figma sizingmode).
+
+If the screen has zero buttons, mark the row N/A with reason. If the screen has multiple buttons, emit one BW row per button (or one PASS row covering all if every button checks out — but for FAIL rows, name each offending button explicitly). Source `references/visual-fidelity.md` §"`.frame(maxWidth: .infinity)` cascade trap" + §7 Hard Rule #14 + `references/layout-translation.md` §"Button sizing-mode → SwiftUI" + `references/anti-patterns.md` §12.
+
+The script never invents `Source quote` text — TODO rows ship with explicit `<verbatim>` placeholders that the agent replaces with strings copied verbatim from `design-context.md`. Gate C3-Pass2 still validates the final report unchanged (structure, 18-letter coverage, ≥14 rows, ≥50% quote anchor, valid file:line refs). If the script's mechanical PASS/NA is wrong for a given screen (rare), the agent flips it to FAIL and adds a justification — same as any manual row.
 
 Expected token saving on flows of 5+ screens: ~30–50% off Phase C, because the verification step is what dominates per-screen token cost.
 
@@ -164,15 +187,15 @@ grep -q '^## Summary'   "$REPORT" \
 
 # 3. Every required check letter appears in a Findings row
 MISSING=""
-for code in LH LS SH BD OP RM IS DV BG TR GR SA CH PD BS; do
+for code in LH LS SH BD OP RM IS AL DV BG TR GR SA CH PD BS IF SS BW; do
   grep -qE "^\| *[0-9]+ *\| *${code} *\|" "$REPORT" || MISSING="$MISSING $code"
 done
 [ -z "$MISSING" ] && echo "PASS: all checks covered" || { echo "FAIL: missing checks:$MISSING"; FAIL=1; }
 
 # 4. Row count
 ROW_COUNT=$(grep -cE '^\| *[0-9]+ *\|' "$REPORT")
-[ "${ROW_COUNT:-0}" -ge 12 ] && echo "PASS: $ROW_COUNT rows" \
-  || { echo "FAIL: only $ROW_COUNT rows (need >=12)"; FAIL=1; }
+[ "${ROW_COUNT:-0}" -ge 15 ] && echo "PASS: $ROW_COUNT rows" \
+  || { echo "FAIL: only $ROW_COUNT rows (need >=15)"; FAIL=1; }
 
 # 5. Anti-hallucination: every File:Line in PASS/FAIL rows points to a real line
 BAD_REFS=$(awk -F'|' '/^\| *[0-9]+ *\|/ {
@@ -381,15 +404,66 @@ file ".figma-cache/<nodeId>/c5-simulator.png" | grep -q "PNG image data" \
   || { echo "FAIL: simctl screenshot did not produce PNG"; exit 1; }
 ```
 
+### C5.5b — Comparison-safe pair (MANDATORY before C5.6)
+
+Claude's many-image API rejects any image with long-side >2000px (`An image in the conversation exceeds the dimension limit for many-image requests (2000px). Start a new session with fewer images.`). iPhone-native captures break this:
+- Figma `get_screenshot` at scale 3 → e.g. 1125×2436 (iPhone X), 1179×2556 (iPhone 14 Pro)
+- `simctl io screenshot` → device-native, e.g. 1170×2532, 1290×2796
+
+Either alone may load fine; loading **both together** (which C5.6.1, .2, .4, .5 all do) trips the limit and aborts the run.
+
+**`screenshot-cmp.png` should already exist** — Phase A Step A3 sub-step 2 produces it via `sips -Z 2000` right after `get_screenshot`, and Gate A validates it. C5.5b's only mandatory work is the simulator side:
+
+```bash
+CACHE=".figma-cache/<nodeId>"
+
+# 1. Verify Phase A's screenshot-cmp.png is present and valid (≤2000px).
+#    Missing = Phase A artifact lost — go to Rescue path below, do NOT silently skip.
+file "$CACHE/screenshot-cmp.png" 2>/dev/null | grep -q "PNG image data" || {
+  echo "screenshot-cmp.png missing — see Rescue path"; exit 1
+}
+
+# 2. Produce simulator-cmp.png from C5.5's c5-simulator.png.
+LONG=$(sips -g pixelWidth -g pixelHeight "$CACHE/c5-simulator.png" \
+       | awk '/pixel(Width|Height)/ {print $2}' | sort -n | tail -1)
+if [ "$LONG" -gt 2000 ]; then
+  sips -Z 2000 "$CACHE/c5-simulator.png" --out "$CACHE/c5-simulator-cmp.png" >/dev/null
+else
+  cp "$CACHE/c5-simulator.png" "$CACHE/c5-simulator-cmp.png"
+fi
+```
+
+**Rescue path — `screenshot.png` missing or unreadable at C5 time.** If `screenshot.png` is gone (cache pruned, figma-desktop session died after Phase A, etc.) and you cannot re-run Phase A right now, render the figma reference directly via MCPFigma:
+
+```jsonc
+// figma_export_assets_unified
+{
+  "fileKey": "...",
+  "nodeId": "<screen root>",
+  "outputDir": "<abs>/.figma-cache/<nodeId>/_rescue",
+  "sharedAssetsDir": "<abs>/.figma-cache/<nodeId>/_rescue",
+  "rows": [
+    { "nodeId": "<screen root>", "exporter": "fallback", "strategy": "flatten" }
+  ],
+  "fallbackScale": 2          // scale 2 keeps iPhone frames under 2000px
+}
+```
+
+Copy the resulting PNG to `$CACHE/screenshot-cmp.png`. **This is a C5-only rescue, not a Phase A substitute.** Phase A's hard STOP for missing figma-desktop (§"Hard rule on missing tools") is unchanged — the rescue exists only because by C5 the agent has already passed Phase A successfully and cannot replay it on the spot. `design-context.md` and `metadata.json` cannot be reconstructed this way; if those are also missing, you cannot run C5 — surface to user.
+
+C5.6.3 crops still operate on the **originals** (`screenshot.png` + `c5-simulator.png`) — high-res input gives better section crops, and the crop script normalizes to width 1024 anyway. C5.6.1, .2, .4, .5 read the `-cmp.png` copies.
+
 ### C5.6 — Side-by-side compare (6-step procedure, MANDATORY)
 
 The skill does not ship a pixel-diff binary; the agent's vision is the diff engine. The previous version of this step let the agent write 0–3 generic rows and declare PASS even when whole sections were missing. The procedure below is anti-confirmation-bias by construction: each step produces a file artifact that Gate C5 greps. **Walk every step in order. No shortcuts.**
 
 The Figma screenshot and the simulator screenshot will have different pixel sizes / scales. Compare composition and values, not absolute pixel positions.
 
+**Image inputs.** All sub-steps that load full-frame PNGs into the conversation read the C5.5b comparison-safe pair (`screenshot-cmp.png` + `c5-simulator-cmp.png`), not the originals. C5.6.3 crops are the only step that reads originals (the crop script handles its own resize).
+
 #### C5.6.1 — Section inventory (MANDATORY first step)
 
-Open `.figma-cache/<nodeId>/screenshot.png` and write `.figma-cache/<nodeId>/c5-sections.md`. One row per visible section, top-down. Schema:
+Open `.figma-cache/<nodeId>/screenshot-cmp.png` (the C5.5b comparison-safe copy of `screenshot.png`) and write `.figma-cache/<nodeId>/c5-sections.md`. One row per visible section, top-down. Schema:
 
 ```markdown
 | # | section            | bbox_pct                  | expected_count | notes                              |
@@ -447,8 +521,8 @@ This forces difference-first thinking before the structured table induces confir
 For each row in `c5-sections.md`, produce **3 rows** in `c5-visual-diff.md` — one per axis:
 
 - `PR` — **Presence** (does the simulator show it; count matches `expected_count`)
-- `LY` — **Layout** (position, size, internal spacing relative to siblings — use `bbox_pct` from `c5-sections.md`)
-- `ST` — **Styling** (color, typography weight/size, icon shape, shadows, borders)
+- `LY` — **Layout** (position, size, internal spacing relative to siblings — use `bbox_pct` from `c5-sections.md`; **container alignment**: stack children appear at the side / center / distribution Figma's `counterAxisAlignItems` + `primaryAxisAlignItems` specify — e.g. row that should be SPACE_BETWEEN with leftmost + rightmost children flush to edges, vs simulator showing them packed at start). **Width threshold (default 5pp).** **Tightened to 3pp when the section name contains `button` / `cta` / `primary` / `submit` / `action`** — primary CTAs are the most common bug surface for cascading maxWidth (button bloats to screen width, ignoring caller padding); 3pp ≈ 12pt on a 393pt iPhone, the smallest noticeable button-width difference. Per-button width is also covered by the dedicated "Button width check" block in C5.6.6 below.
+- `ST` — **Styling** (color, typography weight/size, icon shape, shadows, borders; **text alignment**: a Text whose Figma `textAlignHorizontal=CENTER`/`RIGHT` must visually center/end-align inside its drawing rect — common bug is text that looks left-aligned in simulator because `.multilineTextAlignment(.center)` was emitted without a fill-width drawing rect on the right layer (Text-layer for non-Button parents; Button-outer-layer for Button parents). See `references/visual-fidelity.md` §"Stack alignment" + §Text + §"`.frame(maxWidth: .infinity)` cascade trap")
 
 Each row carries Match (`PASS` / `FAIL` / `N/A`) and Severity. Schema mirrors C3 Pass 2 (replace `Source quote` with `Note`):
 
@@ -486,11 +560,21 @@ A: <enumerate or "none">
 | top-right element    | 92,3          | 88,4        | 4,1   | PASS    |
 | primary CTA center   | 50,82         | 50,86       | 0,4   | PASS    |
 | bottom-most element  | 50,95         | 50,98       | 0,3   | PASS    |
+
+## Button width check
+| button label / role     | figma w% | sim w% | delta | verdict |
+|-------------------------|----------|--------|-------|---------|
+| "Continue" (primary CTA)| 87       | 100    | 13    | FAIL    |
+| "Skip" (secondary)      | 30       | 30     | 0     | PASS    |
 ```
 
 Anchor delta > 5pp on either axis = `FAIL high`. If primary CTA isn't present, write `n/a — no CTA` in that row and explain.
 
-The negative spot-check exists because the structured table is biased toward "does Figma's element appear in the simulator" — it never asks the inverse, so spurious extra simulator content (e.g. system-chrome redraws, debug overlays, leftover placeholder text) routinely escapes detection.
+**Button width check (mandatory if any button exists on screen).** For every button visible in the simulator AND Figma, measure its width as a percentage of the canvas width (visually estimate from `screenshot-cmp.png` and `c5-simulator-cmp.png`, or use the per-section crop pair from C5.6.3). Compute `delta = |figma_w% - sim_w%|`. **Threshold 3pp** — anything ≥ 3pp is `FAIL high`. The example row above (delta 13 — Continue button bloated from 343pt design to 393pt screen-width) is exactly the cascade-trap bug from `anti-patterns.md` §12.
+
+If no buttons exist on the screen, write `n/a — no buttons on screen` as the only row (still write the block — Gate C5 verifies the block is present). If the screen has buttons but they're invisible in the simulator (hidden, off-screen, conditional), explain per-row instead of skipping the block.
+
+The negative spot-check exists because the structured table is biased toward "does Figma's element appear in the simulator" — it never asks the inverse, so spurious extra simulator content (e.g. system-chrome redraws, debug overlays, leftover placeholder text) routinely escapes detection. The button width check exists because the structured table compares position percentages but rarely catches *width* mismatches at primary-CTA scale; a button stretched from 343pt to 393pt is the most common silent C5 escape.
 
 #### C5.6.7 — Self-attestation
 
@@ -536,6 +620,20 @@ FAIL=0
 file "$CACHE/c5-simulator.png" 2>/dev/null | grep -q "PNG image data" \
   && echo "PASS: simulator screenshot" || { echo "FAIL: simulator screenshot"; FAIL=1; }
 
+# 2b. C5.5b comparison-safe pair exists (≤2000px on long side)
+for IMG in screenshot-cmp.png c5-simulator-cmp.png; do
+  if ! file "$CACHE/$IMG" 2>/dev/null | grep -q "PNG image data"; then
+    echo "FAIL: $IMG (run C5.5b)"; FAIL=1; continue
+  fi
+  LONG=$(sips -g pixelWidth -g pixelHeight "$CACHE/$IMG" 2>/dev/null \
+         | awk '/pixel(Width|Height)/ {print $2}' | sort -n | tail -1)
+  if [ -n "$LONG" ] && [ "$LONG" -le 2000 ]; then
+    echo "PASS: $IMG ($LONG px long-side)"
+  else
+    echo "FAIL: $IMG long-side=$LONG (>2000, many-image limit)"; FAIL=1
+  fi
+done
+
 # 3. C5.6 coverage (delegates to script — single source of truth)
 if scripts/c5-coverage-check.sh --cache "$CACHE"; then
   echo "PASS: C5.6 coverage"
@@ -570,7 +668,7 @@ codeFiles:
   - Features/Onboarding/OnboardingHeader.swift
 
 ## Checklist coverage
-- LH LS SH BD OP RM IS DV BG TR GR SA CH PD BS
+- LH LS SH BD OP RM IS AL DV BG TR GR SA CH PD BS IF SS
 
 ## Findings
 | #  | Check | Section        | Figma Spec                              | Source quote                                                              | Code value                                              | File:Line                       | Match | Severity |
@@ -583,23 +681,27 @@ codeFiles:
 | 6  | RM    | Close icon     | tinted to text/secondary                | inventory row 7: renderingMode=template, tint=textSecondary               | Image("icAIClose").resizable() (no .renderingMode)      | OnboardingView.swift:24         | FAIL  | high     |
 | 7  | IS    | Facebook icon  | 24x24                                   | inventory row 4: 24x24                                                    | .frame(width:24,height:24)                              | OnboardingView.swift:55         | PASS  | -        |
 | 8  | IS    | Close icon     | 20x20                                   | inventory row 7: 20x20                                                    | .frame(width:24,height:24)                              | OnboardingView.swift:25         | FAIL  | medium   |
-| 9  | DV    | n/a — no divider in screen | -                           | -                                                                         | -                                                       | -                               | N/A   | -        |
-| 10 | BG    | Sheet header   | ultraThin material                      | design-context.md L37 `backdrop-filter:blur(20px)`                        | .background(.ultraThinMaterial)                         | OnboardingView.swift:14         | PASS  | -        |
-| 11 | TR    | Subtitle       | maxLines 2                              | design-context.md L48 `WebkitLineClamp:'2'`                               | .lineLimit(2)                                           | OnboardingHeader.swift:26       | PASS  | -        |
-| 12 | GR    | Hero card      | linear top→bottom #FF6B6B → #FFD93D     | design-context.md L62 `linear-gradient(180deg,#FF6B6B,#FFD93D)`           | LinearGradient(colors:[Color(hex:"FF6B6B"),Color(hex:"FFD93D")],startPoint:.top,endPoint:.bottom) | OnboardingView.swift:34 | PASS  | -        |
-| 13 | SA    | Container      | content extends behind status bar       | screenshot shows hero gradient continuing under status area              | .ignoresSafeArea(edges:.top) on background only         | OnboardingView.swift:11         | PASS  | -        |
-| 14 | CH    | -              | iOS draws status bar / home indicator   | SKILL ABSOLUTE RULE                                                       | grep clean (no "9:41", no Capsule(width:134))           | -                               | PASS  | -        |
-| 15 | PD    | Card padding   | 16pt all sides                          | design-context.md L55 `padding:'16px'`                                    | .padding(16)                                            | OnboardingView.swift:50         | PASS  | -        |
-| 16 | BS    | Primary CTA    | custom-styled button                    | inventory row 11: customStyle, no system chrome                          | Button { ... }.buttonStyle(.plain)                      | OnboardingView.swift:70         | PASS  | -        |
+| 9  | AL    | Headline       | textAlignHorizontal=CENTER, fill-width  | design-context.md L41 `class="text-center"`                               | .multilineTextAlignment(.center) (no .frame(maxWidth:.infinity)) | OnboardingHeader.swift:19       | FAIL  | high     |
+| 10 | DV    | n/a — no divider in screen | -                           | -                                                                         | -                                                       | -                               | N/A   | -        |
+| 11 | BG    | Sheet header   | ultraThin material                      | design-context.md L37 `backdrop-filter:blur(20px)`                        | .background(.ultraThinMaterial)                         | OnboardingView.swift:14         | PASS  | -        |
+| 12 | TR    | Primary CTA    | label single-line, button width 343pt   | inventory row 11: lineCount=1, frame=fill-width                           | .lineLimit(1) (no .minimumScaleFactor)                  | OnboardingView.swift:71         | FAIL  | medium   |
+| 13 | GR    | Hero card      | linear top→bottom #FF6B6B → #FFD93D     | design-context.md L62 `linear-gradient(180deg,#FF6B6B,#FFD93D)`           | LinearGradient(colors:[Color(hex:"FF6B6B"),Color(hex:"FFD93D")],startPoint:.top,endPoint:.bottom) | OnboardingView.swift:34 | PASS  | -        |
+| 14 | SA    | Container      | content extends behind status bar       | screenshot shows hero gradient continuing under status area              | .ignoresSafeArea(edges:.top) on background only         | OnboardingView.swift:11         | PASS  | -        |
+| 15 | CH    | -              | iOS draws status bar / home indicator   | SKILL ABSOLUTE RULE                                                       | grep clean (no "9:41", no Capsule(width:134))           | -                               | PASS  | -        |
+| 16 | PD    | Card padding   | 16pt all sides                          | design-context.md L55 `padding:'16px'`                                    | .padding(16)                                            | OnboardingView.swift:50         | PASS  | -        |
+| 17 | BS    | Primary CTA    | custom-styled button                    | inventory row 11: customStyle, no system chrome                          | Button { ... }.buttonStyle(.plain)                      | OnboardingView.swift:70         | PASS  | -        |
+| 18 | IF    | Hero artwork   | fill-width, scaleMode=FILL              | inventory row 2: contentMode=fill, frame=fill-width                       | Image("heroArtwork").frame(maxWidth:.infinity, height:240) (no .resizable, no .scaledToFill) | OnboardingView.swift:36 | FAIL  | high     |
+| 19 | SS    | -              | mockupChrome=true, frame H=812, inset.top=44; headline raw y=88 → adjusted=44 | inventory CONTAINER row: safeAreaInsets=top:44,bottom:34; mockupChrome=true | .padding(.top, 88) (raw figma y, no comment, no subtraction) | OnboardingView.swift:13         | FAIL  | high     |
+| 20 | BW    | Primary CTA    | Figma primaryAxisSizingMode=FILL on Button node (button width=343pt = fill the 16pt-padded slot, NOT 393pt screen-width) | inventory row 11: button sizingMode=FILL | Button { HStack { Text("Continue").frame(maxWidth:.infinity); Image("icAIArrow") } } (inner-Text maxWidth cascades up through Button — Button bloats to 393pt screen-width, caller .padding(.horizontal, 16) overridden) | OnboardingView.swift:70 | FAIL  | high     |
 
 ## Summary
-- total: 16
-- pass:  12
-- fail:  3   (high: 3, medium: 1, low: 0)
+- total: 20
+- pass:  10
+- fail:  9   (high: 7, medium: 2, low: 0)
 - n/a:   1
 ```
 
-This report has 3 high FAILs (rows 2, 3, 6) → triggers self-fix loop. After retry, those 3 file:line locations get edits; row 8 (medium icon size) is also fixed if `medium > 2` threshold met (here it's only 1 medium, so it stays as-is and surfaces to the user at the end if not auto-fixed).
+This report has 7 high FAILs (rows 2, 3, 6, 9, 18, 19, 20) → triggers self-fix loop. After retry, those 7 file:line locations get edits; rows 8 + 12 (medium severity — icon size, missing minimumScaleFactor) also pull into the fix because medium count = 2 > threshold trigger when paired with the high count. Row 19 is the safe-area double-count from `anti-patterns.md` §9; row 18 is the image-fill-mode bug from §10; row 20 is the button-bloat cascade-trap bug from §12 — fixed by moving `.frame(maxWidth: .infinity)` from the inner Text to the Button's outer modifier chain (`Button { HStack { Text("Continue"); Spacer(); Image(...) } }.frame(maxWidth: .infinity)`).
 
 ---
 

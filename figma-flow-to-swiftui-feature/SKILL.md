@@ -9,12 +9,13 @@ Turn one or more Figma nodes plus a feature-flow brief into a complete SwiftUI f
 
 ## Mandatory Output Checklist
 
-Every flow run MUST satisfy these four items. Cite each item by number in the verification report.
+Every flow run MUST satisfy these five items. Cite each item by number in the verification report.
 
 1. **Every visible icon, logo, illustration, and image is sourced from Figma.** No `Image(systemName:)` or hand-drawn `Path` / `Shape` substituting for a Figma node. Allow-list exceptions documented in [`../figma-to-swiftui/references/verification-loop.md` §6](../figma-to-swiftui/references/verification-loop.md#6-c6--asset-completeness-mandatory). Enforced per screen by `scripts/c6-asset-completeness.sh` AND at write-time by `scripts/hooks/figma-to-swiftui-banned-pattern-gate.sh`.
-2. **No iOS system chrome is redrawn in SwiftUI.** Status bar, home indicator, Dynamic Island, notch are rendered by iOS. Enforced by `scripts/c7-no-system-chrome.sh` over the entire feature src tree — see [`../figma-to-swiftui/references/verification-loop.md` §7](../figma-to-swiftui/references/verification-loop.md#7-c7--no-system-chrome-mandatory).
+2. **No iOS system chrome is redrawn in SwiftUI.** Status bar, home indicator, Dynamic Island, notch are rendered by iOS — and the iPhone bezel (the rounded outline of the entire frame, ~47–55pt) is rendered by the hardware itself. Drawing any of them is a bug; on real devices the user gets duplicates or a "double bezel" gutter. Enforced by `scripts/c7-no-system-chrome.sh` over the entire feature src tree (status-bar / home-indicator / Dynamic Island redraws AND screen-root `.cornerRadius`/`.clipShape(.rect(cornerRadius:))` ≥ 30pt without `// allow-screen-corner-radius:` justification) — see [`../figma-to-swiftui/references/verification-loop.md` §7](../figma-to-swiftui/references/verification-loop.md#7-c7--no-system-chrome-mandatory) + [`../figma-to-swiftui/references/anti-patterns.md` §11](../figma-to-swiftui/references/anti-patterns.md).
 3. **Asset export is exhaustive on every screen.** Each `figma_export_assets_unified` call passes `autoDiscover: true` so the server scans the subtree under that screen's `nodeId` and auto-builds rows for every `eIC*` / `eImage*` found. The response's `coverage` block is the proof. See [`../figma-to-swiftui/references/mcpfigma-setup.md` §"figma_export_assets_unified"](../figma-to-swiftui/references/mcpfigma-setup.md). Enforced at write-time by `scripts/hooks/figma-to-swiftui-gate.sh`: every `registry.taggedAssets[].nodeId` MUST appear in `manifest.rows[]` with `status: "done"` before any `*.swift` Write/Edit is allowed.
 4. **Visual diff is decisive, not weasel-worded — per screen.** Every screen's C5.6 must produce `c5-sections.md`, `c5-census.md`, per-section crop pairs, free-form "what's wrong" paragraph, 3-axis diff table, negative spot-check, 4-anchor proportional check, and attestation. No "approximately", "roughly", "close enough" in PASS rows. See [`../figma-to-swiftui/references/verification-loop.md` §C5.6](../figma-to-swiftui/references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory). Enforced per screen by `scripts/c5-coverage-check.sh` and `scripts/c5-weasel-detect.sh`.
+5. **Every screen follows the project's coding conventions.** The flow-level convention probe at Step 2 writes `.figma-cache/_shared/c1-conventions.json` (see [`../figma-to-swiftui/references/adaptation-workflow.md` §0](../figma-to-swiftui/references/adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit)) which gates all c8-* scripts: `c8-conventions-gate.sh`, `c8-vm-pattern.sh`, `c8-func-length.sh`, `c8-iknavigation.sh`, `c8-ikfont.sh`. Folder layout, ViewModel pattern (State + Action + `send(_:)` reducer), function size, and (when project uses them) IKNavigation / IKMacros / IKFont routing are all enforced PER SCREEN at the end of each Phase C run, plus once at flow level after Step 6 over the full feature tree. Reference files: [`../figma-to-swiftui/references/project-structure.md`](../figma-to-swiftui/references/project-structure.md), [`../figma-to-swiftui/references/viewmodel-pattern.md`](../figma-to-swiftui/references/viewmodel-pattern.md), [`../figma-to-swiftui/references/swift-style.md`](../figma-to-swiftui/references/swift-style.md), [`../figma-to-swiftui/references/iknavigation-bridge.md`](../figma-to-swiftui/references/iknavigation-bridge.md), [`../figma-to-swiftui/references/ikmacro-bridge.md`](../figma-to-swiftui/references/ikmacro-bridge.md).
 
 **Concrete failure modes catalogued:** [`../figma-to-swiftui/references/anti-patterns.md`](../figma-to-swiftui/references/anti-patterns.md) lists the exact agent justifications that produced broken multi-screen runs ("downloaded major assets, built the rest with shapes", "build → screenshot → looks great without C5.6", "edit ContentView to jump between screens for verification"). Read once before Phase B and once before writing the Flow Verification summary.
 
@@ -107,9 +108,15 @@ Before generating any SwiftUI:
 - Find existing service clients, repositories, or `IKCoreApp` helpers
 - Find reusable components, modifiers, button styles, typography helpers, asset and color tokens
 - Check nearby features for the same flow shape before creating new abstractions
-- **swiftui-pro audit (mandatory):** confirm the routing uses `NavigationStack` / `NavigationSplitView` (not deprecated `NavigationView`) and that destinations register via `.navigationDestination(for:)` not `NavigationLink(destination:)`. If the existing codebase **mixes** the two, **STOP** — flag to the user before writing new screens; mixing breaks navigation. See `../figma-to-swiftui/references/swiftui-pro/navigation.md`.
+- **swiftui-pro audit (mandatory):** confirm the routing uses `NavigationStack` / `NavigationSplitView` (not deprecated `NavigationView`) and that destinations register via `.navigationDestination(for:)` not `NavigationLink(destination:)`. If the existing codebase **mixes** the two, **STOP** — flag to the user before writing new screens; mixing breaks navigation. See `../figma-to-swiftui/references/swiftui-pro/navigation.md`. **NOTE:** when the convention probe (next bullet) sets `usesIKNavigation = true`, this swiftui-pro check inverts — the mandatory state is IKNavigation throughout, NOT vanilla NavigationStack; see `../figma-to-swiftui/references/iknavigation-bridge.md`.
 - **swiftui-pro audit (mandatory):** confirm shared state uses `@Observable` + `@MainActor` (iOS 17+) or `ObservableObject` + `@Published` + `@StateObject` (iOS 16 fallback) consistently — not mixed. See `../figma-to-swiftui/references/swiftui-pro/data.md`. If project baseline is iOS 16+, the legacy form is mandatory; document that decision in the screen graph output.
-- **swiftui-pro audit (mandatory):** locate `Spacing`, `IKFont`, `IKCoreApp` enums and list their cases. C2 routes Figma values through them per `../figma-to-swiftui/references/swiftui-pro-bridge.md` §7. If any enum is missing, surface to the user before generating views.
+- **swiftui-pro audit (mandatory):** locate token enums by canonical and alternative names — `Spacing` / `AppSpacing` / `Padding`, `IKFont` / `AppFont` / `Typography`, `IKCoreApp` / `AppColors` / `ColorPalette`. List their cases. C2 routes Figma values through whichever is detected per `../figma-to-swiftui/references/swiftui-pro-bridge.md` §3. When a project has none of these, the skill falls back to inline literals + `@ScaledMetric` (the bridge §7 fallbacks) — do NOT introduce a new enum file unless the user explicitly asks.
+- **Coding-conventions probe (mandatory, flow-shared).** Run the convention probe ONCE for the entire flow per [`../figma-to-swiftui/references/adaptation-workflow.md` §0](../figma-to-swiftui/references/adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit). Write the result to `.figma-cache/_shared/c1-conventions.json`. Every per-screen Phase C reads this same file — do not re-probe per screen. Resolved fields the screen graph (Step 3) must respect:
+  - `screenFolderConvention` — drives where each new `*Screen.swift` / `*ViewModel.swift` lands (`Screens/<Name>Screen/...`)
+  - `viewModelPattern` — every new ViewModel uses State + Action + `send(_:)` reducer
+  - `usesIKNavigation` (+ `routerName`) — when true, the flow EXTENDS the existing `<routerName>` and adds new cases to its existing route enum; it does NOT introduce vanilla `NavigationStack` or invent a parallel router. See `../figma-to-swiftui/references/iknavigation-bridge.md` §5.
+  - `usesIKMacros` (+ `apiRepoTypeName`) — when true AND the flow needs new networking, generate `@APIProtocol` services injecting `<apiRepoTypeName>`. See `../figma-to-swiftui/references/ikmacro-bridge.md`.
+  - `ikFontEnum`, `spacingEnum`, `colorEnum` — token routing for typography/spacing/colors.
 
 Read [references/navigation-state-integration.md](references/navigation-state-integration.md) when wiring architecture.
 
@@ -238,6 +245,28 @@ Complete the non-visual behavior:
 - Async task lifecycle and error mapping
 
 Read [references/feature-completeness.md](references/feature-completeness.md) to avoid stopping at the happy path.
+
+### 6.5. Flow-level coding-conventions sweep (BASH, mandatory)
+
+Per-screen Phase C already runs Pass 5 (`scripts/c8-*.sh`) over each screen's generated files — see [`../figma-to-swiftui/SKILL.md`](../figma-to-swiftui/SKILL.md) Step C3 Pass 5. Step 6 added cross-screen router wiring + shared scaffolding (Step 4) which per-screen sweeps could not see, so a single flow-level sweep over the whole feature tree catches the rest.
+
+```bash
+SWIFT_SRC="<project-root or feature-folder>"
+CONV=".figma-cache/_shared/c1-conventions.json"
+FAIL=0
+
+scripts/c8-conventions-gate.sh --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
+scripts/c8-vm-pattern.sh       --src "$SWIFT_SRC" || FAIL=1
+scripts/c8-func-length.sh      --src "$SWIFT_SRC" || FAIL=1
+scripts/c8-iknavigation.sh     --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
+scripts/c8-ikfont.sh           --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
+scripts/c8-weak-self.sh        --src "$SWIFT_SRC"
+
+[ $FAIL -eq 0 ] && echo "GATE: PASS (Step 6.5 — flow-level coding conventions)" \
+                 || { echo "GATE: FAIL (Step 6.5) — fix violations before Step 7"; exit 1; }
+```
+
+The sweep is informed by `c1-conventions.json` written at Step 2 — gates auto-skip when the corresponding flag is off (e.g. IKNavigation gate is `SKIP` when `usesIKNavigation = false`).
 
 ### 7. Verify at Feature Level
 

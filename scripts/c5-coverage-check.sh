@@ -17,6 +17,7 @@
 #   8. "## 4-anchor proportional check" present, all 4 rows non-empty
 #   9. "## Attestation" present
 #  10. No weasel words in PASS rows (delegates to c5-weasel-detect.sh)
+#  11. "## Button width check" block present with ≥1 row (Figma vs sim width %)
 #
 # Usage:
 #   c5-coverage-check.sh --cache <.figma-cache/nodeId>
@@ -201,6 +202,36 @@ if grep -q '^## Attestation' "$DIFF"; then
   ok "## Attestation block present"
 else
   bad "## Attestation block missing"
+fi
+
+# 11. Button width check — block must exist with ≥1 populated row.
+#     For screens with buttons: per-button rows comparing figma w% to sim w%
+#     with a 3pp threshold (per `references/verification-loop.md` §C5.6.6).
+#     For screens with no buttons: a single row `n/a — no buttons on screen`
+#     (still write the block — Gate C5 verifies the block is present).
+if grep -q '^## Button width check' "$DIFF"; then
+  BW_ROWS=$(awk '
+    /^## Button width check/ { in_block=1; next }
+    /^## /                   { in_block=0 }
+    in_block && /^\| *[A-Za-z"`]/ {
+      n=split($0, cells, "|")
+      empties=0; total=0
+      for (i=2; i<n; i++) {
+        v=cells[i]; gsub(/^ +| +$/, "", v)
+        total++
+        if (v=="") empties++
+      }
+      if (total>=4 && empties==0) print
+    }
+  ' "$DIFF" | wc -l | tr -d ' ')
+  # ≥ 2: header row + ≥ 1 data row (or 'n/a' row).
+  if [ "$BW_ROWS" -ge 2 ]; then
+    ok "## Button width check: $BW_ROWS populated row(s) (header + data)"
+  else
+    bad "## Button width check has $BW_ROWS populated row(s); expected ≥ 2 (header + ≥ 1 data row, use 'n/a — no buttons on screen' if zero buttons)"
+  fi
+else
+  bad "## Button width check block missing — add per-button width comparison (3pp threshold) or 'n/a — no buttons on screen' if none"
 fi
 
 # 10. Weasel detector — delegate to the standalone script.

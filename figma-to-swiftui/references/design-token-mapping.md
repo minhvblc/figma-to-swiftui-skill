@@ -98,7 +98,7 @@ Figma typography variables map to Font definitions. **Typography is the #1 sourc
 | font-width (Expanded/Condensed) | `.fontWidth(.expanded)` / `.condensed` (iOS 16+) |
 | line-height | `.lineSpacing(lineHeight - fontSize)` — **see pitfall below** |
 | letter-spacing | `.tracking(X)` (preferred) or `.kerning(X)` |
-| text-align | `.multilineTextAlignment(.leading / .center / .trailing)` |
+| text-align | `.multilineTextAlignment(.leading / .center / .trailing / .justified)` — **for `.center` / `.trailing`, the Text also needs a fill-width drawing rect**, but **place the `.frame(maxWidth: .infinity)` on the right layer**: on the Text itself when the parent is a non-Button stack; on the Button's OUTER frame when the parent is `Button { ... }` (inner-Text maxWidth cascades up and bloats the button — banned by Check 8). `.multilineTextAlignment` only positions lines *inside* the Text's drawing rect; a hugging Text in an HStack stays at its intrinsic width and the alignment becomes visually invisible (looks left-aligned). See `visual-fidelity.md` §Text + §"`.frame(maxWidth: .infinity)` cascade trap". |
 | text-transform: uppercase | `.textCase(.uppercase)` |
 
 ### Line height pitfall

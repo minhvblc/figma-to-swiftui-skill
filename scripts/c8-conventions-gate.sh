@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# c8-conventions-gate.sh — verify generated SwiftUI files follow the
+# screen-based folder layout and naming conventions documented in
+# `figma-to-swiftui/references/project-structure.md`.
+#
+# Skipped when the project uses a flat layout (c1-conventions.json sets
+# `screenFolderConvention = "flat"`).
+#
+# Usage:
+#   c8-conventions-gate.sh --src <path-to-swift-src-root> --conventions <path-to-c1-conventions.json>
+#
+# Exit codes:
+#   0 — PASS or SKIP
+#   1 — at least one violation
+#   64 — bad usage
+#   65 — input not found
+
+set -euo pipefail
+
+SRC=""
+CONVENTIONS=""
+
+print_usage() {
+  cat <<'USAGE' >&2
+usage: c8-conventions-gate.sh --src <swift-src-root> --conventions <c1-conventions.json>
+
+Verifies file paths and types follow the screen-based folder convention:
+  - Screen views live at Screens/<Name>Screen/<Name>Screen.swift
+  - ViewModels live alongside the Screen file
+  - Subview / model / enum files in Subviews/, Models/, Enums/ have a
+    parent-screen prefix
+  - Type/file basenames agree on suffix (-Screen, -View, -ViewModel, +Ext)
+
+The gate is skipped when c1-conventions.json sets screenFolderConvention to
+"flat" — output is `GATE: SKIP (flat layout)`, exit 0.
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --src)         SRC="${2:-}"; shift 2 ;;
+    --conventions) CONVENTIONS="${2:-}"; shift 2 ;;
+    -h|--help)     print_usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; print_usage; exit 64 ;;
+  esac
+done
+
+[ -n "$SRC" ] || { print_usage; exit 64; }
+[ -d "$SRC" ] || { echo "FAIL: src is not a directory: $SRC" >&2; exit 65; }
+
+if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+  C_RED=$(tput setaf 1); C_GRN=$(tput setaf 2); C_YEL=$(tput setaf 3); C_DIM=$(tput dim); C_RST=$(tput sgr0)
+else
+  C_RED=""; C_GRN=""; C_YEL=""; C_DIM=""; C_RST=""
+fi
+
+# Read screenFolderConvention from c1-conventions.json. Default = screen-based.
+LAYOUT="screen-based"
+if [ -n "$CONVENTIONS" ] && [ -f "$CONVENTIONS" ]; then
+  LAYOUT=$(grep -oE '"screenFolderConvention"[[:space:]]*:[[:space:]]*"[^"]+"' "$CONVENTIONS" \
+    | sed -E 's/.*"([^"]+)"$/\1/' | head -n1 || true)
+  [ -n "$LAYOUT" ] || LAYOUT="screen-based"
+fi
+
+if [ "$LAYOUT" = "flat" ]; then
+  echo "${C_DIM}GATE: SKIP (flat layout)${C_RST}"
+  exit 0
+fi
+
+HITS_FILE=$(mktemp -t c8-conventions.XXXXXX)
+trap 'rm -f "$HITS_FILE"' EXIT
+
+violation() {
+  printf "%s\n" "$1" >> "$HITS_FILE"
+}
+
+# Walk every .swift file under SRC.
+while IFS= read -r -d '' file; do
+  rel="${file#$SRC/}"
+  base="$(basename "$file" .swift)"
+  parent_dir="$(dirname "$rel")"
+  parent_name="$(basename "$parent_dir")"
+  grandparent="$(basename "$(dirname "$parent_dir")")"
+
+  # ── 1. Screen file location ────────────────────────────────────────────
+  # *Screen.swift must be at Screens/<X>Screen/<X>Screen.swift
+  if [[ "$base" == *Screen ]] && [[ "$base" != *Screens ]]; then
+    expected_parent="${base}"
+    if [[ "$parent_name" == "Subviews" ]] || [[ "$parent_name" == "SubViewModels" ]] \
+         || [[ "$parent_name" == "Models" ]] || [[ "$parent_name" == "Enums" ]]; then
+      violation "$rel: '-Screen' suffix is reserved for parent (full-screen) views; subviews use '-View' suffix (see project-structure.md §3)"
+    elif [[ "$parent_name" != "$expected_parent" ]] || [[ "$grandparent" != "Screens" ]]; then
+      violation "$rel: screen view should live at Screens/${expected_parent}/${base}.swift (got: ${rel})"
+    fi
+  fi
+
+  # ── 1b. Parent-view existence — every Screens/<X>Screen/ folder MUST contain
+  #      <X>Screen.swift (the parent View). Done in a separate pass below.
+
+  # ── 2. ViewModel placement ────────────────────────────────────────────
+  # *ViewModel.swift directly named after the screen lives at the screen's
+  # folder; sub-ViewModels live in SubViewModels/ folder.
+  if [[ "$base" == *ViewModel ]]; then
+    screen_root="${base%ViewModel}"
+    expected_parent="${screen_root}Screen"
+    if [[ "$parent_name" == "SubViewModels" ]]; then
+      # Sub-ViewModel: file basename must start with the parent screen name.
+      screen_folder="$(basename "$(dirname "$parent_dir")")"
+      screen_prefix="${screen_folder%Screen}"
+      if [[ "$base" != ${screen_prefix}* ]]; then
+        violation "$rel: sub-ViewModel must start with parent screen prefix '${screen_prefix}' (got: ${base})"
+      fi
+    elif [[ "$parent_name" == "$expected_parent" ]] && [[ "$grandparent" == "Screens" ]]; then
+      : # OK — top-level ViewModel for the screen
+    else
+      violation "$rel: ViewModel '${base}' should live at Screens/${expected_parent}/${base}.swift OR Screens/<Parent>Screen/SubViewModels/${base}.swift"
+    fi
+  fi
+
+  # ── 3. Subview / Models / Enums prefix rule ────────────────────────────
+  case "$parent_name" in
+    Subviews|Models|Enums|SubViewModels)
+      screen_folder="$(basename "$(dirname "$parent_dir")")"
+      screen_prefix="${screen_folder%Screen}"
+      if [[ -n "$screen_prefix" ]] && [[ "$base" != ${screen_prefix}* ]]; then
+        violation "$rel: file in '${parent_name}/' must start with screen prefix '${screen_prefix}' (got: ${base})"
+      fi
+      ;;
+  esac
+
+  # ── 3b. Top-level files in Screens/<X>Screen/ MUST have -Screen or
+  #      -ViewModel suffix. A bare *View.swift sitting at the screen-folder
+  #      root means the agent named a parent view incorrectly (should be
+  #      <X>Screen.swift) or placed a subview at the wrong level (should be
+  #      Subviews/<X><Y>View.swift).
+  if [[ "$grandparent" == "Screens" ]] && [[ "$parent_name" == *Screen ]]; then
+    case "$base" in
+      *Screen|*ViewModel)
+        : # OK — parent view or its ViewModel
+        ;;
+      *)
+        violation "$rel: top-level file in Screens/${parent_name}/ must end with '-Screen' (parent view) or '-ViewModel'; subviews go in Subviews/ (got: ${base}.swift)"
+        ;;
+    esac
+  fi
+
+  # ── 4. Suffix / type-declaration agreement ─────────────────────────────
+  # *Screen.swift declares a `*Screen` type; *View.swift declares a `*View`
+  # struct; *ViewModel.swift declares a `*ViewModel` class.
+  if [[ "$base" == *Screen ]] && ! grep -qE "(struct|class)\s+${base}\b" "$file"; then
+    violation "$rel: '${base}.swift' should declare a type named '${base}'"
+  fi
+  if [[ "$base" == *ViewModel ]] && ! grep -qE "(class|final class|@Observable[[:space:]]+(@MainActor[[:space:]]+)?(final[[:space:]]+)?class)\s+${base}\b" "$file"; then
+    violation "$rel: '${base}.swift' should declare a class named '${base}'"
+  fi
+  if [[ "$base" == *View ]] && [[ "$base" != *Screen ]] \
+       && ! grep -qE "struct\s+${base}\b" "$file"; then
+    violation "$rel: '${base}.swift' should declare a struct named '${base}'"
+  fi
+
+  # ── 5. Extension file naming ───────────────────────────────────────────
+  # Files in Utilities/Extensions/ must match <Type>+Ext.swift or
+  # <Type>+<Feature>Ext.swift.
+  if [[ "$rel" == Utilities/Extensions/* ]] || [[ "$parent_name" == "Extensions" ]]; then
+    if [[ "$base" != *+*Ext ]]; then
+      violation "$rel: extension file must use '<Type>+Ext.swift' or '<Type>+<Feature>Ext.swift' naming (got: ${base}.swift)"
+    fi
+  fi
+
+done < <(find "$SRC" -name '*.swift' -type f -print0 2>/dev/null)
+
+# ── 6. Parent-view existence ────────────────────────────────────────────────
+# Every Screens/<X>Screen/ folder MUST contain <X>Screen.swift (the parent
+# View). Catches: agent named the parent view file `HomeView.swift` instead
+# of `HomeScreen.swift`, leaving the folder without a -Screen entry.
+if [ -d "$SRC/Screens" ]; then
+  while IFS= read -r -d '' screen_dir; do
+    folder=$(basename "$screen_dir")
+    [[ "$folder" == *Screen ]] || continue
+    if [ ! -f "$screen_dir/${folder}.swift" ]; then
+      rel_dir="${screen_dir#$SRC/}"
+      violation "$rel_dir/: missing parent-view file ${folder}.swift (the full-screen view must use the '-Screen' suffix matching the folder name)"
+    fi
+  done < <(find "$SRC/Screens" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+fi
+
+# Report.
+if [ -s "$HITS_FILE" ]; then
+  COUNT=$(wc -l < "$HITS_FILE" | tr -d ' ')
+  echo "${C_RED}GATE: FAIL: convention violations${C_RST} (${COUNT} hit(s)):"
+  cat "$HITS_FILE"
+  echo "${C_DIM}fix: see references/project-structure.md §2 (folder layout) and §3 (file naming)${C_RST}"
+  exit 1
+fi
+
+echo "${C_GRN}GATE: PASS${C_RST}: project-structure conventions OK in $SRC"
+exit 0

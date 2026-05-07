@@ -17,12 +17,13 @@ Turn Figma nodes into production SwiftUI with pixel-matching fidelity. **Three p
 
 ## Mandatory Output Checklist
 
-Every run MUST satisfy these four items. Cite each item by number in the verification report.
+Every run MUST satisfy these five items. Cite each item by number in the verification report.
 
 1. **Every visible icon, logo, illustration, and image is sourced from Figma.** No `Image(systemName:)` or hand-drawn `Path` / `Shape` substituting for a Figma node. Allow-list exceptions are documented in `references/verification-loop.md#6` and require an explicit `// allow-systemName:` opt-in for anything outside the canonical list. Enforced by `scripts/c6-asset-completeness.sh` (see [verification-loop.md §6](references/verification-loop.md#6-c6--asset-completeness-mandatory)).
 2. **No iOS system chrome is redrawn in SwiftUI.** Status bar (time, signal/wifi/battery), home indicator, Dynamic Island, and notch are rendered by iOS. Enforced by `scripts/c7-no-system-chrome.sh` (see [verification-loop.md §7](references/verification-loop.md#7-c7--no-system-chrome-mandatory)).
 3. **Asset export is exhaustive.** When calling `figma_export_assets_unified`, pass `autoDiscover: true` so the server scans the subtree under `nodeId` and auto-builds rows for every `eIC*` / `eImage*` it finds — caller-supplied rows still win on duplicates. The response's `coverage` block (`discoveredCount`, `exportedCount`, `autoAddedRows`, `skippedNodeIds`) is the proof. See `references/mcpfigma-setup.md` §"figma_export_assets_unified" for the flag.
 4. **Visual diff is decisive, not weasel-worded.** C5.6 must produce `c5-sections.md`, `c5-census.md`, per-section crop pairs, free-form "what's wrong" paragraph, 3-axis diff table, negative spot-check, 4-anchor proportional check, and attestation. No "approximately", "roughly", "close enough" in PASS rows. See [verification-loop.md §C5.6](references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory). Enforced by `scripts/c5-coverage-check.sh` and `scripts/c5-weasel-detect.sh`.
+5. **Generated code follows project conventions detected at C1.** Folder layout, file naming, ViewModel pattern (`State + Action + send(_:)` reducer), function size, and (when the project uses them) IKNavigation / IKMacros / IKFont routing. The C1 convention probe writes `c1-conventions.json` (see [`references/adaptation-workflow.md` §0](references/adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit)) which gates the c8-* scripts: `c8-conventions-gate.sh`, `c8-vm-pattern.sh`, `c8-func-length.sh`, `c8-iknavigation.sh`, `c8-ikfont.sh`, `c8-weak-self.sh`. Reference files: [`references/project-structure.md`](references/project-structure.md), [`references/viewmodel-pattern.md`](references/viewmodel-pattern.md), [`references/swift-style.md`](references/swift-style.md), [`references/iknavigation-bridge.md`](references/iknavigation-bridge.md), [`references/ikmacro-bridge.md`](references/ikmacro-bridge.md).
 
 ---
 
@@ -51,22 +52,24 @@ If an asset truly cannot be fetched (node missing from Figma, MCP returns error 
 
 ## ABSOLUTE RULE — Do NOT draw iOS system chrome
 
-Figma frames often include a mockup of iOS system chrome (status bar, Dynamic Island, home indicator). **These are rendered by iOS itself.** Drawing them in SwiftUI is always a bug — it duplicates what iOS already shows and breaks on real devices.
+Figma frames often include a mockup of iOS system chrome (status bar, Dynamic Island, home indicator) **and the rounded outline of the iPhone body itself** (the bezel). **All of these are rendered by iOS or by the physical hardware.** Drawing them in SwiftUI is always a bug — it duplicates what iOS already shows and breaks on real devices.
 
 **Never draw these, even if they appear in the Figma screenshot:**
 - Status bar (time "9:41", Dynamic Island, signal/wifi/battery icons)
 - Home indicator (the ~134×5pt horizontal bar at the bottom)
 - System keyboard, pull-to-refresh spinner, system nav back chevron
 - Native tab bar (`TabView` provides its own), system alerts, page dots
+- **iPhone bezel / device frame** — the rounded outline of the entire frame, ~47–55pt radius, depicting the physical phone corners. The hardware's own corners produce this curve on a real device; SwiftUI's screen-root view never needs `.cornerRadius` / `.clipShape(RoundedRectangle)` for it.
 
-**Recognize them in the screenshot before inventorying.** Strip them out of the Visual Inventory — they are mockup decoration, not content. The SwiftUI view starts below the status bar and ends above the home indicator; iOS handles the rest.
+**Recognize them in the screenshot before inventorying.** Strip them out of the Visual Inventory — they are mockup decoration, not content. The SwiftUI view starts below the status bar, ends above the home indicator, and runs edge-to-edge on the X axis with no rounded outer corners; iOS / hardware handles the rest.
 
 **What to do instead:**
 - Status bar area → `.ignoresSafeArea(edges: .top)` on the background only if the design shows content extending behind it; otherwise let the safe area work normally.
 - Bottom of screen → leave the home indicator area to iOS. Use `.safeAreaInset(edge: .bottom)` / `.safeAreaPadding` if your content needs padding above it. Do NOT draw a `Capsule()` or `RoundedRectangle()` at (width≈134, height≈5) to mimic it.
 - Custom tab bar that IS part of the app (not iOS `TabView`) → fine to implement, but place it with `.safeAreaInset(edge: .bottom)` so iOS keeps the home indicator below it.
+- **Outer rounded corners of the entire frame → ignore them entirely.** Do NOT add `.cornerRadius(R)` / `.clipShape(.rect(cornerRadius: R))` / `.clipShape(RoundedRectangle(cornerRadius: R))` to the screen-root view to mimic the bezel. The physical device clips them automatically; in the simulator your view legitimately reaches all 4 corners of the canvas. If a Figma frame *appears* to have rounded outer corners, those are the device-mockup bezel — not a UI radius.
 
-**Failure-mode self-check.** If the Visual Inventory has a row like "home indicator bar", "status bar with time 9:41", "Dynamic Island pill" — **delete it** before coding.
+**Failure-mode self-check.** If the Visual Inventory has a row like "home indicator bar", "status bar with time 9:41", "Dynamic Island pill", **or "screen container has corner radius ~47pt / ~55pt"** — **delete it** before coding. If you find yourself thinking *"the screen has rounded corners in Figma so I'll add `.cornerRadius(47)` to the root"*, that is the bug — STOP and re-read this section.
 
 ## Prerequisites
 
@@ -165,7 +168,7 @@ This check is mandatory before Step A3 batch fetch — if you don't run it, you 
 For a single screen, issue calls 1+2+4 in **one parallel message** (`get_design_context` + `get_screenshot` + `get_metadata` on the same node land independently). Call 3 (`figma_extract_tokens`) is per-`fileKey` — issue it once and reuse via symlink. For multi-screen flows, the flow skill clusters across screens (default 3 screens × 2 calls per cluster); see [references/fetch-strategy.md](references/fetch-strategy.md) §"Parallelism Inside Phase A". Save to `.figma-cache/<nodeId>/`:
 
 1. `get_design_context(fileKey, nodeId, prompt="generate for iOS using SwiftUI")` → `design-context.md` *(figma-desktop MCP)*
-2. `get_screenshot(fileKey, nodeId)` at **scale 3** (fine details visible) → `screenshot.png` *(figma-desktop MCP — this is the FRAME screenshot used for visual diff in C3 Pass 2 and C5; it is NOT an asset. Per-asset PNG export happens in Phase B via `figma_export_assets_unified`.)*
+2. `get_screenshot(fileKey, nodeId)` at **scale 3** (fine details visible) → `screenshot.png` *(figma-desktop MCP — this is the FRAME screenshot used for visual diff in C3 Pass 2 and C5; it is NOT an asset. Per-asset PNG export happens in Phase B via `figma_export_assets_unified`.)* Then immediately produce a comparison-safe sibling: `sips -Z 2000 .figma-cache/<nodeId>/screenshot.png --out .figma-cache/<nodeId>/screenshot-cmp.png`. Bản gốc (`screenshot.png`) giữ cho crop chất lượng cao (C5.6.3) và single-image read (C3 Pass 2). Bản `-cmp.png` (≤2000px long-side) dùng cho mọi many-image read (C5.6.1/.2/.4/.5). Lý do split: Claude many-image API reject ảnh >2000px khi request có ≥2 ảnh — frame iPhone scale-3 luôn vượt.
 3. `figma_extract_tokens(fileKey)` → `tokens.json` *(MCPFigma 0.3.0+ — once per `fileKey`, dedup by copying/symlinking)*. This replaces `get_variable_defs` + manual SwiftUI naming. Output has `swiftName`, `lightHex`/`darkHex`, `isCapsule` for radius, plus a `typography[]` array (sourced from `/v1/files/<key>/styles` + `/v1/files/<key>/nodes`) carrying `fontFamily`, `fontPostScriptName`, `fontWeight`, `fontSize`, `lineHeightPx`, `letterSpacing`, `textCase`, `textAlignHorizontal`, `italic`. Each pass (variables, typography) fails independently — empty + non-empty `warnings` for one section means fall back to `design-context.md` inline tokens for that section only.
 4. `get_metadata(fileKey, nodeId)` → `metadata.json` *(figma-desktop MCP — kept for design-context cross-ref in Phase C; A2's registry handles asset discovery)*
 5. Optional: Code Connect mapping — only if your Figma MCP exposes such a tool. Skip silently if unavailable.
@@ -183,6 +186,10 @@ CACHE=".figma-cache/<nodeId>"
 FAIL=0
 [ -s "$CACHE/design-context.md" ] && ! grep -q "truncated\|TRUNCATED" "$CACHE/design-context.md" && echo "PASS: design-context" || { echo "FAIL: design-context"; FAIL=1; }
 file "$CACHE/screenshot.png" 2>/dev/null | grep -q "PNG image data" && echo "PASS: screenshot" || { echo "FAIL: screenshot"; FAIL=1; }
+file "$CACHE/screenshot-cmp.png" 2>/dev/null | grep -q "PNG image data" && {
+  LONG=$(sips -g pixelWidth -g pixelHeight "$CACHE/screenshot-cmp.png" | awk '/pixel(Width|Height)/ {print $2}' | sort -n | tail -1)
+  [ "${LONG:-9999}" -le 2000 ] && echo "PASS: screenshot-cmp ($LONG px)" || { echo "FAIL: screenshot-cmp long-side=$LONG"; FAIL=1; }
+} || { echo "FAIL: screenshot-cmp (run 'sips -Z 2000' on screenshot.png)"; FAIL=1; }
 [ -s "$CACHE/metadata.json" ] && grep -q '"id"' "$CACHE/metadata.json" && echo "PASS: metadata" || { echo "FAIL: metadata"; FAIL=1; }
 [ -f "$CACHE/tokens.json" ] && echo "PASS: tokens" || { echo "FAIL: tokens"; FAIL=1; }
 [ -s "$CACHE/registry.json" ] && grep -q '"rootNode"' "$CACHE/registry.json" && echo "PASS: registry" || { echo "FAIL: registry"; FAIL=1; }
@@ -254,7 +261,9 @@ Read `tokens.json` (from A3 `figma_extract_tokens`). Generate **read-only** Swif
 
    The colorset script skips light-only tokens (it only emits dual-mode entries), so the two outputs never collide. Use `Color.lightText900` for these.
 
-2. **`DesignSystem/AppFont.swift`** — one static method per Figma typography token. Source: `tokens.json.typography[]` (MCPFigma 0.3.0+ — emitted by `figma_extract_tokens` from Figma's `/styles` + `/nodes` text styles). Each entry carries `family / postScriptName / weight / size / lineHeightPx / letterSpacing / textCase / italic`. Do NOT consolidate fonts ("close enough"); preserve every distinct token.
+2. **`DesignSystem/AppFont.swift`** — one static method per Figma typography token. Source: `tokens.json.typography[]` (MCPFigma 0.3.0+ — emitted by `figma_extract_tokens` from Figma's `/styles` + `/nodes` text styles). Each entry carries `fontFamily / fontPostScriptName / fontWeight / fontSize / lineHeightPx / letterSpacing / textCase / textAlignHorizontal / italic` (verified against `Sources/MCPFigmaCore/Domain/TextStyleExtractor.swift`). Do NOT consolidate fonts ("close enough"); preserve every distinct token.
+
+   **Note on `textAlignHorizontal`.** It IS in `tokens.json` per typography style, but it is the *shared-style default* (pulled from `/v1/files/<key>/styles` — the typography style's own definition), NOT a property of the font itself. A Text node in a specific screen can override alignment locally without re-defining the style. So **do NOT bake `.multilineTextAlignment(...)` into `AppFont.<token>()`** — alignment lives at the call site. When emitting a `Text(...)`, read the **node's own** `textAlignHorizontal` from `design-context.md` JSX classes (`text-left|center|right|justify`) first; fall back to `tokens.json.typography[<token>].textAlignHorizontal` only if the node has no explicit override. (`textAlignVertical` is NOT extracted by MCPFigma 0.3.0 — if needed, parse from `design-context.md` or treat as TOP default.)
 
    ```swift
    enum AppFont {
@@ -282,13 +291,13 @@ Read `tokens.json` (from A3 `figma_extract_tokens`). Generate **read-only** Swif
        .tracking(AppFont.heading3Tracking)
    ```
 
-   If `tokens.json.typography[]` is empty **AND** `tokens.json.warnings[]` shows the section ran cleanly (HTTP 200, just no shared styles), fall back to the inline `## These styles are contained in the design` block of `design-context.md`. Empty + non-empty `warnings` from the typography pass = degrade gracefully and surface to the user. **403 / 401 from the typography pass is NOT a fallback case** — STOP, ask the user to fix token scope (same rule as the colors pass; see "MCPFigma edge cases" below).
+   If `tokens.json.typography[]` is empty **AND** `tokens.json.warnings[]` shows the section ran cleanly (HTTP 200, just no shared styles), fall back to the inline `## These styles are contained in the design` block of `design-context.md`. Empty + non-empty `warnings` from the typography pass = degrade gracefully and surface to the user. **403 / 401 from the typography pass is NOT a fallback case** — STOP, ask the user to fix token scope. Typography reads `/v1/files/<key>/styles` which has no plan-gated scope (unlike Variables), so the plan-limit-fallback exception in §"MCPFigma edge cases" does NOT apply to typography 403s.
 
 3. **`DesignSystem/Spacing.swift`** — only emit cases that actually appear in tokens. Do NOT add a generic 8pt grid (`xxs/xs/s/m/l/xl…`) unless those literal values exist in `tokens.json`.
 
 **Hard rule from this point onward**: every `Color(...)`, `.font(...)`, padding/spacing literal in a generated view file MUST come from these enums OR carry an explicit `// Figma: <node-id>` comment justifying the inline value (rare — typically one-off layout positions). Made-up tokens (`surfaceCard`, `textTertiary`, `cardGap` without a Figma source) are **banned** by C3 Pass 1 review.
 
-If `tokens.json` has empty `colors[]` **and** the run reported HTTP 200 (warnings non-empty, errors empty) → fall back to inline tokens parsed from `design-context.md`'s "These styles are contained in the design: …" block. Never invent. If `tokens.json` is **missing entirely** OR the run reported `forbidden` / `unauthorized` → **STOP**, do NOT invent and do NOT fall back; this is a token-scope or file-access issue per `references/mcpfigma-setup.md` §Troubleshooting.
+If `tokens.json` has empty `colors[]` **and** the run reported HTTP 200 (warnings non-empty, errors empty) → fall back to inline tokens parsed from `design-context.md`'s "These styles are contained in the design: …" block. Never invent. **Plan-limit 403 sub-case** — if the run reported HTTP 403 with Figma's message containing the exact substring `"requires the file_variables:read scope"`, the plan-limit fallback applies (see §"MCPFigma edge cases" — disclosure protocol mandatory). If `tokens.json` is **missing entirely** OR the run reported `forbidden` / `unauthorized` for any other reason (different 403 message, or 401) → **STOP**, do NOT invent and do NOT fall back; this is a token-scope or file-access issue per `references/mcpfigma-setup.md` §Troubleshooting.
 
 ### Step B0 — Read registry, pin asset catalog
 
@@ -520,13 +529,13 @@ Goal: SwiftUI code that matches the screenshot pixel-for-pixel, using only asset
 3. Localization — check `.strings`/`.xcstrings`. Project baseline is **`Localizable.xcstrings`**. If `STRING_CATALOG_GENERATE_SYMBOLS = YES`, set flag `useStringCatalogSymbols = true` → C2 emits `Text(.symbolKey)` and offers to translate new keys. Else use `LocalizedStringKey` literal form.
 4. Dark mode scope — if Figma light-only, ask user
 5. **Generated symbol assets** (swiftui-pro/api.md L14) — grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = YES` (default-on for Xcode 15+ projects). If on → flag `useGeneratedSymbols = true` → C2 emits `Image(.icAIClose)` / `Color(.brandRed)`. Else `Image("icAIClose")` / `Color("brandRed")`.
-6. **Design constants enums** (`Spacing`, `IKFont`, `IKCoreApp` — locked baseline). Grep:
+6. **Design constants enums** (`Spacing`, `IKFont`, `IKCoreApp` — names vary by project). Grep for the canonical names AND common alternatives:
    ```bash
-   grep -rln "enum Spacing\b" --include="*.swift" .
-   grep -rln "enum IKFont\b\|extension IKFont\b" --include="*.swift" .
-   grep -rln "enum IKCoreApp\b\|struct IKCoreApp\b\|extension IKCoreApp\b" --include="*.swift" .
+   grep -rln "enum \(Spacing\|AppSpacing\|Padding\)\b" --include="*.swift" .
+   grep -rln "enum \(IKFont\|AppFont\|Typography\)\b" --include="*.swift" .
+   grep -rln "enum \(IKCoreApp\|AppColors\|ColorPalette\)\b\|struct IKCoreApp\b" --include="*.swift" .
    ```
-   List each enum's available cases (greps `case <token>` lines). Stash in run flags `hasSpacingEnum`, `hasIKFont`, `hasIKCoreApp` plus the case lists. C2 routes Figma values through these per `references/swiftui-pro-bridge.md` §7.
+   List each enum's available cases (`case <token>` lines). Stash actual enum names in `c1-conventions.json` as `spacingEnum`, `ikFontEnum`, `colorEnum` (or `null` when absent) plus the case lists. C2 routes Figma values through whichever enum is detected per `references/swiftui-pro-bridge.md` §3.
 7. **Lottie SDK** — grep `import Lottie` or `Package.resolved` for `lottie-ios`. If present → flag `hasLottieSDK = true`; eAnim* placeholders codegen `LottieView`. Else warn user before C2 starts (see `references/lottie-placeholders.md` §9).
 8. **swiftui-pro snapshot present** — confirm `references/swiftui-pro/SOURCE.md` exists. Skill MUST read at minimum `references/swiftui-pro/api.md`, `views.md`, `data.md`, `accessibility.md` before C2; full set on demand. Bridge: `references/swiftui-pro-bridge.md`.
 9. **Project color audit (mandatory).** Run:
@@ -534,24 +543,41 @@ Goal: SwiftUI code that matches the screenshot pixel-for-pixel, using only asset
    scripts/c1-project-color-audit.sh <project-root> .figma-cache/_shared/project-colors.json
    ```
    Emits a `{hex, swiftPath, source, lightHex, darkHex}` map of every color already in the project (Asset Catalog colorsets + `Color.<name>` extensions + `Color(hex:)` literals). C2 routing prefers this map over inventing new tokens: when a Figma hex matches a project entry, codegen `<swiftPath>` directly. Without the audit the agent eyeballs the project, misses matches, and emits parallel tokens that drift over time.
+10. **Coding-conventions probe (mandatory).** See [`references/adaptation-workflow.md` §0](references/adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit) for the full procedure. Detect:
+    - **Folder layout** — `screen-based` vs `flat` (count of `Screens/<X>Screen/<X>Screen.swift`)
+    - **ViewModel pattern** — `state-action-reducer` vs `ad-hoc` vs `none` (grep latest `*ViewModel.swift` for `enum Action` + `func send(_:)`)
+    - **Observation flavor** — `observable` (iOS 17+ + `@Observable`) vs `observable-object` (iOS 16+ default)
+    - **IKNavigation** — see [`references/iknavigation-bridge.md` §1](references/iknavigation-bridge.md#1-detection-c1-audit). Cache `usesIKNavigation`, `routerName`.
+    - **IKMacros** — see [`references/ikmacro-bridge.md` §1](references/ikmacro-bridge.md#1-detection-c1-audit). Cache `usesIKMacros`, `apiRepoTypeName`.
+    - **xcstrings catalog path** — `find . -name '*.xcstrings'`
+    - **Asset catalog path** — `find . -name '*.xcassets' -type d` (interactive prompt when multiple).
+
+    Write everything to `.figma-cache/<nodeId>/c1-conventions.json` (single-screen) or `.figma-cache/_shared/c1-conventions.json` (flow). C2 reads this file. The c8-* gates also read it to know whether to enforce or skip.
 
 **Print resolved flags at end of C1** so the user can verify routing decisions before any code is written:
 
 ```
-useGeneratedSymbols      = <bool>
-useStringCatalogSymbols  = <bool>
-hasSpacingEnum           = <bool>  (cases: ...)
-hasIKFont                = <bool>  (cases: ...)
-hasIKCoreApp             = <bool>  (cases: ...)
-hasColorHexExtension     = <bool>
-hasLottieSDK             = <bool>
-deploymentTarget         = iOS <N>
-localizationStyle        = xcstrings | strings
-darkModeScope            = enabled | disabled | unspecified
-projectColorMap          = .figma-cache/_shared/project-colors.json (<N> entries)
+useGeneratedSymbols       = <bool>
+useStringCatalogSymbols   = <bool>
+spacingEnum               = "Spacing" | "AppSpacing" | null  (cases: ...)
+ikFontEnum                = "IKFont"  | "AppFont"    | null  (cases: ...)
+colorEnum                 = "IKCoreApp" | null              (cases: ...)
+hasColorHexExtension      = <bool>
+hasLottieSDK              = <bool>
+minDeploymentTarget       = iOS <N>
+observationFlavor         = observable | observable-object
+localizationStyle         = xcstrings | strings
+darkModeScope             = enabled | disabled | unspecified
+projectColorMap           = .figma-cache/_shared/project-colors.json (<N> entries)
+screenFolderConvention    = screen-based | flat
+viewModelPattern          = state-action-reducer | ad-hoc | none
+usesIKNavigation          = <bool>     routerName = <name|null>
+usesIKMacros              = <bool>     apiRepoTypeName = <name|null>
 ```
 
-**Visual Inventory (mandatory).** Follow `references/visual-fidelity.md` §1–3. Every visible element → row with source tag `[tokens|inline|class|screenshot]`. Never skip `lineHeight`, `letterSpacing`, `shadow`, `border`, `renderingMode`.
+The full JSON is at `.figma-cache/<nodeId>/c1-conventions.json`. Both this skill and `figma-flow-to-swiftui-feature` read from this single source of truth.
+
+**Visual Inventory (mandatory).** Follow `references/visual-fidelity.md` §1–3. Every visible element → row with source tag `[tokens|inline|class|screenshot]`. Never skip `lineHeight`, `letterSpacing`, `shadow`, `border`, `renderingMode`, **`textAlign`** (Figma `textAlignHorizontal`), **stack alignment** (Figma `counterAxisAlignItems` + `primaryAxisAlignItems` — both axes, both must be sourced from metadata, neither defaults are safe). Centered text in a fill-width row needs `.multilineTextAlignment(.center)` **AND** a fill-width drawing rect — but **place the `.frame(maxWidth: .infinity)` on the right layer**: on the Text itself when the parent is a non-Button stack; on the Button's OUTER frame when the parent is `Button { ... }`. Inner-Text maxWidth inside a Button cascades up and bloats the button — banned without `// allow-text-fill: <reason>`. See `references/visual-fidelity.md` §"Stack alignment" + §"Text" + §"`.frame(maxWidth: .infinity)` cascade trap".
 
 ### Step C1b — Adaptation Audit (if modifying existing screen)
 Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `references/adaptation-workflow.md`.
@@ -593,17 +619,31 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
   - No `Text` concatenation with `+`; use interpolation.
   - `.onTapGesture` only when you need tap location/count; otherwise `Button`.
 - **iOS 16 baseline fallbacks (MANDATORY).** Project baseline is iOS 16+. Several swiftui-pro rules target iOS 17/18/26 and MUST be conditionally rewritten on iOS 16. Full table: `references/swiftui-pro-bridge.md` §6. Examples: `.clipShape(RoundedRectangle(cornerRadius: 12))` (not `.rect(cornerRadius:)`), `.navigationBarLeading` (not `.topBarLeading`), `tabItem { Label(…) }` (not `Tab(…)`), `ObservableObject` + `@StateObject` (not `@Observable` + `@Bindable`). Always emit comment marker `// iOS 16 fallback — switch to <modern API> at iOS <N>+` so future bumps are search-replaceable.
-- **Project token routing (MANDATORY when audit flags set).** `Spacing`, `IKFont`, `IKCoreApp` are locked baseline enums. C1 audit confirms presence + lists cases. Route Figma values through them per `references/swiftui-pro-bridge.md` §7:
-  - Spacing/padding/gap → `Spacing.<token>` first; fall back inline only when no token matches.
-  - Typography → `IKFont.<token>` first; else `@ScaledMetric` + `.font(.system(size:weight:))`.
-  - Top-level app values → `IKCoreApp.colors.*`, `IKCoreApp.spacing.*`.
+- **Project token routing (MANDATORY when audit flags set).** Read `c1-conventions.json` for the actual enum names (`spacingEnum`, `ikFontEnum`, `colorEnum` — may be `null` when absent). Route Figma values through them per `references/swiftui-pro-bridge.md` §3:
+  - Spacing/padding/gap → `<spacingEnum>.<token>` first; fall back inline literal when no token matches OR when `spacingEnum == null`.
+  - Typography → `<ikFontEnum>.<token>` first; else `@ScaledMetric` + `.font(.system(size:weight:))`.
+  - Top-level app values → `<colorEnum>.colors.*`, `<colorEnum>.spacing.*` when present.
   - Never invent new enum cases; surface mismatches in the run summary instead.
+- **Coding conventions (MANDATORY, governed by `c1-conventions.json`).** All emitted Swift files conform to the project's detected conventions. Read each reference once before C2 starts:
+  - **Folder layout & file naming** — [`references/project-structure.md`](references/project-structure.md). When `screenFolderConvention = "screen-based"`, place new screen at `Screens/<Name>Screen/<Name>Screen.swift` + `Screens/<Name>Screen/<Name>ViewModel.swift`; subviews/models/enums prefixed with screen name. Enforced by `scripts/c8-conventions-gate.sh`.
+  - **ViewModel shape** — [`references/viewmodel-pattern.md`](references/viewmodel-pattern.md). Every ViewModel: `@MainActor` + `final class` + nested `enum Action` + `func send(_ action: Action)` reducer + flat `@Published` state + nested `enum Route` if the screen navigates. iOS 17+ projects with `observationFlavor = "observable"` get the `@Observable` variant. Enforced by `scripts/c8-vm-pattern.sh`.
+  - **Function & view size** — [`references/swift-style.md`](references/swift-style.md) §2-3. Functions ≤ 50 lines (hard); subview structs ≤ 50 lines. Enforced by `scripts/c8-func-length.sh`.
+  - **Golden path** — [`references/swift-style.md`](references/swift-style.md) §4. `guard` + early return; nesting depth ≤ 1 level for happy-path body.
+  - **Modifier order** — [`references/swift-style.md`](references/swift-style.md) §11. Typography → Layout → Decoration → Effect → Interaction → State/Lifecycle → Presentation → Environment.
+  - **Memory** — [`references/swift-style.md`](references/swift-style.md) §6. `[weak self]` in escaping closures (Combine sinks, URLSession callbacks, custom-callback APIs). `Task` inside `@MainActor` reducer is exempt.
+  - **Error handling** — [`references/swift-style.md`](references/swift-style.md) §9. Per-domain `Error` enum, catch case-by-case; never `catch { errorMessage = error.localizedDescription }`.
+  - **IKNavigation** — when `usesIKNavigation = true`, follow [`references/iknavigation-bridge.md`](references/iknavigation-bridge.md). Use `@Environment(\.ikNavigationable)` + `navigation.push(to:)`; banned: `NavigationStack`, `NavigationLink`, `.navigationDestination(for:)`. Extend the existing router; do NOT invent a new one. Enforced by `scripts/c8-iknavigation.sh`.
+  - **IKMacros** — when `usesIKMacros = true` AND the run generates DTO/service code, follow [`references/ikmacro-bridge.md`](references/ikmacro-bridge.md). DTOs use `@JsonSerializable` + `@JsonKey`; services use `@APIProtocol` + `@GET`/`@POST`/etc. Inject `IKAPIRepository` via init.
 - **Strict-fidelity rules (MANDATORY, banned patterns enforced by C3 Pass 1).** Every generated view file is reviewed against these:
   - **No inline string literals.** `Text("Continue")` is banned in view files. Use String Catalog keys or `Strings.<Screen>.<key>` from the B0a manifest. Exception: developer-debug screens explicitly opted out.
   - **No inline hex / RGB color literals.** `Color(red: 0x3B/255, …)` and `Color(hex: "#3B7BFD")` in views are banned. Use `Color.<token>` from the B0b-generated `Color+Tokens.swift`.
   - **No inline font sizes.** `.font(.system(size: 28, weight: .bold))` in views is banned. Use `AppFont.<token>()` from the B0b-generated `AppFont.swift`. If the screen needs a value not in tokens, STOP and ask the user — typography drift is a bug.
   - **No made-up token names.** Adding `surfaceCard`, `textTertiary`, `cardGap` (or any case) to `Color+Tokens.swift` / `Spacing.swift` without a backing entry in `tokens.json` is banned. Pass 1 review greps new enum cases against `tokens.json` and rejects mismatches.
   - **Layout values trace to Figma.** Every `padding(.<edge>, <number>)`, `frame(width: <number>)`, `.cornerRadius(<number>)` must (a) trace to a literal in `design-context.md` (Tailwind class such as `p-[16px]`, `rounded-[16px]`, `w-[343px]`) or (b) come from a `Spacing` / `CornerRadius` enum case backed by `tokens.json`. One-off absolute-layout positions require `// Figma: y=192, w=375` comment to pass review.
+  - **`.frame(width:)` on Text BANNED.** Reading Figma's measured visual width on a hug-mode Text and emitting `.frame(width: 200)` ships truncation as soon as content grows. Default for Text is hug (no frame) or fill (`maxWidth: .infinity`). Allow-list: Figma `primaryAxisSizingMode === FIXED` AND `// Figma fixed-width: <reason>` comment present. See `references/visual-fidelity.md` §7 #9 + `references/layout-translation.md` §"Text sizing-mode → SwiftUI".
+  - **`.minimumScaleFactor(0.6)` required on single-line Text in constrained widths.** Any Text with `.lineLimit(1)` (or visually single-line in Figma but inside a fill-width / fixed-width container) MUST carry `.minimumScaleFactor(0.6)`. Localized strings and longer dynamic data shrink to fit instead of truncating to ellipsis. Multi-line Text wraps naturally and does NOT take it. See `references/visual-fidelity.md` §7 #10.
+  - **Fill-* Image must emit all three modifiers.** `.resizable() + (.scaledToFill()|.scaledToFit()) + .frame(...)` together — missing any one is a bug (blank gap / anisotropic stretch / intrinsic shrink). Default content mode: `.scaledToFill()` (Figma image-fill default). See `references/visual-fidelity.md` §7 #11 + `references/layout-translation.md` §"Image content-mode → SwiftUI".
+  - **Safe-area normalization for mockup frames.** When the Figma frame matches an iPhone full-device height (812/844/852/932/...), every Y measurement is `raw_figma_y - safeAreaInsets.top`. Suspicious values at screen-root (`.padding(.top, 44|47|59|64|67|79|88)`) require a `// safe-area-adjusted: raw=..., inset=..., adjusted=...` comment or they are double-counts. Same on bottom for home indicator. See `references/visual-fidelity.md` §7 #12 + `references/layout-translation.md` §"Safe Area Normalization for Mockup Frames".
   - **Banned invention phrases.** Pass 1 greps the diff for known agent-invented English copy and red-flags. Current banned list (extended as new failures appear):
     - "Secure your accounts" → Figma says "Secure All Accounts"
     - "Use Face ID" → Figma says "Quick Setup: Face ID Protection"
@@ -621,7 +661,14 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 - `references/component-variants.md` — state/size/style
 - `references/responsive-layout.md` — size classes, iPhone+iPad
 
-### Step C3 — Self-Check (mandatory, four passes + structural gates)
+**Coding-convention references (read once before C2):**
+- `references/project-structure.md` — folder layout + file naming (Screens/<Name>Screen/, prefix rules)
+- `references/viewmodel-pattern.md` — State + Action + `send(_:)` reducer (canonical ViewModel shape)
+- `references/swift-style.md` — function/view size, golden path, modifier order, memory, error handling
+- `references/iknavigation-bridge.md` — IKNavigation usage when `usesIKNavigation = true`
+- `references/ikmacro-bridge.md` — `@APIProtocol` / `@JsonSerializable` when `usesIKMacros = true` AND generating service/DTO code
+
+### Step C3 — Self-Check (mandatory, five passes + structural gates)
 
 **Pass 1 — Code vs Inventory.** For each inventory row, verify code matches exactly. Fix every ✗.
 
@@ -630,10 +677,10 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 Mental walk-throughs are too easy to fake. Pass 2 produces a verifiable artifact: `.figma-cache/<nodeId>/c3-pass2-diff.md`, written using the template in `references/verification-loop.md` §1.
 
 Procedure:
-1. **Prefill mechanical rows first** (recommended): run `scripts/c3-pass2-prefill.sh <nodeId>`. This writes 8 rows decided by grep (CH, PD, GR, DV, BG, TR, SA, BS) and 7 TODO rows for the Figma-grounded checks (LH, LS, SH, BD, OP, RM, IS) — see `references/verification-loop.md` §4.0.
+1. **Prefill mechanical rows first** (recommended): run `scripts/c3-pass2-prefill.sh <nodeId>`. This writes 9 rows decided by grep (CH, PD, GR, DV, BG, TR, SA, BS, **SS**) and 9 TODO rows for the Figma-grounded checks (LH, LS, SH, BD, OP, RM, IS, **AL**, **IF**) — see `references/verification-loop.md` §4.0.
 2. Open `screenshot.png` and `design-context.md` side by side.
 3. Walk every section of the screen. Replace each TODO row with `Source quote` (verbatim from design-context.md or inventory — no paraphrasing), `Code value` (verbatim SwiftUI modifier), `File:Line` (real line in a generated swift file), `Match` (PASS/FAIL/N/A), `Severity` (high/medium/low for FAIL). Flip any prefilled PASS/NA to FAIL if the script's mechanical decision was wrong for this screen.
-4. Every check letter must appear ≥1 time. No instance on screen → one N/A row with reason. Minimum 12 rows total.
+4. Every check letter must appear ≥1 time. No instance on screen → one N/A row with reason. Minimum 14 rows total. Coverage = 18 letters: LH/LS/SH/BD/OP/RM/IS/**AL**/DV/BG/TR/GR/SA/CH/PD/BS/**IF**/**SS**.
 
 Then run **Gate C3-Pass2** (BASH, mandatory). Full block + 6 anti-hallucination checks: `references/verification-loop.md` §4.1.
 
@@ -763,6 +810,43 @@ Output format mirrors swiftui-pro SKILL.md "Output Format" — group findings by
 
 **If Part A or Part B FAIL: fix every violation before proceeding to C4.** Re-run Part A bash to confirm clean exit.
 
+**Pass 5 — Coding-conventions gates (BASH, mandatory).**
+
+Catches violations of project-structure, ViewModel pattern, function size, and (when the project uses them) IKNavigation / IKFont. Reads `c1-conventions.json` from C1 — gates auto-skip when the corresponding flag is off.
+
+```bash
+SWIFT_SRC="<dir-containing-generated-swift-files>"
+CONV=".figma-cache/<nodeId>/c1-conventions.json"
+FAIL=0
+
+# (1) Folder layout + file naming
+scripts/c8-conventions-gate.sh --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
+
+# (2) ViewModel pattern (State + Action + send + @MainActor + Route)
+scripts/c8-vm-pattern.sh --src "$SWIFT_SRC" || FAIL=1
+
+# (3) Function-length limits (warn @ 30 / hard fail @ 50)
+scripts/c8-func-length.sh --src "$SWIFT_SRC" || FAIL=1
+
+# (4) IKNavigation gate (skipped when usesIKNavigation = false)
+scripts/c8-iknavigation.sh --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
+
+# (5) IKFont gate (skipped when ikFontEnum = null)
+scripts/c8-ikfont.sh --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
+
+# (6) Weak-self closure scan (informational; agent acknowledges in summary)
+scripts/c8-weak-self.sh --src "$SWIFT_SRC"
+
+[ $FAIL -eq 0 ] && echo "GATE: PASS (Pass 5 — coding conventions)" || { echo "GATE: FAIL (Pass 5 — coding conventions) — DO NOT proceed to C4"; exit 1; }
+```
+
+Each gate prints `GATE: PASS`, `GATE: FAIL: <reason>`, or `GATE: SKIP (...)` with exit code matching. Reference docs:
+- [`references/project-structure.md`](references/project-structure.md) — folder layout + file naming
+- [`references/viewmodel-pattern.md`](references/viewmodel-pattern.md) — State/Action/reducer
+- [`references/swift-style.md`](references/swift-style.md) — function size, golden path, weak self
+- [`references/iknavigation-bridge.md`](references/iknavigation-bridge.md) — IKNavigation usage (conditional)
+- [`references/ikmacro-bridge.md`](references/ikmacro-bridge.md) — IKMacros DTO/service (conditional)
+
 Anything in code not traceable to inventory → guess → fix. Never "tweak until it looks right".
 
 ### Step C4 — Copy Assets to Project
@@ -853,14 +937,15 @@ After C3 finishes (Pass 2 clean report, Pass 3/3b grep clean, C4 assets copied),
 
 User phrases like `skip C5`, `bỏ qua C5`, `no build`, `không cần build` are NOT honored — the agent must explain the Done-Gate (Key Principle #12) and proceed with C5 anyway. The only legitimate way to bypass is one of the three system reasons above.
 
-Run the 6 sub-steps (commands + edge cases in `references/verification-loop.md` §5):
+Run the 7 sub-steps (commands + edge cases in `references/verification-loop.md` §5):
 
 1. **C5.1 Detect target** — `xcodebuild -list`. 1 scheme → use it; >1 → ask user, stash; 0 → skip with `manifest.verification.c5.skipped = "no_project"`.
 2. **C5.2 Pick simulator** — prefer Booted iPhone, else highest-iOS iPhone 15/16. Stash UDID.
 3. **C5.3 Build** — `xcodebuild -scheme ... -destination ... build`, log to `c5-build.log`. Build fail → surface compile errors as FAIL high rows, self-fix loop, do NOT install.
 4. **C5.4 Boot/install/launch** — `simctl boot/install/launch`. Wrong default screen → ask user once for `previewEntry`, stash.
 5. **C5.5 Capture** — `sleep 2 && xcrun simctl io <udid> screenshot c5-simulator.png`.
-6. **C5.6 Compare** — model reads both PNGs, writes `c5-visual-diff.md` using same table format as C3 Pass 2 (Source quote → Note column). Compare composition and values, not absolute pixel positions.
+6. **C5.5b Comparison-safe pair** — Claude's many-image requests reject any image with long-side >2000px. iPhone-native captures (Figma scale-3 ≈1125×2436, simctl ≈1170×2532) blow this. Before C5.6, produce `screenshot-cmp.png` + `c5-simulator-cmp.png` (≤2000px) for the steps that load both PNGs together; rescue path via `figma_export_assets_unified(fallbackScale=2)` if `screenshot.png` is missing. Full procedure in `references/verification-loop.md` §C5.5b.
+7. **C5.6 Compare** — model reads the C5.5b pair (`*-cmp.png`), writes `c5-visual-diff.md` using same table format as C3 Pass 2 (Source quote → Note column). Compare composition and values, not absolute pixel positions.
 
 Then run **Gate C5** (BASH, mandatory). Full block: `references/verification-loop.md` §5.7. High-severity diffs feed the same self-fix loop as C3 Pass 2 (shared counter, `MAX_RETRIES=2`, scoped edits only). Build failures count as FAIL high.
 
@@ -887,8 +972,14 @@ Check manifest. `phaseA` and `phaseB` both `done` → skip to Phase C. Some `fai
 - **Lottie placeholder (`eAnim*`) — Lottie SDK missing.** C1 project pre-flight should detect whether `lottie-ios` is in dependencies. If not, surface before C2: *"Lottie SDK not detected — add `lottie-ios` (Airbnb) via SPM or CocoaPods, or convert these placeholders to static images."* Do NOT auto-install; do NOT silently swap in `Image(systemName:)`. See `references/lottie-placeholders.md` §9.
 - **Lottie placeholder inside a flatten region.** The flattened parent exports as a static raster (animation is frozen in one frame). The placeholder `LottieView` overlays on top in `ZStack`. Tell the user the artwork would be cleaner if the designer pulled the `eAnim*` node out of the flatten region.
 - **Custom Lottie wrapper in project.** If C1 audit finds `IKLottieView`/`AnimatedView`/etc., prefer the wrapper at C2 codegen. The placeholder name string `"placeholder_animation"` stays unchanged.
-- **Variables API not available** (Figma file is not on a plan that exposes Variables — Free / older Starter). `figma_extract_tokens` returns empty arrays + a `warnings[]` entry **with HTTP 200**. Only this case is allowed to fall back to reading inline tokens from `design-context.md` per `references/design-token-mapping.md` General Rules. The fallback writes a `tokens.json` with `_note: "reconstructed from inline styles — Variables API empty + warnings"` so downstream gates can see it was a fallback.
-- **`figma_extract_tokens` returns `forbidden` (HTTP 403)** — this is **NOT** the "Variables API not available" case. It means the PAT is missing the `File content read` scope and/or `variables:read` scope, OR the file is in a workspace the token-owner does not belong to. **STOP**. Do NOT fall back to inline tokens — that path is reserved for the empty-with-warnings case. Tell the user to re-issue their token at https://figma.com/settings (scopes: File content `Read`, Variables `Read`) per `references/mcpfigma-setup.md` §Troubleshooting. Same rule for `unauthorized` (HTTP 401) — STOP, do not fall back.
+- **Variables API empty + warnings (HTTP 200).** `figma_extract_tokens` returns empty arrays + a `warnings[]` entry **with HTTP 200**. Cause: file plan exposes Variables but the file has none defined, OR shared styles absent. Fallback allowed: read inline tokens from `design-context.md` per `references/design-token-mapping.md` General Rules. Write `tokens.json` with `_note: "reconstructed from inline styles — Variables API empty + warnings"` so downstream gates can see it was a fallback.
+
+- **Variables scope not on PAT — HTTP 403 + `requires the file_variables:read scope` message.** `figma_extract_tokens` returns HTTP 403 with Figma's `message` field containing the exact substring `"requires the file_variables:read scope"`. Two operational sub-cases the agent CANNOT programmatically distinguish: (a) **plan-gated** — the user's Figma plan does not expose `file_variables:read` in the PAT settings UI (Free / Professional / Organization without Enterprise add-on); unfixable without a plan upgrade. (b) **scope omitted** — the plan exposes the scope but the PAT was generated without ticking `Variables → Read` (off by default); fixable by re-issuing PAT. Fallback allowed under this combined case **only when the disclosure protocol below is met in full** — partial disclosure is treated as a silent degrade and is a protocol violation:
+  1. Write `tokens.json` with `_note: "reconstructed from inline styles — file_variables:read scope missing on PAT (Figma 403). Plan-gated for non-Enterprise; user-fixable if scope option is visible at https://figma.com/settings → Personal access tokens."`
+  2. The Verification summary MUST include a verbatim copy of the Figma 403 `message` field AND the line `Variables source: inline-fallback (file_variables:read scope unavailable on PAT — verify if scope option exists in Figma settings; if yes, regenerate PAT with the scope and re-run for full Variables grounding).`
+  3. The agent's final user-facing message MUST list this fallback alongside C5 status. If you find yourself writing `"reconstructed from inline styles"` to disk WITHOUT also adding the `Variables source:` line and the verbatim 403 message to the Verification summary — **STOP**: that is exactly the silent-degrade failure mode this rule blocks. Re-emit the summary with both items before declaring done.
+
+- **Other 401 / 403 — STOP.** Any other auth failure: HTTP 401 (`unauthorized`), or HTTP 403 with a `message` that does NOT contain the substring `"requires the file_variables:read scope"` (e.g. file access denied, workspace permission, missing `file_content:read`, generic forbidden). **STOP**. Do NOT fall back. Surface verbatim. Tell the user to re-issue their PAT at https://figma.com/settings with all scopes their plan exposes (especially `File content: Read` and `Variables: Read` if visible), and verify the file is in the token-owner's workspace per `references/mcpfigma-setup.md` §Troubleshooting.
 - **`figma_build_registry` returns empty `screens[]`** — root may be a leaf (icon / text node) **or** a `SECTION` container holding the actual frames. Inspect `rootNode.type`. If `SECTION`, the registry tool has not recursed into its children: surface to the user with the section's child FRAME list and ask which one to point the skill at, or pass the parent CANVAS / PAGE node ID. Do NOT silently substitute by enumerating the section's siblings yourself — that bypasses A2's screen-detection rules (320-1024pt width range) and lands you with stray non-screen frames.
 
 ## Strongly recommended hooks (hard enforcement)
@@ -897,15 +988,17 @@ These hooks turn the in-skill gates into OS-level enforcement. Without them, gat
 
 1. **PreToolUse hook — Phase A+B coverage gate.** `figma-to-swiftui-gate.sh`: blocks `Write`/`Edit` on `*.swift` when any screen-cache lacks Phase A artifacts (manifest, design-context, screenshot, tokens, registry) OR Phase B is incomplete (`phaseB != "done"`, empty `rows[]`, failed rows, OR `registry.taggedAssets[].nodeId` not all present in `manifest.rows[]` with `status: "done"`). Closes the "downloaded the hero, built the rest with SwiftUI shapes" failure mode.
 
-2. **PreToolUse hook — banned-pattern detector.** `figma-to-swiftui-banned-pattern-gate.sh`: scans the Swift content the agent is about to write. Blocks `Image(systemName:)` outside the four-name allow-list (no `// allow-systemName:` comment), `Text("9:41")` and other status-bar redraws, `Capsule()` with height ≤ 6pt (home-indicator lookalike), `FakeStatusBar` / `HomeIndicator` / `NotchView` / `DynamicIslandView` struct names, and letter-as-logo (`Text("G")` near a small frame). Prevents the absolute-rule violations from landing on disk in the first place.
+2. **PreToolUse hook — banned-pattern detector.** `figma-to-swiftui-banned-pattern-gate.sh`: scans the Swift content the agent is about to write. Blocks `Image(systemName:)` outside the four-name allow-list (no `// allow-systemName:` comment), `Text("9:41")` and other status-bar redraws, `Capsule()` with height ≤ 6pt (home-indicator lookalike), `FakeStatusBar` / `HomeIndicator` / `NotchView` / `DynamicIslandView` struct names, letter-as-logo (`Text("G")` near a small frame), `Text(...).frame(width: <num>)` without `// Figma fixed-width:` justification, screen-root `.padding(.top, 44|47|59|64|67|79|88)` without `// safe-area-adjusted` comment (double-counts the iOS safe-area inset), `Image("...").frame(maxWidth: .infinity)` chains missing `.resizable()` + content mode (blank-gap bug), `cornerRadius`/`clipShape(.rect(cornerRadius:))`/`clipShape(RoundedRectangle(cornerRadius:))` ≥ 30pt without `// allow-screen-corner-radius:` justification (mimics the iPhone bezel — hardware already curves it), and `Text(...).frame(maxWidth: .infinity)` whose enclosing scope is a `Button { ... }` body, without `// allow-text-fill:` justification (cascades up through Button — overrides caller `.padding(.horizontal, N)` and bloats the button to screen width). Prevents the absolute-rule violations from landing on disk in the first place.
 
 3. **PreToolUse hook — entry-path bypass detector.** `figma-to-swiftui-entry-bypass-gate.sh`: blocks edits to `*App.swift` / `*ContentView.swift` / `*RootView.swift` / `*MainView.swift` / `*AppRouter.swift` / `*AppCoordinator.swift` when the new content sets `initialStep`/`currentStep`/`verifyStep` to a screen literal, looks up `VERIFY_ROUTE` env vars, or adds `#if DEBUG` deep-link parsers. Closes the C5 verification-integrity bypass per `references/verification-loop.md` §"C5 Verification Integrity". Legitimate flow-state initialization carries `// figma-entry-bypass-gate: legitimate-flow-state` to bypass.
 
 4. **PostToolUse hook — auto-run Gate C3-Pass2 on `c3-pass2-diff.md` write.** `figma-to-swiftui-pass2-gate.sh`: saves one round-trip per attempt and surfaces structural bugs immediately.
 
-5. **Stop hook — block session termination when Done-Gate unsatisfied.** `figma-to-swiftui-stop-gate.sh`: for every screen-cache with `phaseA == "done"`, requires `phaseB == "done"` + `rows[]` non-empty + `verification.c5.gate == "PASS"` (or one of four system skip reasons) + C5.6 coverage script passing + project-wide C6 (asset completeness) and C7 (no system chrome) passing. The previous "only enforce when phaseB done" gate left a hole — agents skipped Phase B entirely and stopped freely. This version closes it.
+5. **PostToolUse hook — C8 coding-conventions write-time gate.** `figma-to-swiftui-c8-gate.sh`: runs after every `Write/Edit *.swift` inside a figma task. Reads `c1-conventions.json` from the cache and per-file checks: (a) path correctness — `-Screen` suffix banned in `Subviews/Models/Enums/SubViewModels/`, parent-`-Screen` files must live at `Screens/<X>Screen/<X>Screen.swift`, top-level files in `Screens/<X>Screen/` must end with `-Screen` or `-ViewModel`; (b) subview prefix — files in `<X>Screen/Subviews/` start with `<X>`; (c) ViewModel content — `*ViewModel.swift` must have `@MainActor` + `enum Action` + `func send(_ action: Action)`, plus `enum Route` if `route` is referenced; (d) IKNavigation banned APIs (`NavigationStack` / `NavigationLink` / `.navigationDestination`) when `usesIKNavigation = true`; (e) raw `.font(.system(size:))` without `@ScaledMetric` and `Font.custom()` when `ikFontEnum` is set; (f) function bodies > 50 lines (hard fail). Catches violations IMMEDIATELY at write-time so the agent fixes the file before building on top of it. Pairs with the session-end Stop hook (item 6) for tree-wide checks (parent-view existence, weak-self warnings).
 
-`scripts/install.sh` registers all five hooks idempotently into `~/.claude/settings.json`. Re-running it after pulling new hook scripts is safe.
+6. **Stop hook — block session termination when Done-Gate unsatisfied.** `figma-to-swiftui-stop-gate.sh`: for every screen-cache with `phaseA == "done"`, requires `phaseB == "done"` + `rows[]` non-empty + `verification.c5.gate == "PASS"` (or one of four system skip reasons) + C5.6 coverage script passing + project-wide C6 (asset completeness) + C7 (no system chrome) + C8 (coding conventions — folder layout, ViewModel pattern, function length, conditional IKNavigation/IKFont) passing. The previous "only enforce when phaseB done" gate left a hole — agents skipped Phase B entirely and stopped freely. This version closes it.
+
+`scripts/install.sh` registers all six hooks idempotently into `~/.claude/settings.json`. Re-running it after pulling new hook scripts is safe.
 
 ## Key Principles
 
@@ -914,7 +1007,7 @@ These hooks turn the in-skill gates into OS-level enforcement. Without them, gat
 3. **Fidelity is the goal.** Pixel-for-pixel — spacing, color, font, lineHeight, tracking, shadow, border, opacity, gradient. Approximation is a bug.
 4. **MCP output is a spec.** Parse values per `references/visual-fidelity.md` §1. Never port React/Tailwind to SwiftUI.
 5. **Every value must be traceable.** Trace to tokens, inline style, class, or design-context comment. Untraceable = guessed.
-6. **Visual Inventory first, every Phase C.** Never skip lineHeight/tracking/shadow/border/renderingMode.
+6. **Visual Inventory first, every Phase C.** Never skip lineHeight/tracking/shadow/border/renderingMode/**textAlign**/**stack alignment** (`primaryAxisAlignItems` + `counterAxisAlignItems` both axes). Centered text in a fill-width container needs `.multilineTextAlignment(.center)` AND a fill-width drawing rect — place `.frame(maxWidth: .infinity, alignment: .center)` on the Text when the parent is a non-Button stack, or on the Button's OUTER frame when the parent is `Button { ... }` (inner-Text maxWidth cascades up — banned by Check 8 without `// allow-text-fill:`).
 7. **Self-check four passes + structural gates.** Pass 1 code-vs-inventory, Pass 2 code-vs-screenshot (writes `c3-pass2-diff.md`, Gate C3-Pass2 verifies structure + anti-hallucination), Pass 3/3b bash grep for `Image(systemName:` and system chrome, Pass 4 swiftui-pro Review (deprecated API + iOS 16 fallbacks + structural).
 8. **Beware SwiftUI defaults.** Always specify `.font(.system(size:))`, `VStack(spacing:)`, `.padding(X)`, `.buttonStyle(.plain)` for custom buttons.
 9. **Flatten composed artwork.** Don't reassemble atoms via `.offset()`. When in doubt → flatten.
@@ -933,7 +1026,9 @@ Verification summary
 - C3 Pass 3b (chrome grep):    PASS / FAIL
 - C3 Pass 4 (swiftui-pro):     PASS / FAIL
 - C5 (build + simulator):      PASS / FAIL / SKIPPED (<reason>)
-- C5.6 (15-check visual diff): PASS / FAIL (high: N, medium: N)
+- C5.6 (6-step compare):       PASS / FAIL (high: N, medium: N)
+- Variables source:            tokens.json (full) | inline-fallback (Variables API empty + warnings) | inline-fallback (file_variables:read scope unavailable on PAT — verify if scope option exists in Figma settings; if yes, regenerate PAT with the scope and re-run for full Variables grounding)
+                               <if inline-fallback (scope unavailable): also paste the verbatim Figma 403 message field here>
 Artifacts:
   .figma-cache/<nodeId>/c3-pass2-diff.md
   .figma-cache/<nodeId>/c5-build.log

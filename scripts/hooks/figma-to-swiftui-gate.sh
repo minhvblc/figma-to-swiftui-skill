@@ -8,6 +8,7 @@
 #   - design-context.md non-empty, no "truncated" markers
 #   - tokens.json present (or symlinked from _shared)
 #   - screenshot.png valid PNG
+#   - screenshot-cmp.png valid PNG, long-side ≤2000px (sips -Z 2000 sibling for many-image C5 compare)
 #   - registry.json present with rootNode (proves figma_build_registry ran)
 #
 # Phase B artifacts required per <screen-cache>/:
@@ -121,6 +122,18 @@ for DIR in "${SCREEN_DIRS[@]}"; do
     PROBLEMS+="    - screenshot.png is not a valid PNG\n"
   fi
 
+  CMP="$DIR/screenshot-cmp.png"
+  if [ ! -f "$CMP" ]; then
+    PROBLEMS+="    - screenshot-cmp.png missing (run: sips -Z 2000 $SHOT --out $CMP — required for C5 many-image compare)\n"
+  elif ! file "$CMP" 2>/dev/null | grep -q "PNG image data"; then
+    PROBLEMS+="    - screenshot-cmp.png is not a valid PNG\n"
+  else
+    LONG=$(sips -g pixelWidth -g pixelHeight "$CMP" 2>/dev/null | awk '/pixel(Width|Height)/ {print $2}' | sort -n | tail -1)
+    if [ -n "$LONG" ] && [ "$LONG" -gt 2000 ]; then
+      PROBLEMS+="    - screenshot-cmp.png long-side=$LONG (>2000, would trigger Claude many-image limit; re-run sips -Z 2000)\n"
+    fi
+  fi
+
   REG="$DIR/registry.json"
   if [ ! -s "$REG" ] || ! grep -q '"rootNode"' "$REG" 2>/dev/null; then
     PROBLEMS+="    - registry.json missing or invalid (run figma_build_registry — mandatory)\n"
@@ -197,6 +210,7 @@ fi
   echo "Required Phase A per screen (figma-to-swiftui Step A3 in full):"
   echo "  1. get_design_context(fileKey, nodeId)         → design-context.md"
   echo "  2. get_screenshot(fileKey, nodeId) at scale 3  → screenshot.png"
+  echo "  2b. sips -Z 2000 screenshot.png                → screenshot-cmp.png (≤2000px for C5 many-image compare)"
   echo "  3. figma_extract_tokens(fileKey)               → tokens.json (cache once in _shared/)"
   echo "  4. get_metadata(fileKey, nodeId)               → metadata.json"
   echo "  5. figma_build_registry(fileKey, rootNodeId)   → registry.json"

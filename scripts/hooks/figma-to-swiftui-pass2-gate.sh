@@ -50,11 +50,11 @@ fi
 
 # 2. Every required check letter appears in a Findings row
 MISSING=""
-for code in LH LS SH BD OP RM IS DV BG TR GR SA CH PD BS; do
+for code in LH LS SH BD OP RM IS DV BG TR GR SA CH PD BS AL; do
   grep -qE "^\| *[0-9]+ *\| *${code} *\|" "$REPORT" || MISSING="$MISSING $code"
 done
 if [ -z "$MISSING" ]; then
-  OUT+="PASS: all 15 check letters covered\n"
+  OUT+="PASS: all 16 check letters covered\n"
 else
   OUT+="FAIL: missing check letters:$MISSING\n"
   FAIL=1

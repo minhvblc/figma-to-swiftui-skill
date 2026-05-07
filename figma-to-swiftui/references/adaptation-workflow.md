@@ -9,6 +9,60 @@ Trigger this workflow when:
 - The user provides a Figma URL and references an existing view/screen in the codebase
 - The task is to modify existing code rather than create new views
 
+## §0. Convention Probe (mandatory, run BEFORE the audit)
+
+Before reading the existing code or comparing to Figma, the skill probes the project to learn its conventions and emits `c1-conventions.json` to `.figma-cache/<nodeId>/c1-conventions.json` (single-screen) or `.figma-cache/_shared/c1-conventions.json` (flow). The cache is shared across the run — every reference file reads from this single source of truth.
+
+**Probe steps (in order, all read-only):**
+
+1. **Folder layout.** `find Screens -maxdepth 2 -name '*Screen.swift'` — count matches.
+   - ≥ 2 hits with the `Screens/<X>Screen/<X>Screen.swift` shape → `screenFolderConvention = "screen-based"`.
+   - Otherwise → `"flat"`.
+2. **ViewModel pattern.** Open the most recent `*ViewModel.swift` file. Check for: `@MainActor`, `enum Action`, `func send(_ action: Action)`, `enum Route` nested.
+   - All four present → `viewModelPattern = "state-action-reducer"`.
+   - Class exists but missing reducer → `viewModelPattern = "ad-hoc"` and emit a warning that new ViewModels will follow the canonical pattern (`references/viewmodel-pattern.md`).
+   - No ViewModel files at all → `viewModelPattern = "none"` (skill picks reducer pattern by default).
+3. **Deployment target.** Read `IPHONEOS_DEPLOYMENT_TARGET` from `.xcconfig` / `project.pbxproj`. Cache as `minDeploymentTarget` (e.g. `"16.0"`, `"17.0"`).
+4. **Observation flavor.** If `minDeploymentTarget >= 17` AND project has any `@Observable` class → `observationFlavor = "observable"`. Else → `"observable-object"`.
+5. **IKNavigation detection.** Per `references/iknavigation-bridge.md` §1. Cache `usesIKNavigation` (bool) and `routerName` (string, when found).
+6. **IKMacros detection.** Per `references/ikmacro-bridge.md` §1. Cache `usesIKMacros` (bool) and `apiRepoTypeName` (when found).
+7. **Token enums.** Search for these enum names; cache the cases when found:
+   - `IKFont` / `AppFont` / `Typography` → `ikFontEnum`
+   - `Spacing` / `AppSpacing` / `Padding` → `spacingEnum`
+   - `IKCoreApp` / `AppColors` / `ColorPalette` → `colorEnum`
+   When the enum is missing, the corresponding flag is `null` and the skill falls back to inline literals per `references/swiftui-pro-bridge.md` §1c.
+8. **xcstrings catalog.** `find . -name '*.xcstrings'` — when present, cache path; the skill routes `Text(...)` through the symbol API.
+9. **Asset catalog path.** `find . -name '*.xcassets' -type d` — single hit caches the path; multiple hits → interactive prompt to pin one (cached for the run).
+
+**Output** — `c1-conventions.json` shape:
+
+```json
+{
+  "screenFolderConvention": "screen-based" | "flat",
+  "viewModelPattern": "state-action-reducer" | "ad-hoc" | "none",
+  "minDeploymentTarget": "16.0",
+  "observationFlavor": "observable" | "observable-object",
+  "usesIKNavigation": true | false,
+  "routerName": "AppRouter" | null,
+  "viewToRouteWiring": "onChange" | "environmentRouter" | null,
+  "usesIKMacros": true | false,
+  "apiRepoTypeName": "AppAPIRepository" | null,
+  "ikFontEnum": "IKFont" | "AppFont" | null,
+  "spacingEnum": "Spacing" | null,
+  "colorEnum": "IKCoreApp" | null,
+  "xcstringsPath": "...path..." | null,
+  "assetCatalogPath": "...path..."
+}
+```
+
+The skill's C2 implement step reads this JSON and adapts every emission decision to it. The c8-* gates also read from it to know whether to enforce or skip a particular check.
+
+**When the probe is impossible** (e.g. brand-new empty project): skill defaults to `screenFolderConvention = "screen-based"`, `viewModelPattern = "state-action-reducer"`, `usesIKNavigation = false`, `usesIKMacros = false`. The user can override during C1 confirmation.
+
+**Where this lives in the workflow.** For single-screen `figma-to-swiftui` runs, the probe is part of Step C1. For `figma-flow-to-swiftui-feature`, the probe runs once at flow Step 2 (Audit the Codebase) and the result is shared across all per-screen Phase A/C calls.
+
+---
+
 ## Adaptation Audit Process
 
 ### 1. Read the Existing Code

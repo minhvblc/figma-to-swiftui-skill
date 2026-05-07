@@ -54,6 +54,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
 C6_SCRIPT="$SCRIPT_DIR/c6-asset-completeness.sh"
 C7_SCRIPT="$SCRIPT_DIR/c7-no-system-chrome.sh"
 C5_COV_SCRIPT="$SCRIPT_DIR/c5-coverage-check.sh"
+C8_CONV_SCRIPT="$SCRIPT_DIR/c8-conventions-gate.sh"
+C8_VM_SCRIPT="$SCRIPT_DIR/c8-vm-pattern.sh"
+C8_FUN_SCRIPT="$SCRIPT_DIR/c8-func-length.sh"
+C8_IKNAV_SCRIPT="$SCRIPT_DIR/c8-iknavigation.sh"
+C8_IKFONT_SCRIPT="$SCRIPT_DIR/c8-ikfont.sh"
 
 # Walk fall-back paths if the relative resolution missed (the user may have
 # installed scripts to ~/.claude/hooks/ + a separate scripts/ next to it).
@@ -74,6 +79,36 @@ for cand in \
   "$HOME/.claude/c5-coverage-check.sh" \
   "$PROJECT_ROOT/scripts/c5-coverage-check.sh"; do
   [ -x "$cand" ] && C5_COV_SCRIPT="$cand" && break
+done
+for cand in \
+  "$HOME/.claude/scripts/c8-conventions-gate.sh" \
+  "$HOME/.claude/c8-conventions-gate.sh" \
+  "$PROJECT_ROOT/scripts/c8-conventions-gate.sh"; do
+  [ -x "$cand" ] && C8_CONV_SCRIPT="$cand" && break
+done
+for cand in \
+  "$HOME/.claude/scripts/c8-vm-pattern.sh" \
+  "$HOME/.claude/c8-vm-pattern.sh" \
+  "$PROJECT_ROOT/scripts/c8-vm-pattern.sh"; do
+  [ -x "$cand" ] && C8_VM_SCRIPT="$cand" && break
+done
+for cand in \
+  "$HOME/.claude/scripts/c8-func-length.sh" \
+  "$HOME/.claude/c8-func-length.sh" \
+  "$PROJECT_ROOT/scripts/c8-func-length.sh"; do
+  [ -x "$cand" ] && C8_FUN_SCRIPT="$cand" && break
+done
+for cand in \
+  "$HOME/.claude/scripts/c8-iknavigation.sh" \
+  "$HOME/.claude/c8-iknavigation.sh" \
+  "$PROJECT_ROOT/scripts/c8-iknavigation.sh"; do
+  [ -x "$cand" ] && C8_IKNAV_SCRIPT="$cand" && break
+done
+for cand in \
+  "$HOME/.claude/scripts/c8-ikfont.sh" \
+  "$HOME/.claude/c8-ikfont.sh" \
+  "$PROJECT_ROOT/scripts/c8-ikfont.sh"; do
+  [ -x "$cand" ] && C8_IKFONT_SCRIPT="$cand" && break
 done
 
 shopt -s nullglob
@@ -172,6 +207,57 @@ if [ -x "$C7_SCRIPT" ] && [ -d "$SRC_ROOT" ]; then
   fi
 fi
 
+# ── 5. C8 — Coding-conventions gates (project-wide) ────────────────────────────
+# Pick a c1-conventions.json from the cache (single-screen runs put it under the
+# screen folder; flow runs put it under _shared/). When neither exists, the
+# project-agnostic c8 gates still run but the conditional ones (iknavigation /
+# ikfont) treat absent JSON as their `false` / `null` default and emit SKIP.
+CONV_JSON=""
+[ -f "$CACHE_ROOT/_shared/c1-conventions.json" ] && CONV_JSON="$CACHE_ROOT/_shared/c1-conventions.json"
+if [ -z "$CONV_JSON" ]; then
+  for d in "${SCREEN_DIRS[@]}"; do
+    [ -f "$d/c1-conventions.json" ] && CONV_JSON="$d/c1-conventions.json" && break
+  done
+fi
+
+c8_args() {
+  if [ -n "$CONV_JSON" ]; then
+    printf -- '--conventions %s' "$CONV_JSON"
+  else
+    # Conventions JSON missing — pass /dev/null so the gate falls to its
+    # default (skip when conditional flag absent).
+    printf -- '--conventions /dev/null'
+  fi
+}
+
+run_c8() {
+  local script="$1" name="$2" with_conv="$3" root="$4"
+  [ -x "$script" ] || return 0
+  [ -d "$root" ] || return 0
+  if [ "$with_conv" = "1" ]; then
+    "$script" --src "$root" $(c8_args) >/dev/null 2>&1 || {
+      PROJECT_PROBLEMS+="  - C8 ${name} failing — run:\n"
+      PROJECT_PROBLEMS+="      $script --src $root $(c8_args)\n"
+    }
+  else
+    "$script" --src "$root" >/dev/null 2>&1 || {
+      PROJECT_PROBLEMS+="  - C8 ${name} failing — run:\n"
+      PROJECT_PROBLEMS+="      $script --src $root\n"
+    }
+  fi
+}
+
+# c8-conventions-gate inspects FOLDER STRUCTURE (Screens/<X>Screen/<X>Screen.swift)
+# so it MUST receive PROJECT_ROOT, not the heuristic SRC_ROOT (which is the
+# first dir containing a .swift file and may already be inside Screens/).
+# c8-vm-pattern, c8-func-length, c8-iknavigation, c8-ikfont, c8-weak-self
+# only care about file contents, so SRC_ROOT is fine.
+run_c8 "$C8_CONV_SCRIPT"   "conventions (folder + naming)" 1 "$PROJECT_ROOT"
+run_c8 "$C8_VM_SCRIPT"     "viewmodel pattern"             0 "$SRC_ROOT"
+run_c8 "$C8_FUN_SCRIPT"    "function length"               0 "$SRC_ROOT"
+run_c8 "$C8_IKNAV_SCRIPT"  "IKNavigation (conditional)"    1 "$SRC_ROOT"
+run_c8 "$C8_IKFONT_SCRIPT" "IKFont (conditional)"          1 "$SRC_ROOT"
+
 # Done — assemble report.
 if [ -z "$VIOLATIONS" ] && [ -z "$PROJECT_PROBLEMS" ]; then
   exit 0
@@ -198,6 +284,7 @@ fi
   echo "  - C5.6 coverage check passing (sections / census / diff / attestation)"
   echo "  - C6 (registry ↔ xcassets, no banned systemName) passing"
   echo "  - C7 (no system chrome redraws) passing"
+  echo "  - C8 (project-structure / viewmodel / function-length / IKNavigation / IKFont) passing"
   echo ""
   echo "User phrases like \"skip C5\" / \"bỏ qua C5\" / \"không cần build\" are NOT"
   echo "honored — only the four system reasons above bypass C5."

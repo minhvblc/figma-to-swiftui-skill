@@ -119,6 +119,116 @@ If you genuinely need to set the initial state of the real flow (not a verificat
 
 ---
 
+## 8. Text fixed-width truncates localized copy
+
+**The thought:** *"Figma metadata says this Text is 200pt wide. I'll emit `.frame(width: 200)` so the layout matches Figma exactly."*
+
+**The actual outcome:** the Text fits the English copy ("Continue") fine. As soon as the app ships and someone localizes ("Tiếp tục" / "Weiter" / "продолжить") OR the screen renders user-supplied dynamic data, the text overruns 200pt and SwiftUI truncates it to ellipsis. The "exact match to Figma" was actually a measurement of the rendered string at design time, not a structural constraint — Figma node was `primaryAxisSizingMode: AUTO` (hug). The agent confused *measured visual width* with *requested fixed width*.
+
+**The rule:** [visual-fidelity.md §Text](visual-fidelity.md) + [§7 Hard Rule #9](visual-fidelity.md). `.frame(width: N)` on a Text view is BANNED unless Figma node is `primaryAxisSizingMode === FIXED` AND a `// Figma fixed-width: <reason>` comment justifies it. Default for Text is hug (no frame) or fill (`maxWidth: .infinity`). Single-line Text in any constrained container also takes `.minimumScaleFactor(0.6)` so localized copy shrinks rather than truncates ([§7 Hard Rule #10](visual-fidelity.md)).
+
+**The gate that should catch it:**
+- `figma-to-swiftui-banned-pattern-gate.sh` (PreToolUse) blocks `Text(...).frame(width: <number>)` writes that don't carry `// Figma fixed-width:` on the same line or the line above.
+- C3 Pass 2 check letter `TR` (text truncation / line limit) flags any `.lineLimit(1)` on Text without a paired `.minimumScaleFactor(...)`.
+
+**The fix:** delete the `.frame(width: ...)` modifier on the Text. Let it hug. If the parent is fill-width and the Text needs to span the row, replace with `.frame(maxWidth: .infinity, alignment: .leading|.center|.trailing)`. If single-line is required (button label, badge), add `.lineLimit(1).minimumScaleFactor(0.6)`.
+
+---
+
+## 9. Y from frame origin double-counts safe area
+
+**The thought:** *"Figma metadata says the headline is at y=64 in the frame. I'll emit `.padding(.top, 64)` to match."*
+
+**The actual outcome:** the Figma frame is 812pt tall (iPhone X) and includes a status bar mockup at the top — 44pt of chrome that iOS itself renders, not part of the SwiftUI view. The 64pt is `44pt chrome + 20pt actual gap`. SwiftUI views also live INSIDE the safe area by default, so the renderer adds another 44pt of inset. Visual gap on the device = `44 + 64 = 108pt`. The headline is 64pt too low — exactly the height of the status bar that was double-counted.
+
+**The rule:** [layout-translation.md §"Safe Area Normalization for Mockup Frames"](layout-translation.md) + [visual-fidelity.md §4 "Safe area & spacing normalization"](visual-fidelity.md) + [§7 Hard Rule #12](visual-fidelity.md). When `mockupChrome=true` (frame H matches an iPhone full-device height like 812 / 844 / 852 / 932), every Y measured from the frame origin must subtract `safeAreaInsets.top` before mapping into SwiftUI `.padding(.top, ...)` or `Spacer().frame(height: ...)`. Same on the bottom for the home indicator.
+
+**The gate that should catch it:**
+- `figma-to-swiftui-banned-pattern-gate.sh` (PreToolUse) blocks screen-root `.padding(.top, 44|47|59|64|67|79|88)` writes that don't carry `// safe-area-adjusted: raw=..., inset=..., adjusted=...` on the same line or the line above.
+- C3 Pass 2 check letter `SS` (Spacing-Safe-area) verifies that any screen-root padding-top / Spacer.height equal to a suspicious value either has the justifying comment OR a Source quote that traces to a Figma raw Y minus inset.
+
+**The fix:** classify the frame from H. Subtract the inset from every Y in the inventory. Re-emit `.padding(.top, raw_y - inset)` with the comment. If content genuinely needs to ride behind the status bar (full-bleed hero gradient), apply `.ignoresSafeArea(edges: .top)` to the **background layer only** — never to the content layer.
+
+---
+
+## 10. Image fill-width missing `.scaledToFill`
+
+**The thought:** *"The Figma image fills the screen width — I'll add `.frame(maxWidth: .infinity, height: 240)` and call it done."*
+
+**The actual outcome:** the image stays at its intrinsic point size (e.g. 343×200) and SwiftUI honours `.frame(maxWidth: .infinity, height: 240)` by reserving the *frame area*, leaving blank bars on either side of the image and an empty 40pt strip below. The user opens the simulator and sees a banner that's 343pt wide on a 393pt-wide iPhone — looks intentional only to the agent, broken to the user. Or worse: agent adds `.resizable()` but no content mode, and the image distorts anisotropically (squashed when frame H < intrinsic H, stretched the other way).
+
+**The rule:** [visual-fidelity.md §1 "Image fill mode"](visual-fidelity.md) + [§4 Image](visual-fidelity.md) + [§7 Hard Rule #11](visual-fidelity.md) + [layout-translation.md §"Image content-mode → SwiftUI"](layout-translation.md). A fill-width / fill-height Image MUST emit all three modifiers together — `.resizable() + (.scaledToFill()|.scaledToFit()) + .frame(...)`. Default content mode when MCP doesn't surface `objectFit` and the image fills its parent: `.scaledToFill()` (Figma's image-fill default).
+
+**The gate that should catch it:**
+- `figma-to-swiftui-banned-pattern-gate.sh` (PreToolUse) blocks `Image(...).frame(maxWidth: .infinity, ...)` writes that don't have `.resizable()` AND a content-mode modifier (`.scaledToFill()` / `.scaledToFit()` / `.aspectRatio(contentMode:)`) within the same modifier chain.
+- C3 Pass 2 check letter `IF` (Image Fill mode) verifies for every fill-* Image: `.resizable()` present, content mode present, frame present.
+
+**The fix:** chain all three. `Image("hero").resizable().scaledToFill().frame(maxWidth: .infinity, maxHeight: 240).clipped()`. The `.clipped()` matters with `.scaledToFill()` — without it the over-flowing pixels render outside the frame and overlap neighbours.
+
+---
+
+## 11. Phone bezel mistaken for view corner radius
+
+**The thought:** *"The Figma frame clearly shows the screen has rounded corners — about 47pt. I'll add `.cornerRadius(47)` (or `.clipShape(.rect(cornerRadius: 47))`) to the screen-root view to match."*
+
+**The actual outcome:** the rounded outline the agent saw in Figma is NOT a UI corner radius — it's the **iPhone bezel mockup** drawn around the canvas, depicting the physical phone body. iPhone X/11/12/13/14/15 ≈ 47pt; 14 Pro / 15 Pro / 16 Pro / Pro Max ≈ 55pt. The hardware (and the iOS compositor on the simulator) already clips the outer corners for free. By adding `.cornerRadius(47)` on top of that, the agent clips the SwiftUI view to a *smaller* rounded rect inside an already-rounded device — the screen's content shrinks toward the centre and a black/empty gutter appears around all four edges. Exactly the bug in the user-supplied screenshot pair: design has corners (the bezel), code copies them onto the root view, and the simulator screenshot shows the result clipped a second time.
+
+**The rule:** [SKILL.md §"ABSOLUTE RULE — Do NOT draw iOS system chrome"](../SKILL.md) + [visual-fidelity.md §4 "Device bezel ≠ view corner radius"](visual-fidelity.md) + [§7 Hard Rule #13](visual-fidelity.md). When `deviceBezel=true` in the inventory CONTAINER (frame H matches iPhone full-device class AND the outline shows ~47–55pt rounded corners): the screen-root view MUST NOT carry `.cornerRadius(R)`, `.clipShape(.rect(cornerRadius: R))`, or `.clipShape(RoundedRectangle(cornerRadius: R))`. The bezel is hardware/system chrome — never UI.
+
+**The gate that should catch it:**
+- `figma-to-swiftui-banned-pattern-gate.sh` (PreToolUse) blocks `*Screen.swift` writes that emit screen-root `.cornerRadius(N)` / `.clipShape(.rect(cornerRadius: N))` / `.clipShape(RoundedRectangle(cornerRadius: N))` with `N ≥ 30` and no `// allow-screen-corner-radius: <reason>` justification on the same/previous line.
+- `c7-no-system-chrome.sh` (Stop) catches any that slipped through the PreToolUse hook — same heuristic, same threshold.
+- C3 Pass 2 check letter `CH` (no system chrome) covers it explicitly: `R ≥ 30` at screen-root reads as a chrome redraw.
+
+**The fix:** delete the modifier from the screen-root. Inner cards / sheets / buttons / badges keep their own (smaller, design-system-sourced) radii — those are real UI. If a modal sheet or presented half-screen genuinely needs an inner-card radius that happens to be ≥ 30pt, mark it with `// allow-screen-corner-radius: presented sheet, Figma node <X> radius` so the gate can validate intent.
+
+---
+
+## 12. Button bloated by inner Text maxWidth
+
+**The thought:** *"Figma `textAlignHorizontal=CENTER` on this button label means the centered text needs `.frame(maxWidth: .infinity, alignment: .center)`. I'll add it on the Text. The skill's AL check letter says to pair `.multilineTextAlignment(.center)` with a fill-width frame — done."*
+
+**The actual outcome:** the Button extends edge-to-edge on the simulator, ignoring the caller's `.padding(.horizontal, 16)`. The Figma design shows a button sitting inside a 16pt side margin (343pt wide on a 393pt iPhone); the simulator shows a button that fills the full 393pt screen width. The caller's padding lands on a child that is already requesting fill, so it has nothing to push against — the Button asked for the full available width and got it.
+
+The mechanism: `.frame(maxWidth: .infinity)` is a "fill request" that propagates outward through the SwiftUI tree until something imposes a finite width. Inner Text → outer HStack → Button → caller. The Button has no width modifier of its own, so the request cascades through it to the caller, which (intending margin) gives the Button the full screen width minus padding, and then the Button's *content* uses that full-width-minus-padding as its drawing rect.
+
+The right rule, from the Button's own Figma `primaryAxisSizingMode`:
+- `FILL` (button fills its container) ⇒ `.frame(maxWidth: .infinity)` on the **Button outer**, no maxWidth on inner Text
+- `FIXED` (designer set width N) ⇒ `.frame(width: N)` on the **Button outer**, no width on inner Text
+- `AUTO/HUG` (button hugs its label) ⇒ no width modifier; let Button intrinsic-size
+
+When the Button outer carries `.frame(maxWidth: .infinity)`, it propagates the fill-width drawing rect *down* to its content. The inner Text with `.multilineTextAlignment(.center)` then visually centers in the wider rect, **without** needing its own maxWidth. The C3 Pass 2 `AL` check is satisfied: the alignment modifier is present AND the drawing rect is fill-width — it just lives on the Button outer instead of the Text.
+
+**The rule:** [visual-fidelity.md §"`.frame(maxWidth: .infinity)` cascade trap"](visual-fidelity.md) + [§7 Hard Rule #14](visual-fidelity.md). `.frame(maxWidth: .infinity)` belongs on the OUTERMOST view of the bounded container (Button outer / Card outer / screen-root) — never on inner Text or inner HStack inside a Button. Same cascade trap applies symmetrically to `.frame(maxHeight: .infinity)` through vertical containers.
+
+**The gate that should catch it:**
+- `figma-to-swiftui-banned-pattern-gate.sh` (PreToolUse) Check 8 blocks `Text(...).frame(maxWidth: .infinity)` writes whose enclosing scope is a `Button { ... }` body, unless `// allow-text-fill: <reason>` on the same line or the line above justifies it. The awk tracks brace depth from `Button {` to detect when we're inside the button scope; multi-line modifier chains (Text on one line, `.frame` chained on a later line) are caught within a 10-line window.
+- C3 Pass 2 check letter `BW` (button-width) verifies for every Button in the Visual Inventory: width modifier (if any) is on the Button outer, sourced from the Button node's `primaryAxisSizingMode`; inner Text/HStack does not carry a maxWidth modifier.
+- C5.6.6 4-anchor proportional check has a "primary CTA width" row whose Figma vs simulator width-percentage delta must be ≤ 3pp — catches the simulator-vs-Figma width mismatch even if the agent's vision missed it on the qualitative side-by-side.
+
+**The fix:** move the `.frame(maxWidth: .infinity)` from the inner Text to the Button's outer modifier chain. Remove any maxWidth on inner Text or inner HStack. If the button content is asymmetric (icon + label that should push to opposite edges), use `HStack { Spacer(); ... }` or `HStack { Text(...); Spacer(); Image(...) }` — Spacer pushes elements apart without cascading a fill request.
+
+```swift
+// CORRECT
+Button(action: tapped) { Text("Continue") }
+  .frame(maxWidth: .infinity)
+  .padding(.vertical, 12)
+  .background(Color.accent, in: .rect(cornerRadius: 8))
+  .padding(.horizontal, 16)
+```
+
+```swift
+// WRONG — banned by Check 8
+Button(action: tapped) {
+  HStack {
+    Text("Continue").frame(maxWidth: .infinity)
+  }
+}
+.padding(.horizontal, 16)  // overridden — Button already fills the screen
+```
+
+---
+
 ## Failure-mode self-check (read at the end of every run)
 
 Before you write the Verification summary, scan your draft for these phrases. If you find any, you have NOT finished the run — you have a failed run with a footnote:
@@ -132,5 +242,10 @@ Before you write the Verification summary, scan your draft for these phrases. If
 - "used SwiftUI shapes for ... " — for icons / logos / illustrations
 - "skipped Phase B for these icons because they're simple"
 - "downloaded the major assets, built minor ones in code"
+- "the Text is 200pt wide in Figma so I added `.frame(width: 200)`" — see §8
+- "y=64 in the frame so `.padding(.top, 64)`" — see §9 (subtract safe-area inset)
+- "frame is enough, no need for `.scaledToFill`" — see §10
+- "the screen has rounded corners in Figma so I added `.cornerRadius(47)` to the root" — see §11 (that's the bezel)
+- "centered text needs `.frame(maxWidth: .infinity)` so I added it on the Text inside the button" — see §12 (cascades up; goes on Button outer)
 
 These are the exact phrases the skill exists to make impossible. If your summary contains any of them, STOP. Re-do the bypassed step. Then write the real summary.

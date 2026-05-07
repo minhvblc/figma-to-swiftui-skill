@@ -293,6 +293,8 @@ if [ "$INSTALL_HOOKS" = "0" ]; then
 else
   HOOKS_SRC="$REPO_ROOT/scripts/hooks"
   HOOKS_DST="$HOME/.claude/hooks"
+  SCRIPTS_SRC="$REPO_ROOT/scripts"
+  SCRIPTS_DST="$HOME/.claude/scripts"
   SETTINGS="$HOME/.claude/settings.json"
 
   if [ ! -d "$HOOKS_SRC" ]; then
@@ -306,7 +308,21 @@ else
       dst="$HOOKS_DST/$name"
       cp "$src" "$dst"
       chmod +x "$dst"
-      echo "  $(green ✓) Installed $name"
+      echo "  $(green ✓) Installed hook: $name"
+    done
+
+    # Also install c5-*/c6-*/c7-*/c8-* and c1-* helper scripts to
+    # ~/.claude/scripts/, so the stop hook's fallback path resolution
+    # (see scripts/hooks/figma-to-swiftui-stop-gate.sh) can find them
+    # regardless of where the user runs the skill from.
+    mkdir -p "$SCRIPTS_DST"
+    for src in "$SCRIPTS_SRC"/c1-*.sh "$SCRIPTS_SRC"/c5-*.sh "$SCRIPTS_SRC"/c6-*.sh "$SCRIPTS_SRC"/c7-*.sh "$SCRIPTS_SRC"/c8-*.sh "$SCRIPTS_SRC"/colorset-codegen.sh; do
+      [ -f "$src" ] || continue
+      name=$(basename "$src")
+      dst="$SCRIPTS_DST/$name"
+      cp "$src" "$dst"
+      chmod +x "$dst"
+      echo "  $(green ✓) Installed gate script: $name"
     done
 
     # Backup + patch ~/.claude/settings.json to register the three hooks.
@@ -333,6 +349,7 @@ GATES = [
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-banned-pattern-gate.sh"),
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-entry-bypass-gate.sh"),
     ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-pass2-gate.sh"),
+    ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-c8-gate.sh"),
     ("Stop",        None,         "~/.claude/hooks/figma-to-swiftui-stop-gate.sh"),
 ]
 
@@ -364,11 +381,15 @@ PY
     echo "      (PreToolUse — Phase A+B coverage gate, blocks .swift writes when"
     echo "         assets missing or registry coverage incomplete;"
     echo "       PreToolUse — banned-pattern detector, blocks Image(systemName:),"
-    echo "         status-bar/home-indicator redraws, letter-as-logo;"
+    echo "         status-bar/home-indicator redraws, letter-as-logo, screen-bezel"
+    echo "         radius, button-bloat, .frame(width:) on Text;"
     echo "       PreToolUse — entry-path bypass detector, blocks edits that set"
     echo "         initial route on App.swift/ContentView.swift for verification;"
     echo "       PostToolUse — auto-runs Gate C3-Pass2;"
-    echo "       Stop — blocks termination when C5/C6/C7 Done-Gate unsatisfied)"
+    echo "       PostToolUse — C8 coding-conventions gate (folder/naming/"
+    echo "         ViewModel pattern/function-length; conditional IKNavigation"
+    echo "         + IKFont per c1-conventions.json);"
+    echo "       Stop — blocks termination when C5/C6/C7/C8 Done-Gate unsatisfied)"
   fi
 fi
 

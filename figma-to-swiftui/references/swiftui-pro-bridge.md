@@ -98,18 +98,23 @@ These rules apply on every emit, every project. The deployment target is **iOS 1
 
 ## §3. Project-context-dependent transforms (C1 audit gates)
 
-Phase C1 sets these flags by inspecting the project. C2 branches on them.
+Phase C1 sets these flags by inspecting the project AND writes them to `c1-conventions.json` (see [`adaptation-workflow.md` §0](adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit) for the canonical shape). C2 reads the JSON and branches on each flag.
 
-| Flag | C1 detection | If TRUE | If FALSE |
+| Flag (in `c1-conventions.json`) | C1 detection | If TRUE | If FALSE |
 |---|---|---|---|
 | `useGeneratedSymbols` | grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = YES`; or check Xcode 15+ default behavior | `Image(.icAIClose)`, `Color(.brandRed)` | `Image("icAIClose")`, `Color("brandRed")` |
 | `useStringCatalogSymbols` | xcstrings present + `STRING_CATALOG_GENERATE_SYMBOLS = YES` | `Text(.welcomeMessage)` + add key to .xcstrings (extractionState: manual) + offer translate | `Text("Welcome")` (LocalizedStringKey infers) |
-| `hasSpacingEnum` | grep `enum Spacing` (locked: project uses this) | Route Figma spacing values through `Spacing.<token>` | Inline literal `.padding(24)` |
-| `hasIKFont` | grep `IKFont` enum (locked: project uses this) | Use `IKFont.<token>` for typography | `@ScaledMetric` + `.font(.system(size:weight:))` |
-| `hasIKCoreApp` | grep `IKCoreApp` (locked: project uses this) | Use `IKCoreApp.colors.<token>`, `IKCoreApp.spacing.<token>`, etc. | Fallback by category (color asset / Spacing / IKFont) |
-| `deploymentTarget` | read `IPHONEOS_DEPLOYMENT_TARGET` from pbxproj | gates §6 fallbacks | as decided by §6 |
+| `spacingEnum` | grep `enum Spacing\|enum AppSpacing\|enum Padding` | Route Figma spacing values through `<enum>.<token>` | Inline literal `.padding(24)` |
+| `ikFontEnum` | grep `enum IKFont\|enum AppFont\|enum Typography` | Use `<enum>.<token>` for typography | `@ScaledMetric` + `.font(.system(size:weight:))` |
+| `colorEnum` | grep `enum IKCoreApp\|enum AppColors\|enum ColorPalette` | Use `<enum>.colors.<token>` etc. | Fallback by category (color asset / inline) |
+| `minDeploymentTarget` | read `IPHONEOS_DEPLOYMENT_TARGET` from pbxproj | gates §6 fallbacks | as decided by §6 |
 | `hasColorHexExtension` | grep `Color\(hex:` extension/init | use `Color(hex: "#FF6600")` for un-tokenized colors | `Color(red:green:blue:)` |
 | `hasLottieSDK` | grep `import Lottie` or `Package.resolved` for `lottie-ios` | eAnim* placeholders codegen `LottieView` | warn user, defer or skip |
+| `screenFolderConvention` | `Screens/<X>Screen/<X>Screen.swift` count ≥ 2 | Place new screen at `Screens/<Name>Screen/...` per `references/project-structure.md` §2 | Single-file output at user-requested path |
+| `viewModelPattern` | grep `enum Action` + `func send(_ action: Action)` in latest `*ViewModel.swift` | New ViewModels match existing reducer shape | New ViewModels use canonical reducer (default — see `references/viewmodel-pattern.md`) |
+| `observationFlavor` | iOS 17+ AND project uses `@Observable` | Emit `@Observable @MainActor` ViewModels | Emit `ObservableObject` + `@Published` |
+| `usesIKNavigation` | `import IKNavigation`, `IKRouter`, `@Environment(\.ikNavigationable)` | Emit per `references/iknavigation-bridge.md` | Emit per `references/swiftui-pro/navigation.md` |
+| `usesIKMacros` | `import IKMacros`, `@APIProtocol`, `@JsonSerializable` | Emit per `references/ikmacro-bridge.md` | Emit plain `Codable` + `URLSession` service |
 
 The skill always prints the resolved flags at end of C1 so the user can verify routing decisions before any code is written.
 
@@ -228,31 +233,31 @@ When the user later bumps the project to iOS 17+ or 18+, search for `// iOS 16 f
 
 ---
 
-## §7. Project tokens reference (locked: `Spacing`, `IKFont`, `IKCoreApp`)
+## §7. Project tokens reference (detected: `spacingEnum`, `ikFontEnum`, `colorEnum`)
 
-C1 audit grep confirms these enums exist; C2 routes Figma values through them.
+C1 audit greps for these enums and writes the detected name into `c1-conventions.json` (or `null` when absent). C2 routes Figma values through whichever enum is found. **Detect-then-apply** — if the project doesn't have these enums, use the fallback paths (inline literals, `@ScaledMetric`, etc.) — do NOT introduce a new `Spacing.swift` / `IKFont.swift` unless the user asks.
 
-**`Spacing` (spacing/padding/gap):**
+**`spacingEnum` — spacing/padding/gap.** Common project names: `Spacing`, `AppSpacing`, `Padding`. When detected:
 ```swift
 .padding(.horizontal, Spacing.l24)         // not .padding(.horizontal, 24)
-VStack(spacing: Spacing.m16) { ... }        // not VStack(spacing: 16)
+VStack(spacing: Spacing.m16) { ... }       // not VStack(spacing: 16)
 ```
-Token mapping: ask the project's existing usage — common conventions `Spacing.xs4`, `s8`, `m16`, `l24`, `xl32`, `xxl48`. If Figma value doesn't match an existing token, fall back to inline literal with comment `// TODO: align with Spacing enum if appropriate`.
+Common case-naming conventions: `Spacing.xs4`, `s8`, `m16`, `l24`, `xl32`, `xxl48`. C1 lists actual cases. When `spacingEnum == null` or no token matches the Figma value, fall back to inline literal with comment `// Figma: 24` for traceability.
 
-**`IKFont` (typography):**
+**`ikFontEnum` — typography.** Common project names: `IKFont`, `AppFont`, `Typography`. When detected:
 ```swift
 Text(.welcomeMessage).font(IKFont.headlineSemibold20)
 ```
-For each Figma typography style (size + weight + lineHeight + tracking), find the closest `IKFont` case. If none exists, use `@ScaledMetric` + `.font(.system(size:weight:))`. Never invent new `IKFont` cases without user approval.
+For each Figma typography style (size + weight + lineHeight + tracking), find the closest case. If none exists, use `@ScaledMetric` + `.font(.system(size:weight:))`. Never invent new cases without user approval. When `ikFontEnum == null`, default to `@ScaledMetric` for size + raw `.font(.system(size:weight:))`. Enforced by `scripts/c8-ikfont.sh` (gate skips when `ikFontEnum == null`).
 
-**`IKCoreApp` (top-level app tokens):**
+**`colorEnum` — top-level app tokens.** Common project names: `IKCoreApp`, `AppColors`, `ColorPalette`. When detected:
 ```swift
 .foregroundStyle(IKCoreApp.colors.textPrimary)
 .padding(IKCoreApp.spacing.contentPadding)
 ```
-Often namespaces the others (`IKCoreApp.colors.*`, `IKCoreApp.spacing.*`). C1 audit lists what's exposed.
+Often namespaces the others. C1 lists what's exposed. When `colorEnum == null`, prefer Asset Catalog (`Color("Colors/<name>")`) → tokens.json-emitted `Color.<swiftName>` → `Color(hex:)` extension → inline `Color(red:green:blue:)` (last resort).
 
-If a value doesn't fit any token, codegen surfaces it in the run summary so the user knows where the design system needs an addition (no auto-edit of these enums).
+If a Figma value doesn't fit any detected token, surface it in the run summary so the user can decide whether to add a new case (skill never auto-edits enum files).
 
 ---
 
