@@ -186,6 +186,8 @@ If `figma_build_registry` returns auth error or is not registered, surface and s
 
 **Cluster the fetches in parallel** (mandatory for flows ≥ 3 screens). Issue one message with `parallelBudget × 2` tool calls (`get_design_context` + `get_screenshot` for each screen in the cluster), wait for all to land, then start the next cluster. Default `parallelBudget = 3` (6 tool calls in flight). Failure of one screen does NOT abort the cluster — that screen is recorded `status: "failed"` and retried serially with the circuit-breaker section-split at the end. See [`../figma-to-swiftui/references/fetch-strategy.md`](../figma-to-swiftui/references/fetch-strategy.md) §"Parallelism Inside Phase A" for the full rules (auto-degrade on repeated timeouts, wall-time accounting, override). On flows ≥ 3 screens this typically cuts Phase A wall-time by 30–50% vs. sequential per-screen fetching.
 
+**Phase B early-start pipeline (RECOMMENDED on first run).** Per `../figma-to-swiftui/SKILL.md` §"Step A3+ — Phase B early-start pipeline", `figma_export_assets_unified(autoDiscover: true)` per screen can ride along in the same cluster as A3 calls when (a) the flow's `assetCatalogPath` is already pinned at A0 and (b) registry warnings don't change the asset plan. Effective cluster shape becomes `parallelBudget × 3` tool calls (design-context + screenshot + B3 per screen, default 9 in flight at `parallelBudget=3`). Cross-validation per screen (B1 inventory vs `manifest.rows[]`) runs after the cluster lands — same rules as single-screen. On a 4-6 screen flow this typically saves an additional **30-60s** over sequential A3-then-B3-per-screen, by overlapping every B3 with adjacent A3 fetches AND with each other within the cluster. Auto-degrade still applies: if a cluster produces ≥1 timeout, halve `parallelBudget` for the rest of the run AND fall back to sequential B3 (run after Phase A done) for the remainder.
+
 **Dedup the file-scoped data.** `figma_extract_tokens` is per `fileKey`, not per node. If all screens come from the same Figma file, fetch tokens once and copy/symlink the same `tokens.json` into each screen's cache folder.
 
 **If a Phase A fetch fails** on a screen: the manifest records it as `failed`; continue with the next screen, then retry failed ones at the end. Do NOT retry the same node on timeout — apply the circuit breaker from fetch-strategy.md and split the screen into sections.
@@ -202,9 +204,9 @@ If `figma_build_registry` returns auth error or is not registered, surface and s
 
 **Phase B order, flow-level (mandatory):**
 
-1. **B0a — Copy extraction** (flow-level once). Walk every screen's `design-context.md`, extract every visible string with its `data-node-id`, write a single `Strings.swift` (or String Catalog) keyed by node ID. See `figma-to-swiftui/SKILL.md` Step B0a. Every `Text(...)` in subsequent view files must reference this — inline English literals are banned by C3 Pass 1.
+1. **B0a — Copy extraction** (flow-level once). **Fast path:** loop over screens, calling `scripts/b0a-extract-copy.sh --design-context .figma-cache/<nodeId>/design-context.md --output <project>/DesignSystem/Strings.swift --screen-name <ScreenName> --merge` for each. The `--merge` flag preserves prior screens' enums and adds the new screen as a sibling. Every `Text(...)` in subsequent view files must reference this — inline English literals are banned by C3 Pass 1. See `figma-to-swiftui/SKILL.md` Step B0a.
 
-2. **B0b — Token codegen** (flow-level once). Read `_shared/tokens.json`, generate `DesignSystem/Color+Tokens.swift`, `AppFont.swift`, `Spacing.swift` with one entry per Figma token, each carrying a `// Figma: <token-name>` comment. See Step B0b. Every Color / font / spacing in subsequent view files must come from these enums — inline hex / font sizes are banned by C3 Pass 1.
+2. **B0b — Token codegen** (flow-level once). **Fast path:** `scripts/b0b-tokens-codegen.sh --tokens .figma-cache/_shared/tokens.json --xcassets <Assets.xcassets> --out <project>/DesignSystem/`. One call emits `Color+Tokens.swift`, `AppFont.swift`, `Spacing.swift`, plus dual-mode colorsets in the catalog. Every Color / font / spacing in subsequent view files must come from these — inline hex / font sizes are banned by C3 Pass 1. See `figma-to-swiftui/SKILL.md` Step B0b.
 
 3. **Per-screen B0 → B6** (figma-to-swiftui), in graph order. Shared components processed before consumers.
 
@@ -249,6 +251,8 @@ Read [references/feature-completeness.md](references/feature-completeness.md) to
 ### 6.5. Flow-level coding-conventions sweep (BASH, mandatory)
 
 Per-screen Phase C already runs Pass 5 (`scripts/c8-*.sh`) over each screen's generated files — see [`../figma-to-swiftui/SKILL.md`](../figma-to-swiftui/SKILL.md) Step C3 Pass 5. Step 6 added cross-screen router wiring + shared scaffolding (Step 4) which per-screen sweeps could not see, so a single flow-level sweep over the whole feature tree catches the rest.
+
+**Fast path (recommended):** `scripts/c8-all.sh --src "$SWIFT_SRC" --conventions .figma-cache/_shared/c1-conventions.json` runs all six c8-* sub-gates in parallel; same enforcement semantics as the sequential block below. The explicit form remains valid when the script is unavailable.
 
 ```bash
 SWIFT_SRC="<project-root or feature-folder>"

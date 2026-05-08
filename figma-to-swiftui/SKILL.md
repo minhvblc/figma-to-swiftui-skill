@@ -177,6 +177,45 @@ For a single screen, issue calls 1+2+4 in **one parallel message** (`get_design_
 
 On truncation: don't retry — fall back to metadata + per-section fetch. See `references/fetch-strategy.md`.
 
+### Step A3+ — Phase B early-start pipeline (RECOMMENDED on first run)
+
+`figma_export_assets_unified(autoDiscover: true)` only needs `nodeId` + `assetCatalogPath` — the server walks the subtree itself. It does NOT need `design-context.md`, `screenshot.png`, or `tokens.json`. This means Phase B's biggest network call (typically 30-90s for a screen with many assets) can ride along in the SAME parallel batch as A3 calls 1+2+3+4 instead of waiting for A3 to finish.
+
+Wall-time saving on first run: **~10-15s on single-screen, 30-60s on a 4-screen flow** (B3 of multiple screens overlap with each other and with A3 fetches).
+
+**Pre-pipeline checklist** (all must hold before issuing B3 in the A3 batch):
+- A2 registry returned exactly one screen (or root is a confirmed single FRAME) — multi-screen flows go through `figma-flow-to-swiftui-feature` instead
+- `assetCatalogPath` is resolvable WITHOUT user prompt (project has 0 → ask user to create one then stop, or 1 → silent default; **N>1** → prompt user first, no pipeline this run)
+- A2 registry returned no `warnings[]` that change the asset plan (designer naming issues, etc. — surface and let user decide)
+- User did not say "fetch sequentially"
+
+**The parallel batch when pipelining:**
+```
+parallel batch = [
+  get_design_context(fileKey, nodeId),              # A3 step 1
+  get_screenshot(fileKey, nodeId, scale=3),         # A3 step 2
+  figma_extract_tokens(fileKey),                    # A3 step 3 (skip if shared cache hit)
+  get_metadata(fileKey, nodeId),                    # A3 step 4
+  figma_export_assets_unified(                      # B3 — early-start
+    fileKey, nodeId, outputDir, sharedAssetsDir,
+    assetCatalogPath, rows: [], autoDiscover: true
+  ),
+]
+```
+
+**Cross-validation after the batch lands** (MANDATORY):
+After A3 screenshot is in cache, walk Step B1 (Inventory) as usual. For every visual row, check whether its `nodeId` appears in `manifest.rows[]` from the early-started B3:
+
+| Outcome | Action |
+|---|---|
+| Visual nodeId ∈ manifest, status: done | ✓ covered, no extra work |
+| Visual nodeId NOT in manifest | Bump B3 with a supplementary single-row call for that node (~1-2s); merge result into manifest |
+| Manifest row NOT in visual inventory (autoDiscover false-positive on a hidden/decorative node) | Keep in manifest — harmless; C4 inverse check surfaces it as `UNUSED` warning, user decides whether to clean |
+
+The cross-validation step replaces nothing — B1 inventory + B2 classify + Gate B all still run unchanged. Pipelining only changes WHEN B3 issues, not whether the gates verify it.
+
+**When the pipeline can't run** (any condition above false): fall back to the sequential default — A3 first, then B0 → B1 → B2 → B3 → Gate B as written below. The sequential path is still correct, just slower by 10-15s.
+
 ### Gate A — Phase A Exit (BASH, mandatory)
 
 You MUST run this. If it does not print `GATE: PASS`, do NOT start Phase B.
@@ -212,6 +251,8 @@ Skill picks the right `exporter`/`strategy` per row in B1/B2 (visual judgment); 
 
 ### Step B0a — Copy extraction (mandatory before any view code)
 
+**Fast path (recommended):** run `scripts/b0a-extract-copy.sh --design-context .figma-cache/<nodeId>/design-context.md --output <project>/DesignSystem/Strings.swift --screen-name <Welcome>`. The script does the parsing + key-generation step described below in one call. It only emits Strings.swift (Option 2); when the project uses xcstrings (`c1-conventions.json.xcstringsPath != null`), edit the catalog directly per Option 1 — the script intentionally does not touch xcstrings. Resulting file is `parse`-clean (Swift reserved keywords like `continue` get backtick-quoted automatically).
+
 Parse `design-context.md` and extract **every visible string** the user will read on this screen — title, subtitle, body, button labels, helper text, error text, status badges, footer links. For each: note the `data-node-id` from the React/Tailwind output; note the Figma typography style if present in the inline tokens block.
 
 Write the extracts to a single source of truth for the project — choose ONE of:
@@ -239,6 +280,8 @@ enum Strings {
 Inline English literals (`Text("Continue")`, `Text("Welcome")`) in view files are **banned** by C3 Pass 1 review. They indicate the agent invented copy or duplicated it from memory instead of from Figma.
 
 ### Step B0b — Token codegen (mandatory before any view code)
+
+**Fast path (recommended):** run `scripts/b0b-tokens-codegen.sh --tokens .figma-cache/_shared/tokens.json --xcassets <Assets.xcassets> --out <project>/DesignSystem/`. One call emits all four artifacts: dual-mode colorsets (delegating to `colorset-codegen.sh`), `Color+Tokens.swift` (light-only), `AppFont.swift` (typography with separate `*LineSpacing` / `*Tracking` constants), and `Spacing.swift` (only emits cases that exist in tokens.json — no synthetic 8pt grid). All generated files are `parse`-clean. The hand-rolled steps below are kept as the explicit form when the script can't run (e.g. agent in a sandbox without bash).
 
 Read `tokens.json` (from A3 `figma_extract_tokens`). Generate **read-only** Swift token files in the project's `DesignSystem/` directory. Files are auto-generated; never edit by hand:
 
@@ -354,7 +397,9 @@ Heuristic: "the hero illustration" (1 thing) → flatten; "a row of action icons
 
 ### Step B3 — Unified export (one call)
 
-Send the inventory to `figma_export_assets_unified`:
+**If you used the A3+ pipeline above:** B3 already ran in the A3 parallel batch and `manifest.json` is on disk. Skip the call here and jump directly to the cross-validation step at the end of this section. The cross-validation supplementary call (when needed) uses the row schema below — same shape, just one row at a time.
+
+**Otherwise** (sequential path), send the inventory to `figma_export_assets_unified`:
 
 ```
 figma_export_assets_unified(
@@ -543,7 +588,7 @@ Goal: SwiftUI code that matches the screenshot pixel-for-pixel, using only asset
    scripts/c1-project-color-audit.sh <project-root> .figma-cache/_shared/project-colors.json
    ```
    Emits a `{hex, swiftPath, source, lightHex, darkHex}` map of every color already in the project (Asset Catalog colorsets + `Color.<name>` extensions + `Color(hex:)` literals). C2 routing prefers this map over inventing new tokens: when a Figma hex matches a project entry, codegen `<swiftPath>` directly. Without the audit the agent eyeballs the project, misses matches, and emits parallel tokens that drift over time.
-10. **Coding-conventions probe (mandatory).** See [`references/adaptation-workflow.md` §0](references/adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit) for the full procedure. Detect:
+10. **Coding-conventions probe (mandatory).** **Fast path:** run `scripts/c1-probe.sh --project <project-root> --output .figma-cache/<nodeId>/c1-conventions.json` — one call emits the full JSON described below (folder layout, ViewModel pattern, deployment target, IKNavigation/IKMacros detection, token enums, xcstrings/xcassets paths, generated-symbols flags). Re-invoke with `--asset-catalog <path>` when the project has multiple `.xcassets`. The hand-rolled detector list below is the explicit form. See [`references/adaptation-workflow.md` §0](references/adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit) for the full procedure. Detect:
     - **Folder layout** — `screen-based` vs `flat` (count of `Screens/<X>Screen/<X>Screen.swift`)
     - **ViewModel pattern** — `state-action-reducer` vs `ad-hoc` vs `none` (grep latest `*ViewModel.swift` for `enum Action` + `func send(_:)`)
     - **Observation flavor** — `observable` (iOS 17+ + `@Observable`) vs `observable-object` (iOS 16+ default)
@@ -690,6 +735,8 @@ Two failure modes:
 
 User abort phrases (`stop fixing`, `ship as-is`) → mark `manifest.verification.c3Pass2.lastResult = "user_override"`, continue.
 
+**Fast path (recommended for Pass 3 + 3b + Pass 4 Part A):** run `scripts/c3-static-checks.sh --files "<space-separated swift paths>" --target <iOS-major>` — one call runs all three sweeps (SF Symbol grep + system chrome grep + 12-check swiftui-pro bash sweep). Same exit semantics as the three blocks below; saves three bash startups + makes self-fix-loop re-runs cheap. The explicit forms below remain valid when the script is unavailable.
+
 **Pass 3 — Asset substitution scan (BASH, mandatory):**
 
 ```bash
@@ -814,6 +861,8 @@ Output format mirrors swiftui-pro SKILL.md "Output Format" — group findings by
 
 Catches violations of project-structure, ViewModel pattern, function size, and (when the project uses them) IKNavigation / IKFont. Reads `c1-conventions.json` from C1 — gates auto-skip when the corresponding flag is off.
 
+**Fast path (recommended):** run `scripts/c8-all.sh --src "$SWIFT_SRC" --conventions "$CONV"` — runs all six c8-* sub-gates in parallel and aggregates the result with deterministic output ordering. Same enforcement semantics; `c8-weak-self` stays informational. Use this in place of the six sequential calls below.
+
 ```bash
 SWIFT_SRC="<dir-containing-generated-swift-files>"
 CONV=".figma-cache/<nodeId>/c1-conventions.json"
@@ -937,15 +986,14 @@ After C3 finishes (Pass 2 clean report, Pass 3/3b grep clean, C4 assets copied),
 
 User phrases like `skip C5`, `bỏ qua C5`, `no build`, `không cần build` are NOT honored — the agent must explain the Done-Gate (Key Principle #12) and proceed with C5 anyway. The only legitimate way to bypass is one of the three system reasons above.
 
-Run the 7 sub-steps (commands + edge cases in `references/verification-loop.md` §5):
+Run the 6 sub-steps (commands + edge cases in `references/verification-loop.md` §5):
 
 1. **C5.1 Detect target** — `xcodebuild -list`. 1 scheme → use it; >1 → ask user, stash; 0 → skip with `manifest.verification.c5.skipped = "no_project"`.
 2. **C5.2 Pick simulator** — prefer Booted iPhone, else highest-iOS iPhone 15/16. Stash UDID.
 3. **C5.3 Build** — `xcodebuild -scheme ... -destination ... build`, log to `c5-build.log`. Build fail → surface compile errors as FAIL high rows, self-fix loop, do NOT install.
 4. **C5.4 Boot/install/launch** — `simctl boot/install/launch`. Wrong default screen → ask user once for `previewEntry`, stash.
-5. **C5.5 Capture** — `sleep 2 && xcrun simctl io <udid> screenshot c5-simulator.png`.
-6. **C5.5b Comparison-safe pair** — Claude's many-image requests reject any image with long-side >2000px. iPhone-native captures (Figma scale-3 ≈1125×2436, simctl ≈1170×2532) blow this. Before C5.6, produce `screenshot-cmp.png` + `c5-simulator-cmp.png` (≤2000px) for the steps that load both PNGs together; rescue path via `figma_export_assets_unified(fallbackScale=2)` if `screenshot.png` is missing. Full procedure in `references/verification-loop.md` §C5.5b.
-7. **C5.6 Compare** — model reads the C5.5b pair (`*-cmp.png`), writes `c5-visual-diff.md` using same table format as C3 Pass 2 (Source quote → Note column). Compare composition and values, not absolute pixel positions.
+5. **C5.5 Capture + C5.5b Comparison-safe pair** — **Fast path (recommended):** `scripts/c5-capture.sh --cache .figma-cache/<nodeId> --udid <udid>` — one call does the 2s settle, simctl screenshot, PNG validation, and the long-side ≤2000px shrink for both `c5-simulator-cmp.png` and `screenshot-cmp.png`. Pass `--no-figma-cmp` only when the Figma screenshot was already shrunk by a prior run / by `figma_export_assets_unified(fallbackScale=2)`. The explicit form is `sleep 2 && xcrun simctl io <udid> screenshot c5-simulator.png` followed by two `sips -Z 2000` calls. Claude's many-image requests reject any image with long-side >2000px (iPhone-native captures ~1170×2532 blow this), so the cmp pair is mandatory. Full procedure in `references/verification-loop.md` §C5.5b.
+6. **C5.6 Compare** — model reads the C5.5b pair (`*-cmp.png`), writes `c5-visual-diff.md` using same table format as C3 Pass 2 (Source quote → Note column). Compare composition and values, not absolute pixel positions.
 
 Then run **Gate C5** (BASH, mandatory). Full block: `references/verification-loop.md` §5.7. High-severity diffs feed the same self-fix loop as C3 Pass 2 (shared counter, `MAX_RETRIES=2`, scoped edits only). Build failures count as FAIL high.
 
@@ -1037,3 +1085,38 @@ Artifacts:
 ```
 
 Omit any row that genuinely does not apply (e.g. C5.6 if C5 was skipped). Never fabricate a PASS — open the file with `cat` if uncertain.
+
+## Timing measurement (optional, regression-detection only)
+
+Manifests carry an optional `timing` block so wall-time changes between runs are measurable. None of the gates read this — it exists purely so the user can verify that workflow refactors (faster scripts, parallel hooks, etc.) didn't slow things down or, worse, silently skip steps. Schema:
+
+```json
+{
+  "timing": {
+    "phaseA":  { "startedAt": "<ISO-8601>", "endedAt": "<ISO-8601>", "ms": <int> },
+    "phaseB":  { ... },
+    "c1":      { ... },
+    "c2":      { ... },
+    "c3Pass2": { ... },
+    "c3Pass3": { ... },
+    "c3Pass4": { ... },
+    "c3Pass5": { ... },
+    "c5":      { ... },
+    "c5_6":    { ... },
+    "gates": [
+      { "name": "Gate A",         "ms": <int> },
+      { "name": "Gate B",         "ms": <int> },
+      { "name": "Gate C3-Pass2",  "ms": <int>, "attempt": <1..N> },
+      { "name": "Gate C5",        "ms": <int> }
+    ]
+  }
+}
+```
+
+Rules:
+- `phaseX.ms` is wall-time from the FIRST tool call of that phase to the LAST artifact write — NOT the sum of individual tool-call latencies.
+- `gates[].ms` is wall-time of the bash gate itself.
+- Self-fix loop attempts: record the LAST attempt's `ms` in `c3Pass2`, push earlier attempts into `gates[].attempt`.
+- Fields are additive — older manifests without `timing` are still valid; the report just shows fewer rows.
+
+Run `scripts/timing-report.sh --cache .figma-cache/<nodeId>` for a single screen, or `scripts/timing-report.sh --flow .figma-cache` for a flow-level breakdown across screens. Older manifests without the `timing` block produce a "no timing data yet" note rather than failing.

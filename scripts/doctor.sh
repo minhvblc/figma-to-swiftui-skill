@@ -306,9 +306,14 @@ echo
 echo "7. Verification gate scripts"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
+              c5-capture.sh \
               c6-asset-completeness.sh c7-no-system-chrome.sh \
               c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
-              c8-iknavigation.sh c8-ikfont.sh c8-weak-self.sh; do
+              c8-iknavigation.sh c8-ikfont.sh c8-weak-self.sh \
+              c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
+              c1-probe.sh c1-project-color-audit.sh \
+              b0a-extract-copy.sh b0b-tokens-codegen.sh \
+              colorset-codegen.sh timing-report.sh; do
   path="$SCRIPTS_DIR/$script"
   if [ ! -f "$path" ]; then
     bad "$script missing at $path"
@@ -326,9 +331,14 @@ done
 # skill in an iOS project unrelated to this repo.
 INSTALLED_SCRIPTS_DIR="$HOME/.claude/scripts"
 if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
-  for script in c5-coverage-check.sh c6-asset-completeness.sh c7-no-system-chrome.sh \
+  for script in c5-coverage-check.sh c5-capture.sh \
+                c6-asset-completeness.sh c7-no-system-chrome.sh \
                 c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
-                c8-iknavigation.sh c8-ikfont.sh; do
+                c8-iknavigation.sh c8-ikfont.sh \
+                c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
+                c1-probe.sh \
+                b0a-extract-copy.sh b0b-tokens-codegen.sh \
+                timing-report.sh; do
     p="$INSTALLED_SCRIPTS_DIR/$script"
     if [ ! -x "$p" ]; then
       bad "$script not installed at $p (stop-gate fallback may miss it)"

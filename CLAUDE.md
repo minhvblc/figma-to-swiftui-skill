@@ -110,6 +110,20 @@ C1 step **probe project conventions** rồi ghi `c1-conventions.json`. Mọi quy
 
 ## Khi sửa script (`scripts/`)
 
+**Driver scripts (Tier 1 speed wins):** ngoài các gate cũ (C5/C6/C7/C8), repo có driver scripts gộp công đoạn:
+
+| Script | Thay thế việc agent gõ tay | Phase |
+|---|---|---|
+| `c1-probe.sh` | 11 grep/find của §0 conventions probe | C1 |
+| `b0a-extract-copy.sh` | Parse design-context.md → Strings.swift | B0a |
+| `b0b-tokens-codegen.sh` | Wrap colorset-codegen + emit Color+Tokens / AppFont / Spacing | B0b |
+| `c5-capture.sh` | simctl screenshot + sips shrink (cmp pair) | C5.5 + C5.5b |
+| `c3-static-checks.sh` | Pass 3 + 3b + Pass 4 Part A bash sweep | C3 |
+| `c8-all.sh` | 6 c8-* gates chạy song song | C3 Pass 5 |
+| `timing-report.sh` | Đọc manifest.timing và in bảng wall-time | regression check |
+
+Driver scripts **không đổi semantics** — chỉ gộp call. Bash blocks gốc trong SKILL.md vẫn còn nguyên làm fallback explicit form. Khi sửa logic 1 gate, sửa ở **cả** sub-script gốc lẫn driver.
+
 - Mọi script gate (C5/C6/C7/C8) đều phải in `GATE: PASS`, `GATE: FAIL: <reason>`, hoặc `GATE: SKIP (<reason>)` ở cuối, exit code khớp.
 - C8 conditional gates (`c8-iknavigation.sh`, `c8-ikfont.sh`) đọc `c1-conventions.json` để biết nên enforce hay skip — đừng bypass bằng cách hard-code skip.
 - Không bypass gate bằng cách trả PASS sớm với edge case mơ hồ — báo FAIL và để user quyết.

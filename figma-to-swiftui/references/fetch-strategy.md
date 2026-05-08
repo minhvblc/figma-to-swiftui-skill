@@ -133,10 +133,12 @@ Phase A wall-time on a 5–8 screen flow is dominated by `get_design_context` + 
 
 ### Default cluster (mandatory for flows ≥ 3 screens)
 
-Issue **one message with `parallelBudget × 2` tool calls** — `get_design_context` + `get_screenshot` for each screen in the cluster — and wait for all to land before starting the next cluster.
+Issue **one message with `parallelBudget × N` tool calls** — `get_design_context` + `get_screenshot` for each screen in the cluster, plus optionally `figma_export_assets_unified` per screen when the Phase B early-start pipeline applies (see `../SKILL.md` §"Step A3+ — Phase B early-start pipeline"). Wait for all to land before starting the next cluster.
 
-- `parallelBudget` default = **3 screens per cluster** (6 tool calls in flight).
-- Persist `parallelBudget` in `.figma-cache/_shared/registry.json` under `fetchPolicy.parallelBudget` so re-runs stay deterministic.
+- `parallelBudget` default = **3 screens per cluster**.
+  - Without B3 pipeline: 6 tool calls in flight (2 per screen).
+  - With B3 pipeline: 9 tool calls in flight (3 per screen) — applies when flow `assetCatalogPath` pinned at A0 + registry has no warnings that change the asset plan.
+- Persist `parallelBudget` in `.figma-cache/_shared/registry.json` under `fetchPolicy.parallelBudget` so re-runs stay deterministic. Same record stores `fetchPolicy.b3InCluster: true|false`.
 - User may override via the source document or by saying "fetch sequentially" → set `parallelBudget = 1` and note in manifest.
 - Each screen still writes its own `.figma-cache/<nodeId>/` cache + manifest entry; clusters share nothing.
 
@@ -173,6 +175,8 @@ The same three-outcome split applies to `figma_build_registry` and `figma_export
 ### Auto-degrade on session-wide timeout pressure
 
 If two clusters in a row produce ≥ 1 timeout, halve `parallelBudget` for the rest of the run (3 → 2 → 1) and record the degrade in `fetchPolicy.degraded: true`. This keeps a flaky session from cascading.
+
+When the B3 pipeline is active (`fetchPolicy.b3InCluster: true`), the **first** auto-degrade step is to drop B3 out of the cluster — set `b3InCluster: false`, keep `parallelBudget` unchanged, and run B3 sequentially after Phase A completes for the remaining screens. This isolates whether the timeout source is A3 fetches or B3 export. If clusters still time out at the next observation, fall back to halving `parallelBudget` as usual.
 
 ### Wall-time accounting
 

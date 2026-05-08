@@ -154,10 +154,23 @@ crop_pct() {
 # Parse section rows from c5-sections.md.
 # Expected schema (markdown table):
 #   | # | section            | bbox_pct                  | expected_count | notes ... |
-# We only need columns 2 (section name) and 3 (bbox_pct).
-COUNT=0
+#
+# Two-phase: parse → crop. Parsing builds a task list; cropping launches
+# each (figma + sim) as a background subshell. Both crops per section are
+# independent, all section pairs are independent — net wall-time becomes
+# max(per-job time) instead of sum. On a 5-section screen with sips the
+# typical saving is ~70% (3-6s → 1-2s).
+#
+# Per-job output is captured to per-task log files so the final printed
+# output stays in deterministic section order regardless of which job
+# finished first.
+
+WORK=$(mktemp -d -t c5-crop.XXXXXX)
+trap 'rm -rf "$WORK"' EXIT
+
+# Phase 1 — parse sections into a task list.
+TASK_COUNT=0
 while IFS= read -r row; do
-  # Split on |. Cells: 1=empty 2=#  3=section  4=bbox_pct  ...
   num=$(  echo "$row" | awk -F'|' '{print $2}' | tr -d ' ')
   name=$( echo "$row" | awk -F'|' '{print $3}' | sed -E 's/^ +| +$//g')
   bbox=$( echo "$row" | awk -F'|' '{print $4}' | sed -E 's/^ +| +$//g')
@@ -166,7 +179,6 @@ while IFS= read -r row; do
   [ -n "$name" ] || continue
   [ -n "$bbox" ] || continue
 
-  # bbox format: x:0 y:0 w:100 h:6
   xp=$(echo "$bbox" | sed -nE 's/.*x:[ ]*([0-9.]+).*/\1/p')
   yp=$(echo "$bbox" | sed -nE 's/.*y:[ ]*([0-9.]+).*/\1/p')
   wp=$(echo "$bbox" | sed -nE 's/.*w:[ ]*([0-9.]+).*/\1/p')
@@ -180,17 +192,59 @@ while IFS= read -r row; do
   fout="$OUT/${num}-${slug}-figma.png"
   sout="$OUT/${num}-${slug}-sim.png"
 
-  crop_pct "$FIGMA" "$fout" "$xp" "$yp" "$wp" "$hp" "$TARGET_WIDTH"
-  crop_pct "$SIM"   "$sout" "$xp" "$yp" "$wp" "$hp" "$TARGET_WIDTH"
-
-  echo "${C_GRN}wrote${C_RST} $fout"
-  echo "${C_GRN}wrote${C_RST} $sout"
-  COUNT=$((COUNT+1))
+  # Persist task tuple for phase 2.
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$TASK_COUNT" "$num" "$fout" "$sout" "$xp" "$yp" "$wp" "$hp" >> "$WORK/tasks"
+  TASK_COUNT=$((TASK_COUNT+1))
 done < <(grep -E '^\| *[0-9]+ *\|' "$SECTIONS")
 
-if [ "$COUNT" -eq 0 ]; then
+if [ "$TASK_COUNT" -eq 0 ]; then
   echo "${C_RED}FAIL${C_RST}: no parseable section rows in $SECTIONS" >&2
   exit 1
 fi
 
-echo "${C_GRN}done${C_RST}: cropped $COUNT section(s) into $OUT"
+# Phase 2 — fan out crops in parallel. Each task launches 2 subshells
+# (figma + sim). Crops write to unique paths; per-job logs go to $WORK so
+# the final report stays in deterministic order.
+PIDS=()
+while IFS=$'\t' read -r idx num fout sout xp yp wp hp; do
+  ( crop_pct "$FIGMA" "$fout" "$xp" "$yp" "$wp" "$hp" "$TARGET_WIDTH" \
+      >"$WORK/${idx}.figma.log" 2>&1; echo $? >"$WORK/${idx}.figma.status" ) &
+  PIDS+=($!)
+  ( crop_pct "$SIM"   "$sout" "$xp" "$yp" "$wp" "$hp" "$TARGET_WIDTH" \
+      >"$WORK/${idx}.sim.log" 2>&1; echo $? >"$WORK/${idx}.sim.status" ) &
+  PIDS+=($!)
+done < "$WORK/tasks"
+
+# Wait for all (plain `wait` works on bash 3.2 / macOS default).
+wait "${PIDS[@]}" 2>/dev/null || true
+
+# Phase 3 — print results in deterministic section order.
+COUNT=0
+FAILED=0
+while IFS=$'\t' read -r idx num fout sout _ _ _ _; do
+  status_f=$(cat "$WORK/${idx}.figma.status" 2>/dev/null || echo "?")
+  status_s=$(cat "$WORK/${idx}.sim.status" 2>/dev/null || echo "?")
+  if [ "$status_f" = "0" ] && [ -s "$fout" ]; then
+    echo "${C_GRN}wrote${C_RST} $fout"
+  else
+    echo "${C_RED}FAIL${C_RST}  $fout (status=$status_f)"
+    [ -s "$WORK/${idx}.figma.log" ] && sed 's/^/    /' "$WORK/${idx}.figma.log"
+    FAILED=$((FAILED+1))
+  fi
+  if [ "$status_s" = "0" ] && [ -s "$sout" ]; then
+    echo "${C_GRN}wrote${C_RST} $sout"
+  else
+    echo "${C_RED}FAIL${C_RST}  $sout (status=$status_s)"
+    [ -s "$WORK/${idx}.sim.log" ] && sed 's/^/    /' "$WORK/${idx}.sim.log"
+    FAILED=$((FAILED+1))
+  fi
+  COUNT=$((COUNT+1))
+done < "$WORK/tasks"
+
+if [ "$FAILED" -gt 0 ]; then
+  echo "${C_RED}FAIL${C_RST}: $FAILED crop(s) failed (of $((COUNT*2)))"
+  exit 1
+fi
+
+echo "${C_GRN}done${C_RST}: cropped $COUNT section(s) into $OUT (parallel)"
