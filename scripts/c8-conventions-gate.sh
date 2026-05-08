@@ -7,7 +7,14 @@
 # `screenFolderConvention = "flat"`).
 #
 # Usage:
-#   c8-conventions-gate.sh --src <path-to-swift-src-root> --conventions <path-to-c1-conventions.json>
+#   c8-conventions-gate.sh --src <path-to-swift-src-root>
+#                          [--files "<space-separated-paths>"]
+#                          --conventions <path-to-c1-conventions.json>
+#
+# Scope: --files takes precedence over --src for per-file checks (1-5).
+# When --files is set, the parent-view existence check (6) is restricted to
+# the screen folders that contain at least one session file. Empty --files =
+# SKIP (session mode with no swift writes).
 #
 # Exit codes:
 #   0 — PASS or SKIP
@@ -18,11 +25,15 @@
 set -euo pipefail
 
 SRC=""
+FILES=""
+FILES_PROVIDED=0
 CONVENTIONS=""
 
 print_usage() {
   cat <<'USAGE' >&2
-usage: c8-conventions-gate.sh --src <swift-src-root> --conventions <c1-conventions.json>
+usage: c8-conventions-gate.sh --src <swift-src-root>
+                                [--files "<space-separated-paths>"]
+                                --conventions <c1-conventions.json>
 
 Verifies file paths and types follow the screen-based folder convention:
   - Screen views live at Screens/<Name>Screen/<Name>Screen.swift
@@ -33,20 +44,31 @@ Verifies file paths and types follow the screen-based folder convention:
 
 The gate is skipped when c1-conventions.json sets screenFolderConvention to
 "flat" — output is `GATE: SKIP (flat layout)`, exit 0.
+
+Pass --files "" to explicitly skip (session-scope with no swift writes).
 USAGE
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --src)         SRC="${2:-}"; shift 2 ;;
+    --files)       FILES="${2:-}"; FILES_PROVIDED=1; shift 2 ;;
     --conventions) CONVENTIONS="${2:-}"; shift 2 ;;
     -h|--help)     print_usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; print_usage; exit 64 ;;
   esac
 done
 
-[ -n "$SRC" ] || { print_usage; exit 64; }
-[ -d "$SRC" ] || { echo "FAIL: src is not a directory: $SRC" >&2; exit 65; }
+if [ "$FILES_PROVIDED" = "1" ] && [ -z "$FILES" ]; then
+  echo "GATE: SKIP (no session-generated swift files)"
+  exit 0
+fi
+if [ "$FILES_PROVIDED" = "0" ] && [ -z "$SRC" ]; then
+  print_usage; exit 64
+fi
+if [ -n "$SRC" ] && [ ! -d "$SRC" ]; then
+  echo "FAIL: src is not a directory: $SRC" >&2; exit 65
+fi
 
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_RED=$(tput setaf 1); C_GRN=$(tput setaf 2); C_YEL=$(tput setaf 3); C_DIM=$(tput dim); C_RST=$(tput sgr0)
@@ -74,9 +96,23 @@ violation() {
   printf "%s\n" "$1" >> "$HITS_FILE"
 }
 
-# Walk every .swift file under SRC.
+enum_files() {
+  if [ "$FILES_PROVIDED" = "1" ]; then
+    for f in $FILES; do
+      [ -n "$f" ] && [ -f "$f" ] && [[ "$f" == *.swift ]] && printf '%s\0' "$f"
+    done
+  else
+    find "$SRC" -name '*.swift' -type f -print0 2>/dev/null
+  fi
+}
+
+# Walk every .swift file in scope (--files list or under SRC).
 while IFS= read -r -d '' file; do
-  rel="${file#$SRC/}"
+  if [ -n "$SRC" ]; then
+    rel="${file#$SRC/}"
+  else
+    rel="$file"
+  fi
   base="$(basename "$file" .swift)"
   parent_dir="$(dirname "$rel")"
   parent_name="$(basename "$parent_dir")"
@@ -167,13 +203,42 @@ while IFS= read -r -d '' file; do
     fi
   fi
 
-done < <(find "$SRC" -name '*.swift' -type f -print0 2>/dev/null)
+done < <(enum_files)
 
 # ── 6. Parent-view existence ────────────────────────────────────────────────
-# Every Screens/<X>Screen/ folder MUST contain <X>Screen.swift (the parent
-# View). Catches: agent named the parent view file `HomeView.swift` instead
-# of `HomeScreen.swift`, leaving the folder without a -Screen entry.
-if [ -d "$SRC/Screens" ]; then
+# Every Screens/<X>Screen/ folder in scope MUST contain <X>Screen.swift (the
+# parent View). Catches: agent named the parent view file `HomeView.swift`
+# instead of `HomeScreen.swift`, leaving the folder without a -Screen entry.
+#
+# Scope:
+#   --src mode → walk every Screens/<X>Screen/ under SRC.
+#   --files mode → only check screen folders that contain at least one
+#                  session-generated file (avoid flagging unrelated legacy
+#                  screen folders that pre-date this run).
+if [ "$FILES_PROVIDED" = "1" ]; then
+  # Collect parent-screen folder of each session file (when path matches
+  # */Screens/<X>Screen/...) and dedupe.
+  SCREEN_DIRS=$(for f in $FILES; do
+    [ -f "$f" ] || continue
+    d=$(dirname "$f")
+    while [ "$d" != "/" ] && [ -n "$d" ]; do
+      parent=$(basename "$(dirname "$d")")
+      this=$(basename "$d")
+      if [ "$parent" = "Screens" ] && [[ "$this" == *Screen ]]; then
+        echo "$d"
+        break
+      fi
+      d=$(dirname "$d")
+    done
+  done | sort -u)
+  while IFS= read -r screen_dir; do
+    [ -z "$screen_dir" ] && continue
+    folder=$(basename "$screen_dir")
+    if [ ! -f "$screen_dir/${folder}.swift" ]; then
+      violation "${screen_dir}/: missing parent-view file ${folder}.swift (the full-screen view must use the '-Screen' suffix matching the folder name)"
+    fi
+  done <<< "$SCREEN_DIRS"
+elif [ -d "$SRC/Screens" ]; then
   while IFS= read -r -d '' screen_dir; do
     folder=$(basename "$screen_dir")
     [[ "$folder" == *Screen ]] || continue
@@ -193,5 +258,9 @@ if [ -s "$HITS_FILE" ]; then
   exit 1
 fi
 
-echo "${C_GRN}GATE: PASS${C_RST}: project-structure conventions OK in $SRC"
+if [ "$FILES_PROVIDED" = "1" ]; then
+  echo "${C_GRN}GATE: PASS${C_RST}: project-structure conventions OK (session-scope: $(echo $FILES | wc -w | tr -d ' ') file(s))"
+else
+  echo "${C_GRN}GATE: PASS${C_RST}: project-structure conventions OK in $SRC"
+fi
 exit 0

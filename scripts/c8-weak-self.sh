@@ -18,10 +18,13 @@
 set -euo pipefail
 
 SRC=""
+FILES=""
+FILES_PROVIDED=0
 
 print_usage() {
   cat <<'USAGE' >&2
 usage: c8-weak-self.sh --src <swift-src-root>
+                        [--files "<space-separated-paths>"]
 
 Greps for closures that reference 'self.' but do not declare a capture list
 [weak self]. False positives are common; the gate emits warnings only.
@@ -30,19 +33,30 @@ Exempt patterns (no warning emitted):
   - .onAppear / .onDisappear / .task / withAnimation
   - body: some View
   - Task { ... } directly inside an @MainActor class (heuristic)
+
+Pass --files "" to explicitly skip (session-scope with no swift writes).
 USAGE
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --src)     SRC="${2:-}"; shift 2 ;;
+    --files)   FILES="${2:-}"; FILES_PROVIDED=1; shift 2 ;;
     -h|--help) print_usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; print_usage; exit 64 ;;
   esac
 done
 
-[ -n "$SRC" ] || { print_usage; exit 64; }
-[ -d "$SRC" ] || { echo "FAIL: src is not a directory: $SRC" >&2; exit 65; }
+if [ "$FILES_PROVIDED" = "1" ] && [ -z "$FILES" ]; then
+  echo "GATE: SKIP (no session-generated swift files)"
+  exit 0
+fi
+if [ "$FILES_PROVIDED" = "0" ] && [ -z "$SRC" ]; then
+  print_usage; exit 64
+fi
+if [ -n "$SRC" ] && [ ! -d "$SRC" ]; then
+  echo "FAIL: src is not a directory: $SRC" >&2; exit 65
+fi
 
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_GRN=$(tput setaf 2); C_YEL=$(tput setaf 3); C_DIM=$(tput dim); C_RST=$(tput sgr0)
@@ -86,9 +100,19 @@ scan() {
   ' "$1"
 }
 
+enum_files() {
+  if [ "$FILES_PROVIDED" = "1" ]; then
+    for f in $FILES; do
+      [ -n "$f" ] && [ -f "$f" ] && [[ "$f" == *.swift ]] && printf '%s\0' "$f"
+    done
+  else
+    find "$SRC" -name '*.swift' -type f -print0 2>/dev/null
+  fi
+}
+
 while IFS= read -r -d '' file; do
   scan "$file" >> "$WARN_FILE" 2>/dev/null || true
-done < <(find "$SRC" -name '*.swift' -type f -print0 2>/dev/null)
+done < <(enum_files)
 
 if [ -s "$WARN_FILE" ]; then
   COUNT=$(wc -l < "$WARN_FILE" | tr -d ' ')
@@ -99,5 +123,9 @@ if [ -s "$WARN_FILE" ]; then
   exit 0
 fi
 
-echo "${C_GRN}GATE: PASS${C_RST}: no obvious [weak self] omissions in $SRC"
+if [ "$FILES_PROVIDED" = "1" ]; then
+  echo "${C_GRN}GATE: PASS${C_RST}: no obvious [weak self] omissions (session-scope: $(echo $FILES | wc -w | tr -d ' ') file(s))"
+else
+  echo "${C_GRN}GATE: PASS${C_RST}: no obvious [weak self] omissions in $SRC"
+fi
 exit 0

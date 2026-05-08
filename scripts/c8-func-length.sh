@@ -6,10 +6,19 @@
 #
 # Usage:
 #   c8-func-length.sh --src <swift-src-root>
+#                     [--files "<space-separated-paths>"]
 #                     [--warn-threshold 30] [--fail-threshold 50]
 #
+# Scope:
+#   --files takes precedence over --src. When --files is the empty string,
+#   the gate prints `GATE: SKIP (no session-generated swift files)` and
+#   exits 0 — used by stop-hook session-scope mode (no agent writes = no
+#   work to verify).
+#   When --files is set with paths and --src is also set, --src is used for
+#   relative-path display only; the file walk is scoped to --files.
+#
 # Exit codes:
-#   0 — PASS
+#   0 — PASS or SKIP
 #   1 — at least one function exceeds fail threshold
 #   64 — bad usage
 #   65 — input not found
@@ -17,12 +26,16 @@
 set -euo pipefail
 
 SRC=""
+FILES=""
+FILES_PROVIDED=0
 WARN_T=30
 FAIL_T=50
 
 print_usage() {
   cat <<'USAGE' >&2
-usage: c8-func-length.sh --src <swift-src-root> [--warn-threshold 30] [--fail-threshold 50]
+usage: c8-func-length.sh --src <swift-src-root>
+                          [--files "<space-separated-paths>"]
+                          [--warn-threshold 30] [--fail-threshold 50]
 
 Counts function-body lines (from opening { of the func decl to its
 matching closing }). SwiftUI 'body: some View' is exempt — its children
@@ -32,12 +45,15 @@ Counted: the body block including blank lines and comments.
 Excluded: function signature line itself.
 
 Hard fail at fail-threshold; warning at warn-threshold.
+
+Pass --files "" to explicitly skip (session-scope with no swift writes).
 USAGE
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --src)             SRC="${2:-}"; shift 2 ;;
+    --files)           FILES="${2:-}"; FILES_PROVIDED=1; shift 2 ;;
     --warn-threshold)  WARN_T="${2:-30}"; shift 2 ;;
     --fail-threshold)  FAIL_T="${2:-50}"; shift 2 ;;
     -h|--help)         print_usage; exit 0 ;;
@@ -45,8 +61,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$SRC" ] || { print_usage; exit 64; }
-[ -d "$SRC" ] || { echo "FAIL: src is not a directory: $SRC" >&2; exit 65; }
+# Scope resolution.
+if [ "$FILES_PROVIDED" = "1" ] && [ -z "$FILES" ]; then
+  echo "GATE: SKIP (no session-generated swift files)"
+  exit 0
+fi
+if [ "$FILES_PROVIDED" = "0" ] && [ -z "$SRC" ]; then
+  print_usage; exit 64
+fi
+if [ -n "$SRC" ] && [ ! -d "$SRC" ]; then
+  echo "FAIL: src is not a directory: $SRC" >&2; exit 65
+fi
 
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_RED=$(tput setaf 1); C_GRN=$(tput setaf 2); C_YEL=$(tput setaf 3); C_DIM=$(tput dim); C_RST=$(tput sgr0)
@@ -159,6 +184,17 @@ analyze_file() {
   ' "$1"
 }
 
+enum_files() {
+  if [ "$FILES_PROVIDED" = "1" ]; then
+    # Word-split FILES on whitespace; emit each existing *.swift file null-separated.
+    for f in $FILES; do
+      [ -n "$f" ] && [ -f "$f" ] && [[ "$f" == *.swift ]] && printf '%s\0' "$f"
+    done
+  else
+    find "$SRC" -name '*.swift' -type f -print0 2>/dev/null
+  fi
+}
+
 while IFS= read -r -d '' file; do
   while IFS= read -r line; do
     [ -z "$line" ] && continue
@@ -168,7 +204,7 @@ while IFS= read -r -d '' file; do
       WARN) printf "%s\n" "$line" >> "$WARN_FILE" ;;
     esac
   done < <(analyze_file "$file")
-done < <(find "$SRC" -name '*.swift' -type f -print0 2>/dev/null)
+done < <(enum_files)
 
 # Report warnings.
 if [ -s "$WARN_FILE" ]; then
@@ -185,5 +221,9 @@ if [ -s "$HITS_FILE" ]; then
   exit 1
 fi
 
-echo "${C_GRN}GATE: PASS${C_RST}: all functions ≤ ${FAIL_T} lines in $SRC"
+if [ "$FILES_PROVIDED" = "1" ]; then
+  echo "${C_GRN}GATE: PASS${C_RST}: all functions ≤ ${FAIL_T} lines (session-scope: $(echo $FILES | wc -w | tr -d ' ') file(s))"
+else
+  echo "${C_GRN}GATE: PASS${C_RST}: all functions ≤ ${FAIL_T} lines in $SRC"
+fi
 exit 0

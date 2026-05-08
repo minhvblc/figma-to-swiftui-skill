@@ -9,7 +9,12 @@
 #   - require: files dispatching navigation declare @Environment(\.ikNavigationable)
 #
 # Usage:
-#   c8-iknavigation.sh --src <swift-src-root> --conventions <c1-conventions.json>
+#   c8-iknavigation.sh --src <swift-src-root>
+#                      [--files "<space-separated-paths>"]
+#                      --conventions <c1-conventions.json>
+#
+# Scope: --files takes precedence over --src. Empty --files = SKIP (session
+# mode with no swift writes).
 #
 # Exit codes:
 #   0 — PASS or SKIP
@@ -20,11 +25,15 @@
 set -euo pipefail
 
 SRC=""
+FILES=""
+FILES_PROVIDED=0
 CONVENTIONS=""
 
 print_usage() {
   cat <<'USAGE' >&2
-usage: c8-iknavigation.sh --src <swift-src-root> --conventions <c1-conventions.json>
+usage: c8-iknavigation.sh --src <swift-src-root>
+                            [--files "<space-separated-paths>"]
+                            --conventions <c1-conventions.json>
 
 When the project uses IKNavigation (per c1-conventions.json.usesIKNavigation),
 this gate fails on any vanilla NavigationStack / NavigationLink /
@@ -32,20 +41,31 @@ this gate fails on any vanilla NavigationStack / NavigationLink /
 
 The gate is skipped (output: GATE: SKIP) when usesIKNavigation = false or
 the conventions file is missing.
+
+Pass --files "" to explicitly skip (session-scope with no swift writes).
 USAGE
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --src)         SRC="${2:-}"; shift 2 ;;
+    --files)       FILES="${2:-}"; FILES_PROVIDED=1; shift 2 ;;
     --conventions) CONVENTIONS="${2:-}"; shift 2 ;;
     -h|--help)     print_usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; print_usage; exit 64 ;;
   esac
 done
 
-[ -n "$SRC" ] || { print_usage; exit 64; }
-[ -d "$SRC" ] || { echo "FAIL: src is not a directory: $SRC" >&2; exit 65; }
+if [ "$FILES_PROVIDED" = "1" ] && [ -z "$FILES" ]; then
+  echo "GATE: SKIP (no session-generated swift files)"
+  exit 0
+fi
+if [ "$FILES_PROVIDED" = "0" ] && [ -z "$SRC" ]; then
+  print_usage; exit 64
+fi
+if [ -n "$SRC" ] && [ ! -d "$SRC" ]; then
+  echo "FAIL: src is not a directory: $SRC" >&2; exit 65
+fi
 
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_RED=$(tput setaf 1); C_GRN=$(tput setaf 2); C_DIM=$(tput dim); C_RST=$(tput sgr0)
@@ -68,9 +88,29 @@ fi
 HITS_FILE=$(mktemp -t c8-iknav.XXXXXX)
 trap 'rm -f "$HITS_FILE"' EXIT
 
+enum_files() {
+  if [ "$FILES_PROVIDED" = "1" ]; then
+    for f in $FILES; do
+      [ -n "$f" ] && [ -f "$f" ] && [[ "$f" == *.swift ]] && printf '%s\0' "$f"
+    done
+  else
+    find "$SRC" -name '*.swift' -type f -print0 2>/dev/null
+  fi
+}
+
+run_grep() {
+  if [ "$FILES_PROVIDED" = "1" ]; then
+    while IFS= read -r -d '' f; do
+      grep -HnE "$1" "$f" 2>/dev/null || true
+    done < <(enum_files)
+  else
+    grep -RHnE --include='*.swift' "$1" "$SRC" 2>/dev/null || true
+  fi
+}
+
 emit() {
   local label="$1"; shift
-  grep -RHnE --include='*.swift' "$@" "$SRC" 2>/dev/null \
+  run_grep "$1" \
     | awk -v label="$label" -F: '{
         file=$1; line=$2;
         $1=""; $2="";
@@ -101,10 +141,15 @@ trap 'rm -f "$HITS_FILE" "$WARN_FILE"' EXIT
 while IFS= read -r -d '' f; do
   if grep -q 'navigation\.\(push\|sheet\|fullScreenCover\|finish\|pop\|replace\)' "$f" 2>/dev/null; then
     if ! grep -q 'ikNavigationable' "$f"; then
-      printf "%s: dispatches navigation without @Environment(\\.ikNavigationable)\n" "${f#$SRC/}" >> "$WARN_FILE"
+      if [ -n "$SRC" ]; then
+        rel="${f#$SRC/}"
+      else
+        rel="$f"
+      fi
+      printf "%s: dispatches navigation without @Environment(\\.ikNavigationable)\n" "$rel" >> "$WARN_FILE"
     fi
   fi
-done < <(find "$SRC" -name '*.swift' -type f -print0 2>/dev/null)
+done < <(enum_files)
 
 if [ -s "$WARN_FILE" ]; then
   COUNT=$(wc -l < "$WARN_FILE" | tr -d ' ')
@@ -112,5 +157,9 @@ if [ -s "$WARN_FILE" ]; then
   cat "$WARN_FILE"
 fi
 
-echo "${C_GRN}GATE: PASS${C_RST}: IKNavigation conventions OK in $SRC"
+if [ "$FILES_PROVIDED" = "1" ]; then
+  echo "${C_GRN}GATE: PASS${C_RST}: IKNavigation conventions OK (session-scope: $(echo $FILES | wc -w | tr -d ' ') file(s))"
+else
+  echo "${C_GRN}GATE: PASS${C_RST}: IKNavigation conventions OK in $SRC"
+fi
 exit 0

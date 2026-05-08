@@ -122,6 +122,12 @@ Rules:
 
 Gate C3-Pass2 verifies that ≥50% of quoted strings (between backticks) actually `grep -F` in `design-context.md`. The 50% threshold accommodates inventory-sourced quotes that won't appear in design-context.
 
+**Backtick scope (anti-hallucination):**
+The gate ONLY scans backticks in the **Source quote** column. Backticks in `Code value` (or any other column) are decorative and IGNORED by the gate. The python parser uses negative-lookbehind `(?<!\\)\|` to tokenize on un-escaped pipes, so internal `|` characters inside cells (e.g. `Text("a")|.bold()`) don't shift columns and produce false positives. You CAN still wrap SwiftUI snippets in backticks for readability — they just don't count toward the quote-match score.
+
+**Pipe characters in cell content:**
+Markdown's escape for a literal `|` inside a table cell is `\|`. If you need a pipe character in any cell (Code value, Source quote, etc.), escape it as `\|` so the parser tokenizes columns correctly. Unescaped `|` mid-cell will silently shift downstream columns and may cause check-letter coverage / file:line ref checks to misbehave on that row.
+
 ---
 
 ## 4. Self-Fix Loop
@@ -213,18 +219,47 @@ BAD_REFS=$(awk -F'|' '/^\| *[0-9]+ *\|/ {
 [ -z "$BAD_REFS" ] && echo "PASS: file:line refs valid" \
   || { echo "FAIL: invalid refs: $BAD_REFS"; FAIL=1; }
 
-# 6. Anti-hallucination: ≥50% of `quoted` strings actually appear in design-context.md
-QUOTED=$(awk -F'|' '/^\| *[0-9]+ *\|/ { print $6 }' "$REPORT" | grep -oE '`[^`]+`' | sed 's/`//g')
-TOTAL_Q=$(echo "$QUOTED" | grep -c .)
-HIT_Q=0
-while IFS= read -r q; do
-  [ -z "$q" ] && continue
-  grep -qF "$q" "$DESIGN_CTX" 2>/dev/null && HIT_Q=$((HIT_Q+1))
-done <<< "$QUOTED"
-if [ "$TOTAL_Q" -gt 0 ]; then
-  PCT=$(( HIT_Q * 100 / TOTAL_Q ))
-  [ "$PCT" -ge 50 ] && echo "PASS: $PCT% quotes verified ($HIT_Q/$TOTAL_Q)" \
-    || { echo "FAIL: only $PCT% quotes match design-context.md ($HIT_Q/$TOTAL_Q)"; FAIL=1; }
+# 6. Anti-hallucination: ≥50% of `quoted` strings actually appear in design-context.md.
+#    The parser ONLY scans the Source quote column (column 6 in the markdown
+#    table) — backticks in Code value or other columns are ignored. Uses
+#    python regex with negative-lookbehind for `\|` escape so internal pipes
+#    in cell content (e.g. `Text("a")|.bold()` in Code value) don't shift
+#    columns and produce false positives.
+QUOTES_INFO=$(python3 - "$REPORT" "$DESIGN_CTX" <<'PY'
+import re, sys
+from pathlib import Path
+
+report, ctx = sys.argv[1], sys.argv[2]
+ctx_text = Path(ctx).read_text(errors='replace')
+quotes = []
+for line in Path(report).read_text(errors='replace').splitlines():
+    # Match data rows only: | <digit> | ...
+    if not re.match(r'^\|\s*\d+\s*\|', line):
+        continue
+    # Split on UN-escaped pipes — handles markdown `\|` inside cells.
+    cells = re.split(r'(?<!\\)\|', line)
+    # cells[0]="" (before first |), cells[1]="#", cells[2]="Check",
+    # cells[3]="Section", cells[4]="Figma Spec", cells[5]="Source quote"
+    if len(cells) < 6:
+        continue
+    source_quote = cells[5]
+    # Extract everything between backticks in the Source quote cell only.
+    quotes.extend(re.findall(r'`([^`]+)`', source_quote))
+
+total = len(quotes)
+hits = sum(1 for q in quotes if q in ctx_text)
+pct = (hits * 100 // total) if total else 100
+print(f"{hits} {total} {pct}")
+PY
+)
+read HIT TOT PCT <<< "$QUOTES_INFO"
+if [ "${TOT:-0}" -gt 0 ]; then
+  if [ "${PCT:-0}" -ge 50 ]; then
+    echo "PASS: ${PCT}% quotes verified ($HIT/$TOT)"
+  else
+    echo "FAIL: only ${PCT}% quotes match design-context.md ($HIT/$TOT)"
+    FAIL=1
+  fi
 fi
 
 # 7. Surface high-severity FAIL count (informational — drives loop in §4.3)
@@ -282,6 +317,115 @@ Default `MAX_RETRIES=2` (3 attempts total). User can override at task start with
 6. `medium > 2` → same as step 3 but limit edits to medium-severity rows.
 
 User abort phrases (`stop fixing`, `ship as-is`) → mark `manifest.verification.c3Pass2.lastResult = "user_override"`, continue.
+
+### 4.4 — Pass 3 / 3b / 4 Part A — explicit bash fallback
+
+**Fast path is `scripts/c3-static-checks.sh --files "<paths>" --target <iOS-major>`** — runs all three sweeps in one bash invocation. The blocks below are the EXPLICIT FORM kept here as documentation + fallback when the driver script is unavailable. SKILL.md Step C3 references this section instead of inlining them.
+
+**Pass 3 — Asset substitution scan:**
+
+```bash
+HITS=$(grep -rnE 'Image\(systemName:' <generated-swift-files>)
+[ -z "$HITS" ] && echo "PASS: no SF Symbol substitution" || { echo "FAIL: SF Symbol used where Figma asset expected:"; echo "$HITS"; }
+```
+
+Every hit must be justified against the allow-list (system chrome only) or replaced with the Figma asset. Same applies to `Text("G")` / `Rectangle().fill(...)` standing in for logos — visually scan and fix.
+
+**Pass 3b — System chrome scan:**
+
+```bash
+CHROME=$(grep -rnE '"9:41"|Image\(systemName: "(wifi|battery|cellularbars|antenna|dot\.radiowaves)"\)|StatusBar|HomeIndicator|DynamicIsland' <generated-swift-files>)
+[ -z "$CHROME" ] && echo "PASS: no system-chrome drawing" || { echo "FAIL: system chrome drawn in view (delete — iOS renders it):"; echo "$CHROME"; }
+```
+
+Also visually scan for a `Capsule()` / `RoundedRectangle()` at the bottom with width≈134 and height≈5 — that's the home indicator. Delete it. iOS draws it.
+
+**Pass 4 Part A — swiftui-pro Review (BASH sweep):**
+
+```bash
+SWIFT_FILES="<your-generated-swift-files>"
+DEPTARGET="<from C1 audit, e.g. 16>"
+FAIL=0
+
+# (1) Modern API hits — always-on (regardless of deployment target)
+HITS_API1=$(grep -nE 'foregroundColor\(|fontWeight\(\.bold\)|showsIndicators:|UIScreen\.main\.bounds|onChange\(of:.*\) \{ [^_]' $SWIFT_FILES)
+[ -z "$HITS_API1" ] && echo "PASS: api.md (always)" || { echo "FAIL: api.md violations:"; echo "$HITS_API1"; FAIL=1; }
+
+# (2) Deprecated API — `cornerRadius()` is always wrong; `.rect(cornerRadius:)` is iOS 17+ so iOS 16 must use RoundedRectangle().
+HITS_CR=$(grep -nE '\.cornerRadius\(' $SWIFT_FILES)
+[ -z "$HITS_CR" ] && echo "PASS: no .cornerRadius()" || { echo "FAIL: replace .cornerRadius() with .clipShape(RoundedRectangle(cornerRadius:)) on iOS 16:"; echo "$HITS_CR"; FAIL=1; }
+
+# (3) iOS 16 forbids: .topBarLeading, .topBarTrailing, .clipShape(.rect(cornerRadius:)), Tab(...) ctor, @Observable, @Bindable
+if [ "$DEPTARGET" -lt 17 ]; then
+  HITS_iOS17=$(grep -nE '\.topBarLeading|\.topBarTrailing|\.rect\(cornerRadius:|@Observable\b|@Bindable\b' $SWIFT_FILES)
+  [ -z "$HITS_iOS17" ] && echo "PASS: no iOS 17+ APIs on iOS $DEPTARGET" || { echo "FAIL: iOS 17+ API used but target is $DEPTARGET (use fallbacks per swiftui-pro-bridge.md §6):"; echo "$HITS_iOS17"; FAIL=1; }
+fi
+if [ "$DEPTARGET" -lt 18 ]; then
+  HITS_iOS18=$(grep -nE 'Tab\("|@Entry\b' $SWIFT_FILES)
+  [ -z "$HITS_iOS18" ] && echo "PASS: no iOS 18+ APIs on iOS $DEPTARGET" || { echo "FAIL: iOS 18+ API used but target is $DEPTARGET:"; echo "$HITS_iOS18"; FAIL=1; }
+fi
+
+# (4) Views & previews
+HITS_VIEWS=$(grep -nE 'PreviewProvider|AnyView' $SWIFT_FILES)
+[ -z "$HITS_VIEWS" ] && echo "PASS: views.md/performance.md" || { echo "FAIL: views/perf:"; echo "$HITS_VIEWS"; FAIL=1; }
+
+# (5) Concurrency
+HITS_CON=$(grep -nE 'DispatchQueue\.|Task\.sleep\(nanoseconds:|Task\.detached' $SWIFT_FILES)
+[ -z "$HITS_CON" ] && echo "PASS: swift.md concurrency" || { echo "FAIL: concurrency:"; echo "$HITS_CON"; FAIL=1; }
+
+# (6) Bindings
+HITS_BIND=$(grep -nE 'Binding\(get:.*set:' $SWIFT_FILES)
+[ -z "$HITS_BIND" ] && echo "PASS: data.md bindings" || { echo "FAIL: manual Binding(get:set:):"; echo "$HITS_BIND"; FAIL=1; }
+
+# (7) Navigation
+HITS_NAV=$(grep -nE 'NavigationView\b|NavigationLink\(destination:' $SWIFT_FILES)
+[ -z "$HITS_NAV" ] && echo "PASS: navigation.md" || { echo "FAIL: deprecated navigation:"; echo "$HITS_NAV"; FAIL=1; }
+
+# (8) Accessibility — Image without label or decorative marker (within 5-line window)
+ORPHAN_IMAGE=$(python3 -c "
+import re, pathlib
+files = '''$SWIFT_FILES'''.split()
+for f in files:
+    text = pathlib.Path(f).read_text()
+    lines = text.splitlines()
+    for i, line in enumerate(lines, 1):
+        if re.search(r'Image\([\"\.]', line) and 'decorative' not in line and 'systemName:' not in line:
+            window = '\n'.join(lines[i-1:i+5])
+            if 'accessibilityLabel' not in window and 'accessibilityHidden' not in window:
+                print(f'{f}:{i}: {line.strip()}')
+")
+[ -z "$ORPHAN_IMAGE" ] && echo "PASS: image accessibility" || { echo "REVIEW: images missing label/decorative:"; echo "$ORPHAN_IMAGE"; }
+
+# (9) Force unwrap (informational — verify each manually)
+HITS_BANG=$(grep -nE '![\.[]' $SWIFT_FILES | grep -v '!=' | grep -v '//' || true)
+[ -z "$HITS_BANG" ] && echo "PASS: no force unwraps" || echo "REVIEW: force unwraps (verify each is unrecoverable):"
+
+# (10) Text concatenation with +
+HITS_TEXT_PLUS=$(grep -nE 'Text\([^)]+\)\s*\+\s*Text\(' $SWIFT_FILES)
+[ -z "$HITS_TEXT_PLUS" ] && echo "PASS: no Text +" || { echo "FAIL: Text concatenation with +:"; echo "$HITS_TEXT_PLUS"; FAIL=1; }
+
+# (11) onTapGesture for actions (should be Button)
+HITS_TAP=$(grep -nE '\.onTapGesture\s*\{' $SWIFT_FILES)
+[ -z "$HITS_TAP" ] && echo "PASS: no onTapGesture for actions" || echo "REVIEW: onTapGesture — convert to Button unless tap location/count needed:"
+
+# (12) iOS 16 fallback marker presence (when target < 17)
+if [ "$DEPTARGET" -lt 17 ]; then
+  CHROME_NAV=$(grep -nE 'navigationBarLeading|navigationBarTrailing|RoundedRectangle\(cornerRadius:' $SWIFT_FILES)
+  if [ -n "$CHROME_NAV" ]; then
+    MISSING_MARK=$(echo "$CHROME_NAV" | while read line; do
+      f=$(echo "$line" | cut -d: -f1)
+      n=$(echo "$line" | cut -d: -f2)
+      ctx=$(sed -n "$((n-2)),$((n+2))p" "$f" 2>/dev/null)
+      echo "$ctx" | grep -q "iOS 16 fallback" || echo "$line"
+    done)
+    [ -z "$MISSING_MARK" ] && echo "PASS: iOS 16 fallback markers present" || echo "REVIEW: iOS 16 fallback used but missing comment marker:"; echo "$MISSING_MARK"
+  fi
+fi
+
+[ $FAIL -eq 0 ] && echo "GATE: PASS (Pass 4 — swiftui-pro Review bash)" || echo "GATE: FAIL (Pass 4 bash) — DO NOT proceed to C4"
+```
+
+**Pass 4 Part B (manual structural review)** is documented in SKILL.md Step C3 itself — it requires agent reading + judgment, not bash.
 
 ---
 

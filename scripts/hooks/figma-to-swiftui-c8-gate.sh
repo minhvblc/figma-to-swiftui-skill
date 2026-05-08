@@ -59,6 +59,34 @@ for _ in 1 2 3 4 5 6 7 8; do
 done
 [ -z "$PROJECT_ROOT" ] && exit 0
 
+# Track this file in session-files.json (idempotent append). Stop-gate reads
+# this list to scope C8 gates to ONLY what the agent generated this session,
+# instead of project-wide which would flag pre-existing tech debt.
+#
+# File: <PROJECT_ROOT>/.figma-cache/session-files.json
+#       { "files": ["abs/path/A.swift", "abs/path/B.swift"] }
+SESSION_FILES_JSON="$PROJECT_ROOT/.figma-cache/session-files.json"
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$SESSION_FILES_JSON" "$FILE_PATH" <<'PY' 2>/dev/null || true
+import json, os, sys
+path, file_path = sys.argv[1], sys.argv[2]
+data = {"files": []}
+if os.path.isfile(path):
+    try:
+        data = json.load(open(path))
+        if not isinstance(data, dict) or "files" not in data:
+            data = {"files": []}
+    except Exception:
+        data = {"files": []}
+files = data.get("files") or []
+if file_path not in files:
+    files.append(file_path)
+data["files"] = files
+os.makedirs(os.path.dirname(path), exist_ok=True)
+json.dump(data, open(path, "w"), indent=2)
+PY
+fi
+
 # Locate c1-conventions.json (flow uses _shared/, single-screen uses screen dir).
 CONV=""
 [ -f "$PROJECT_ROOT/.figma-cache/_shared/c1-conventions.json" ] \

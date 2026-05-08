@@ -13,9 +13,13 @@
 #
 # Usage:
 #   c8-vm-pattern.sh --src <swift-src-root>
+#                    [--files "<space-separated-paths>"]
+#
+# Scope: --files takes precedence over --src. Empty --files = SKIP (session
+# mode with no swift writes).
 #
 # Exit codes:
-#   0 — PASS
+#   0 — PASS or SKIP
 #   1 — at least one ViewModel violates the pattern
 #   64 — bad usage
 #   65 — input not found
@@ -23,27 +27,41 @@
 set -euo pipefail
 
 SRC=""
+FILES=""
+FILES_PROVIDED=0
 
 print_usage() {
   cat <<'USAGE' >&2
 usage: c8-vm-pattern.sh --src <swift-src-root>
+                         [--files "<space-separated-paths>"]
 
 Verifies every *ViewModel.swift conforms to the canonical reducer shape:
 @MainActor + enum Action + func send(_:) + (if any route is referenced)
 enum Route. See references/viewmodel-pattern.md.
+
+Pass --files "" to explicitly skip (session-scope with no swift writes).
 USAGE
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --src)     SRC="${2:-}"; shift 2 ;;
+    --files)   FILES="${2:-}"; FILES_PROVIDED=1; shift 2 ;;
     -h|--help) print_usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; print_usage; exit 64 ;;
   esac
 done
 
-[ -n "$SRC" ] || { print_usage; exit 64; }
-[ -d "$SRC" ] || { echo "FAIL: src is not a directory: $SRC" >&2; exit 65; }
+if [ "$FILES_PROVIDED" = "1" ] && [ -z "$FILES" ]; then
+  echo "GATE: SKIP (no session-generated swift files)"
+  exit 0
+fi
+if [ "$FILES_PROVIDED" = "0" ] && [ -z "$SRC" ]; then
+  print_usage; exit 64
+fi
+if [ -n "$SRC" ] && [ ! -d "$SRC" ]; then
+  echo "FAIL: src is not a directory: $SRC" >&2; exit 65
+fi
 
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_RED=$(tput setaf 1); C_GRN=$(tput setaf 2); C_YEL=$(tput setaf 3); C_DIM=$(tput dim); C_RST=$(tput sgr0)
@@ -58,8 +76,22 @@ trap 'rm -f "$HITS_FILE" "$WARN_FILE"' EXIT
 violation() { printf "%s\n" "$1" >> "$HITS_FILE"; }
 warn()      { printf "%s\n" "$1" >> "$WARN_FILE"; }
 
+enum_files() {
+  if [ "$FILES_PROVIDED" = "1" ]; then
+    for f in $FILES; do
+      [ -n "$f" ] && [ -f "$f" ] && [[ "$f" == *ViewModel.swift ]] && printf '%s\0' "$f"
+    done
+  else
+    find "$SRC" -name '*ViewModel.swift' -type f -print0 2>/dev/null
+  fi
+}
+
 while IFS= read -r -d '' file; do
-  rel="${file#$SRC/}"
+  if [ -n "$SRC" ]; then
+    rel="${file#$SRC/}"
+  else
+    rel="$file"
+  fi
   base="$(basename "$file" .swift)"
 
   # 1. @MainActor on the class — search for `@MainActor` token anywhere
@@ -107,7 +139,7 @@ while IFS= read -r -d '' file; do
     fi
   fi
 
-done < <(find "$SRC" -name '*ViewModel.swift' -type f -print0 2>/dev/null)
+done < <(enum_files)
 
 # Report warnings (do not fail the gate).
 if [ -s "$WARN_FILE" ]; then
@@ -124,5 +156,9 @@ if [ -s "$HITS_FILE" ]; then
   exit 1
 fi
 
-echo "${C_GRN}GATE: PASS${C_RST}: ViewModel pattern OK in $SRC"
+if [ "$FILES_PROVIDED" = "1" ]; then
+  echo "${C_GRN}GATE: PASS${C_RST}: ViewModel pattern OK (session-scope: $(echo $FILES | wc -w | tr -d ' ') file(s))"
+else
+  echo "${C_GRN}GATE: PASS${C_RST}: ViewModel pattern OK in $SRC"
+fi
 exit 0

@@ -220,6 +220,33 @@ if [ -z "$CONV_JSON" ]; then
   done
 fi
 
+# ── Session-scope: pull list of files this session generated ────────────────
+# PostToolUse hook (figma-to-swiftui-c8-gate.sh) appends every Write/Edit'd
+# .swift file to .figma-cache/session-files.json. We pass that list to the
+# C8 gates as --files so they don't flag pre-existing tech debt outside
+# the agent's scope.
+#
+# Empty list → C8 content gates SKIP (the only files this session touched
+# were non-swift artifacts, e.g. manifest.json / cache files).
+# Missing file → fall back to project-wide --src mode (legacy behavior, used
+# when the user runs stop-gate manually outside a figma session).
+SESSION_FILES_JSON="$CACHE_ROOT/session-files.json"
+SESSION_FILES=""
+USE_FILES_MODE=0
+if [ -f "$SESSION_FILES_JSON" ] && command -v python3 >/dev/null 2>&1; then
+  SESSION_FILES=$(python3 - "$SESSION_FILES_JSON" <<'PY' 2>/dev/null
+import json, sys, os
+try:
+    data = json.load(open(sys.argv[1]))
+    files = [f for f in (data.get("files") or []) if isinstance(f, str) and os.path.isfile(f)]
+    print(" ".join(files))
+except Exception:
+    print("")
+PY
+)
+  USE_FILES_MODE=1
+fi
+
 c8_args() {
   if [ -n "$CONV_JSON" ]; then
     printf -- '--conventions %s' "$CONV_JSON"
@@ -230,36 +257,107 @@ c8_args() {
   fi
 }
 
+# Build the scope args for a C8 gate. --files mode: pass --src for rel-path
+# display + --files for the actual scope. Legacy --src mode: just --src.
+c8_scope_args() {
+  local root="$1"
+  if [ "$USE_FILES_MODE" = "1" ]; then
+    printf -- '--src %s --files %s' "$root" "$(printf '%q' "$SESSION_FILES")"
+  else
+    printf -- '--src %s' "$root"
+  fi
+}
+
 run_c8() {
   local script="$1" name="$2" with_conv="$3" root="$4"
   [ -x "$script" ] || return 0
   [ -d "$root" ] || return 0
-  if [ "$with_conv" = "1" ]; then
-    "$script" --src "$root" $(c8_args) >/dev/null 2>&1 || {
-      PROJECT_PROBLEMS+="  - C8 ${name} failing — run:\n"
-      PROJECT_PROBLEMS+="      $script --src $root $(c8_args)\n"
-    }
-  else
-    "$script" --src "$root" >/dev/null 2>&1 || {
-      PROJECT_PROBLEMS+="  - C8 ${name} failing — run:\n"
-      PROJECT_PROBLEMS+="      $script --src $root\n"
-    }
+  local scope_args; scope_args=$(c8_scope_args "$root")
+  local conv_args=""
+  [ "$with_conv" = "1" ] && conv_args=$(c8_args)
+  # shellcheck disable=SC2086
+  if ! eval "$script" $scope_args $conv_args >/dev/null 2>&1; then
+    PROJECT_PROBLEMS+="  - C8 ${name} failing — run:\n"
+    PROJECT_PROBLEMS+="      $script $scope_args $conv_args\n"
   fi
 }
 
 # c8-conventions-gate inspects FOLDER STRUCTURE (Screens/<X>Screen/<X>Screen.swift)
-# so it MUST receive PROJECT_ROOT, not the heuristic SRC_ROOT (which is the
-# first dir containing a .swift file and may already be inside Screens/).
+# so it receives PROJECT_ROOT for the parent-view check (legacy mode only —
+# in --files mode the gate restricts itself to screen folders containing
+# session files).
 # c8-vm-pattern, c8-func-length, c8-iknavigation, c8-ikfont, c8-weak-self
-# only care about file contents, so SRC_ROOT is fine.
+# only care about file contents, so SRC_ROOT is fine for legacy mode.
 run_c8 "$C8_CONV_SCRIPT"   "conventions (folder + naming)" 1 "$PROJECT_ROOT"
 run_c8 "$C8_VM_SCRIPT"     "viewmodel pattern"             0 "$SRC_ROOT"
 run_c8 "$C8_FUN_SCRIPT"    "function length"               0 "$SRC_ROOT"
 run_c8 "$C8_IKNAV_SCRIPT"  "IKNavigation (conditional)"    1 "$SRC_ROOT"
 run_c8 "$C8_IKFONT_SCRIPT" "IKFont (conditional)"          1 "$SRC_ROOT"
 
+# ── Timing summary (informational, both PASS and FAIL paths) ────────────────
+# Aggregate per-screen manifest.timing into one line so the user knows where
+# wall-time went without running timing-report.sh manually. Silent when no
+# screen has timing data.
+print_timing_summary() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$CACHE_ROOT" <<'PY' 2>/dev/null
+import json, os, sys
+root = sys.argv[1]
+totals = {"phaseA": 0, "phaseB": 0, "c2": 0, "c3Pass2": 0, "c5": 0, "other": 0}
+total_ms = 0
+n_screens = 0
+have_data = False
+for entry in sorted(os.listdir(root)):
+    sub = os.path.join(root, entry)
+    if not os.path.isdir(sub) or entry == "_shared":
+        continue
+    mp = os.path.join(sub, "manifest.json")
+    if not os.path.isfile(mp):
+        continue
+    try:
+        m = json.load(open(mp))
+    except Exception:
+        continue
+    t = m.get("timing") or {}
+    if not isinstance(t, dict):
+        continue
+    n_screens += 1
+    for key in list(t.keys()):
+        if key == "_history":
+            continue
+        block = t.get(key) or {}
+        ms = block.get("ms") if isinstance(block, dict) else None
+        if not isinstance(ms, int):
+            continue
+        have_data = True
+        if key in totals:
+            totals[key] += ms
+        else:
+            totals["other"] += ms
+        if not key.startswith(("c1", "c3Pass3", "c3Pass4", "c3Pass5", "c5_6")):
+            total_ms += ms
+if not have_data:
+    sys.exit(0)
+secs = total_ms / 1000.0
+def s(ms): return f"{ms/1000:.1f}s" if isinstance(ms, int) and ms > 0 else "-"
+parts = []
+for k in ("phaseA", "phaseB", "c2", "c3Pass2", "c5", "other"):
+    if totals[k] > 0:
+        parts.append(f"{k}={s(totals[k])}")
+print(f"  Wall-time total: {secs:.1f}s across {n_screens} screen(s) — " + ", ".join(parts))
+PY
+}
+
+TIMING_LINE=$(print_timing_summary)
+
 # Done — assemble report.
 if [ -z "$VIOLATIONS" ] && [ -z "$PROJECT_PROBLEMS" ]; then
+  if [ -n "$TIMING_LINE" ]; then
+    {
+      echo "Done-Gate satisfied."
+      echo "$TIMING_LINE"
+    } >&2
+  fi
   exit 0
 fi
 
@@ -293,5 +391,9 @@ fi
   echo "BANNED — see references/verification-loop.md §\"C5 Verification Integrity\"."
   echo "If the screen is unreachable from launch and no driver is available,"
   echo "set skipped = \"no_entry_path\" and surface that to the user truthfully."
+  if [ -n "$TIMING_LINE" ]; then
+    echo ""
+    echo "$TIMING_LINE"
+  fi
 } >&2
 exit 2

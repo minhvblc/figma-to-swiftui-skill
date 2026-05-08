@@ -643,6 +643,7 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 
 **Critical rules:**
 - MCP output = spec, not code. Parse values (see `references/visual-fidelity.md` §1), build native SwiftUI.
+- **Write-time compile-error catch (when xcode MCP available, RECOMMENDED).** After every `Write/Edit` of a `.swift` file, immediately call `mcp__xcode__XcodeRefreshCodeIssuesInFile` on the file path. The MCP returns structured Swift compiler diagnostics (errors + warnings + notes) for that file using the live Xcode index — orders of magnitude faster than waiting for `xcodebuild build` in C5. Fix every error before writing the next file. Workflow shifts compile-error discovery from **C5.3 build (~60-180s wait)** to **post-Write (sub-second)**, eliminating one or more full self-fix-loop attempts on average. When the xcode MCP is not available, this step is silently skipped — C5.3 still catches everything, just later. Do NOT batch this — the cost of one extra MCP call per file is negligible compared to one extra xcodebuild round.
 - **Token usage.** `tokens.json` (from `figma_extract_tokens` in A3) already has `swiftName`, `lightHex`, `darkHex`, `isCapsule`. Use those directly — do NOT re-derive names from Figma slash strings. Then merge with project enums (`Spacing`, `IKFont`, `IKCoreApp`) per the routing rules below: prefer existing enum case → fallback to extracted token → inline literal as last resort.
 - **`isCapsule` → `Capsule()` (hard rule).** For any radius/spacing token with `isCapsule: true` in `tokens.json`, codegen `.clipShape(Capsule())` (and `Capsule()` for fills/backgrounds/overlays) — never `.cornerRadius(9999)` or `RoundedRectangle(cornerRadius: 9999)`. Magic-number 9999 renders correctly only when width ≈ height; pills wider than tall flatten the ends. See `references/design-token-mapping.md` §"Border Radius Tokens".
 - **Dual-mode colors → Asset Catalog.** Run `scripts/colorset-codegen.sh .figma-cache/_shared/tokens.json <Assets.xcassets> Colors` to emit colorsets for every token with both `lightHex` and `darkHex`; reference them via `Color("Colors/<swiftName>")`. Light-only tokens stay as `Color.<swiftName>` extensions in `DesignSystem/Color+Tokens.swift`. Never hand-write the colorset JSON — the script preserves alpha and namespace correctly.
@@ -657,7 +658,7 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
   - `Image(decorative:)` for decorative Figma images; `.accessibilityLabel("…")` on every meaningful icon (derive label from semantic Figma name: `eICClose` → `"Close"`).
   - Icon-only `Button` → `Button("Label", systemImage: …, action: …)` form OR custom label + `.accessibilityLabel`. Never bare image-only without a label.
   - Tap targets < 44pt → wrap with `.contentShape(.rect).frame(minWidth: 44, minHeight: 44)`.
-  - `#Preview` macro, never `PreviewProvider`.
+  - `#Preview` macro, never `PreviewProvider`. **Mandatory** — every emitted `<Name>Screen.swift` MUST end with a `#Preview { … }` block that builds the screen with mock state (e.g. `<Name>Screen(viewModel: <Name>ViewModel())` plus any required dependency stubs). C5 Engine A (xcode MCP RenderPreview) targets this `#Preview` directly — without it, the agent falls back to the slower xcodebuild/simctl path and the user pays the SPM-resolve hang penalty. If the screen has external dependencies (network, persistence) that can't be mocked inline, build a `#Preview { … }` with placeholder data + a `// preview: <reason>` comment.
   - Conditional modifier toggle by ternary, never `if/else` view branching.
   - Animations always carry a `value:` parameter.
   - `NavigationStack` + `.navigationDestination(for:)`; never `NavigationView` or `NavigationLink(destination:)`.
@@ -735,116 +736,14 @@ Two failure modes:
 
 User abort phrases (`stop fixing`, `ship as-is`) → mark `manifest.verification.c3Pass2.lastResult = "user_override"`, continue.
 
-**Fast path (recommended for Pass 3 + 3b + Pass 4 Part A):** run `scripts/c3-static-checks.sh --files "<space-separated swift paths>" --target <iOS-major>` — one call runs all three sweeps (SF Symbol grep + system chrome grep + 12-check swiftui-pro bash sweep). Same exit semantics as the three blocks below; saves three bash startups + makes self-fix-loop re-runs cheap. The explicit forms below remain valid when the script is unavailable.
+**Pass 3 + 3b + 4 Part A — fast path (mandatory):** run `scripts/c3-static-checks.sh --files "<space-separated swift paths>" --target <iOS-major>`. One call covers all three sweeps:
+- **Pass 3** (asset substitution): grep for `Image(systemName:)` outside the system-chrome allow-list. Hits → re-fetch the asset from Figma; never improvise.
+- **Pass 3b** (system chrome): grep for `"9:41"` / wifi / battery / `StatusBar` / `HomeIndicator` / `DynamicIsland` redraws + visually scan for ~134×5pt `Capsule`/`RoundedRectangle` at the bottom (home indicator clone). Hits → delete; iOS renders these.
+- **Pass 4 Part A** (swiftui-pro Review, 12 checks): banned modern API hits, deprecated `cornerRadius()`, iOS-version-gated APIs, `PreviewProvider`/`AnyView`, `DispatchQueue`/`Task.detached`, manual `Binding(get:set:)`, deprecated navigation, image accessibility, force unwraps (informational), `Text + Text`, `.onTapGesture` for actions (informational), iOS 16 fallback markers.
 
-**Pass 3 — Asset substitution scan (BASH, mandatory):**
+The driver writes `GATE: PASS` / `GATE: FAIL` to stdout — same exit semantics, one bash startup. **Explicit form (verbatim greps + python image-accessibility scan) lives in [`references/verification-loop.md`](references/verification-loop.md) §4.4** as fallback when the driver script is unavailable. SKILL.md no longer inlines the bash to keep this step compact; the reference has the full source.
 
-```bash
-HITS=$(grep -rnE 'Image\(systemName:' <generated-swift-files>)
-[ -z "$HITS" ] && echo "PASS: no SF Symbol substitution" || { echo "FAIL: SF Symbol used where Figma asset expected:"; echo "$HITS"; }
-```
-
-Every hit must be justified against the allow-list (system chrome only) or replaced with the Figma asset. Same applies to `Text("G")` / `Rectangle().fill(...)` standing in for logos — visually scan and fix.
-
-**Pass 3b — System chrome scan (BASH, mandatory):**
-
-```bash
-CHROME=$(grep -rnE '"9:41"|Image\(systemName: "(wifi|battery|cellularbars|antenna|dot\.radiowaves)"\)|StatusBar|HomeIndicator|DynamicIsland' <generated-swift-files>)
-[ -z "$CHROME" ] && echo "PASS: no system-chrome drawing" || { echo "FAIL: system chrome drawn in view (delete — iOS renders it):"; echo "$CHROME"; }
-```
-
-Also visually scan for a `Capsule()` / `RoundedRectangle()` at the bottom with width≈134 and height≈5 — that's the home indicator. Delete it. iOS draws it.
-
-**Pass 4 — swiftui-pro Review (BASH + structural checklist, mandatory).**
-
-Catches violations that slipped past C2's preventive rules. Two parts: bash sweep (deterministic) + structural review (manual walk).
-
-**Part A: Bash sweep.**
-
-```bash
-SWIFT_FILES="<your-generated-swift-files>"
-DEPTARGET="<from C1 audit, e.g. 16>"
-FAIL=0
-
-# (1) Modern API hits — always-on (regardless of deployment target)
-HITS_API1=$(grep -nE 'foregroundColor\(|fontWeight\(\.bold\)|showsIndicators:|UIScreen\.main\.bounds|onChange\(of:.*\) \{ [^_]' $SWIFT_FILES)
-[ -z "$HITS_API1" ] && echo "PASS: api.md (always)" || { echo "FAIL: api.md violations:"; echo "$HITS_API1"; FAIL=1; }
-
-# (2) Deprecated API — `cornerRadius()` is always wrong; `.rect(cornerRadius:)` is iOS 17+ so iOS 16 must use RoundedRectangle().
-HITS_CR=$(grep -nE '\.cornerRadius\(' $SWIFT_FILES)
-[ -z "$HITS_CR" ] && echo "PASS: no .cornerRadius()" || { echo "FAIL: replace .cornerRadius() with .clipShape(RoundedRectangle(cornerRadius:)) on iOS 16:"; echo "$HITS_CR"; FAIL=1; }
-
-# (3) iOS 16 forbids: .topBarLeading, .topBarTrailing, .clipShape(.rect(cornerRadius:)), Tab(...) ctor, @Observable, @Bindable
-if [ "$DEPTARGET" -lt 17 ]; then
-  HITS_iOS17=$(grep -nE '\.topBarLeading|\.topBarTrailing|\.rect\(cornerRadius:|@Observable\b|@Bindable\b' $SWIFT_FILES)
-  [ -z "$HITS_iOS17" ] && echo "PASS: no iOS 17+ APIs on iOS $DEPTARGET" || { echo "FAIL: iOS 17+ API used but target is $DEPTARGET (use fallbacks per swiftui-pro-bridge.md §6):"; echo "$HITS_iOS17"; FAIL=1; }
-fi
-if [ "$DEPTARGET" -lt 18 ]; then
-  HITS_iOS18=$(grep -nE 'Tab\("|@Entry\b' $SWIFT_FILES)
-  [ -z "$HITS_iOS18" ] && echo "PASS: no iOS 18+ APIs on iOS $DEPTARGET" || { echo "FAIL: iOS 18+ API used but target is $DEPTARGET:"; echo "$HITS_iOS18"; FAIL=1; }
-fi
-
-# (4) Views & previews
-HITS_VIEWS=$(grep -nE 'PreviewProvider|AnyView' $SWIFT_FILES)
-[ -z "$HITS_VIEWS" ] && echo "PASS: views.md/performance.md" || { echo "FAIL: views/perf:"; echo "$HITS_VIEWS"; FAIL=1; }
-
-# (5) Concurrency
-HITS_CON=$(grep -nE 'DispatchQueue\.|Task\.sleep\(nanoseconds:|Task\.detached' $SWIFT_FILES)
-[ -z "$HITS_CON" ] && echo "PASS: swift.md concurrency" || { echo "FAIL: concurrency:"; echo "$HITS_CON"; FAIL=1; }
-
-# (6) Bindings
-HITS_BIND=$(grep -nE 'Binding\(get:.*set:' $SWIFT_FILES)
-[ -z "$HITS_BIND" ] && echo "PASS: data.md bindings" || { echo "FAIL: manual Binding(get:set:):"; echo "$HITS_BIND"; FAIL=1; }
-
-# (7) Navigation
-HITS_NAV=$(grep -nE 'NavigationView\b|NavigationLink\(destination:' $SWIFT_FILES)
-[ -z "$HITS_NAV" ] && echo "PASS: navigation.md" || { echo "FAIL: deprecated navigation:"; echo "$HITS_NAV"; FAIL=1; }
-
-# (8) Accessibility — Image without label or decorative marker (within 5-line window)
-ORPHAN_IMAGE=$(python3 -c "
-import re, pathlib
-files = '''$SWIFT_FILES'''.split()
-for f in files:
-    text = pathlib.Path(f).read_text()
-    lines = text.splitlines()
-    for i, line in enumerate(lines, 1):
-        if re.search(r'Image\([\"\.]', line) and 'decorative' not in line and 'systemName:' not in line:
-            window = '\n'.join(lines[i-1:i+5])
-            if 'accessibilityLabel' not in window and 'accessibilityHidden' not in window:
-                print(f'{f}:{i}: {line.strip()}')
-")
-[ -z "$ORPHAN_IMAGE" ] && echo "PASS: image accessibility" || { echo "REVIEW: images missing label/decorative:"; echo "$ORPHAN_IMAGE"; }
-
-# (9) Force unwrap (informational — verify each manually)
-HITS_BANG=$(grep -nE '![\.[]' $SWIFT_FILES | grep -v '!=' | grep -v '//' || true)
-[ -z "$HITS_BANG" ] && echo "PASS: no force unwraps" || echo "REVIEW: force unwraps (verify each is unrecoverable):"
-
-# (10) Text concatenation with +
-HITS_TEXT_PLUS=$(grep -nE 'Text\([^)]+\)\s*\+\s*Text\(' $SWIFT_FILES)
-[ -z "$HITS_TEXT_PLUS" ] && echo "PASS: no Text +" || { echo "FAIL: Text concatenation with +:"; echo "$HITS_TEXT_PLUS"; FAIL=1; }
-
-# (11) onTapGesture for actions (should be Button)
-HITS_TAP=$(grep -nE '\.onTapGesture\s*\{' $SWIFT_FILES)
-[ -z "$HITS_TAP" ] && echo "PASS: no onTapGesture for actions" || echo "REVIEW: onTapGesture — convert to Button unless tap location/count needed:"
-
-# (12) iOS 16 fallback marker presence (when target < 17)
-if [ "$DEPTARGET" -lt 17 ]; then
-  CHROME_NAV=$(grep -nE 'navigationBarLeading|navigationBarTrailing|RoundedRectangle\(cornerRadius:' $SWIFT_FILES)
-  if [ -n "$CHROME_NAV" ]; then
-    MISSING_MARK=$(echo "$CHROME_NAV" | while read line; do
-      f=$(echo "$line" | cut -d: -f1)
-      n=$(echo "$line" | cut -d: -f2)
-      ctx=$(sed -n "$((n-2)),$((n+2))p" "$f" 2>/dev/null)
-      echo "$ctx" | grep -q "iOS 16 fallback" || echo "$line"
-    done)
-    [ -z "$MISSING_MARK" ] && echo "PASS: iOS 16 fallback markers present" || echo "REVIEW: iOS 16 fallback used but missing comment marker:"; echo "$MISSING_MARK"
-  fi
-fi
-
-[ $FAIL -eq 0 ] && echo "GATE: PASS (Pass 4 — swiftui-pro Review bash)" || echo "GATE: FAIL (Pass 4 bash) — DO NOT proceed to C4"
-```
-
-**Part B: Structural review (manual walk per file).**
+**Pass 4 Part B: Structural review (manual walk per file).**
 
 For each generated `.swift` file, walk the structural rules table in `references/swiftui-pro-bridge.md` §4. Specifically:
 1. View body length — any `body` > ~40 lines? Extract sub-sections into separate `View` structs in their own files. **Computed properties returning `some View` are not acceptable** even with `@ViewBuilder`.
@@ -985,6 +884,32 @@ After C3 finishes (Pass 2 clean report, Pass 3/3b grep clean, C4 assets copied),
 - `no_entry_path` — screen is not the launch screen, no existing `#Preview` / scheme / test target reaches it, and no driver (`ios-simulator-verify` skill or `computer-use` MCP) is available. Adding a launch-arg / env-var route override to the binary is **banned** — see `references/verification-loop.md` §"C5 Verification Integrity".
 
 User phrases like `skip C5`, `bỏ qua C5`, `no build`, `không cần build` are NOT honored — the agent must explain the Done-Gate (Key Principle #12) and proceed with C5 anyway. The only legitimate way to bypass is one of the three system reasons above.
+
+#### C5.0 — Engine selection (MCP-first, xcodebuild fallback)
+
+Two engines, picked at the start of C5:
+
+- **Engine A — xcode MCP (PREFERRED when available).** The `xcode` MCP server (`xcrun mcpbridge`, ships with Xcode 26+; tools surfaced as `mcp__xcode__BuildProject`, `mcp__xcode__RenderPreview`, `mcp__xcode__XcodeListNavigatorIssues`, `mcp__xcode__GetBuildLog`, `mcp__xcode__XcodeListWindows`). Wins: bypasses `xcodebuild -list` SPM "Creating working copy" hang (the live Xcode session has already resolved packages), bypasses `simctl boot/install/launch` (RenderPreview snapshots a `#Preview` directly — no app entry path needed). Use when **all** hold:
+  1. `mcp__xcode__BuildProject` + `mcp__xcode__RenderPreview` are listed in the available tools at the start of C5 (probe via Claude Code's tool registry).
+  2. Xcode app is running with the target project / workspace open (`mcp__xcode__XcodeListWindows` returns ≥ 1 window pointing at the project).
+  3. The screen file has a `#Preview { ... }` block (C2 emit requirement — see Step C2 below).
+- **Engine B — xcodebuild + simctl (fallback).** Use when any condition above fails. Original 6 sub-steps below.
+
+Stash the chosen engine in `manifest.verification.c5.engine` (`"xcode-mcp"` | `"xcodebuild"`). Doctor script (`scripts/doctor.sh`) reports xcode-mcp availability at install time.
+
+#### Engine A path — xcode MCP (preferred)
+
+1. **A.1 Workspace probe.** Call `mcp__xcode__XcodeListWindows`. Pick the window matching the target project. Stash workspace info to `manifest.verification.c5.xcodeWindow`.
+2. **A.2 Build.** Call `mcp__xcode__BuildProject` with the resolved scheme. On failure: call `mcp__xcode__XcodeListNavigatorIssues` (and `mcp__xcode__GetBuildLog` if needed) to get structured compile errors. Treat each error as a `FAIL high` row in the self-fix loop — same scope rule as Pass 2 (only edit the cited file:line).
+3. **A.3 Render.** Call `mcp__xcode__RenderPreview` targeting the screen's `*.swift` file (the one containing `#Preview { ... }`). The MCP returns the snapshot PNG. Save to `.figma-cache/<nodeId>/c5-render.png`.
+4. **A.4 Compare.** Skip the `sips -Z 2000` shrink — RenderPreview already returns canvas-sized PNG (well under the 2000px many-image API cap). The agent reads `c5-render.png` + `screenshot.png` (or `screenshot-cmp.png` if the Figma frame is large) directly into the C5.6 procedure.
+5. **A.5 Diff.** C5.6 procedure runs unchanged — same `c5-visual-diff.md` template as Engine B. Same 6-step compare in `references/verification-loop.md` §C5.6.
+
+The Engine A path eliminates: `previewEntry` user prompt (RenderPreview targets `#Preview` directly, no app launch / nav stack), `simctl boot` cold start (~30-90s), `xcodebuild -list` SPM resolve hang (Xcode keeps state), and the `sips -Z 2000` shrink step (preview canvas is small).
+
+**Banned:** Engine A is NOT a "route override" bypass. RenderPreview renders pure SwiftUI `#Preview` content, no `#if DEBUG` deep-link, no launch-arg env-var overrides — the C5 verification-integrity rule (`references/verification-loop.md` §"C5 Verification Integrity") still applies. If a screen has no `#Preview`, fall back to Engine B (legitimate skip path) — do NOT add a binary route override to make Engine A happy.
+
+#### Engine B path — xcodebuild + simctl (fallback)
 
 Run the 6 sub-steps (commands + edge cases in `references/verification-loop.md` §5):
 

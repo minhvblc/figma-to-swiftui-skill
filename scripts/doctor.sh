@@ -281,6 +281,29 @@ PY
   esac
 fi
 
+# ── 5b. xcode MCP (Xcode 26+) — optional, unlocks C5 Engine A ────────────────
+# When `xcrun mcpbridge` exists AND Xcode is running with the project open,
+# C5 can use BuildProject + RenderPreview instead of xcodebuild + simctl.
+# Wins: bypass SPM "Creating working copy" hang + simctl boot cold start +
+# previewEntry user prompt. Optional — skill falls back to xcodebuild path
+# when xcode MCP is unavailable.
+echo
+echo "5b. xcode MCP (optional, unlocks C5 Engine A)"
+if ! command -v xcrun >/dev/null 2>&1; then
+  warn "xcrun not found — xcode MCP unavailable, C5 will use xcodebuild fallback"
+elif ! xcrun mcpbridge --help >/dev/null 2>&1; then
+  warn "xcrun mcpbridge not available (Xcode < 26?) — C5 will use xcodebuild fallback"
+  hint "Update Xcode to 26+ to enable RenderPreview-based C5 verification"
+else
+  ok "xcrun mcpbridge available"
+  if pgrep -lf "Xcode.app/Contents/MacOS/Xcode$" >/dev/null 2>&1; then
+    ok "Xcode app is running (BuildProject will use the live session)"
+  else
+    warn "Xcode not running — start Xcode and open the target project for Engine A to work"
+    hint "C5 will fall back to xcodebuild when Xcode is not running"
+  fi
+fi
+
 # ── 6. Skills installed ───────────────────────────────────────────────────────
 echo
 echo "6. Skills installed"
