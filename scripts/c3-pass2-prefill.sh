@@ -431,6 +431,69 @@ GR=$(gr_verdict);  DV=$(dv_verdict);  BG=$(bg_verdict)
 TR=$(tr_verdict);  SA=$(sa_verdict);  BS=$(bs_verdict)
 SS=$(ss_verdict);  IF=$(if_verdict);  BW=$(bw_verdict)
 
+# --- Large-frame navigation hints (Tier 5) ----------------------------------
+# When design-context.md is large (typically >50KB / >600 lines for frames
+# with 30+ sub-nodes — brand chip rows, logo grids, etc.), emit a roadmap
+# of section ranges + per-Pass-2-property grep line numbers. The agent reads
+# design-context.md in chunks (Read --offset N --limit M) instead of loading
+# the full file, saving ~10K tokens on large frames. Gate C3-Pass2 still
+# greps the FULL file for verbatim quote-match — no quality impact.
+DCTX_SIZE=$(wc -c < "$DESIGN_CTX" 2>/dev/null | tr -d ' ')
+DCTX_LINES=$(wc -l < "$DESIGN_CTX" 2>/dev/null | tr -d ' ')
+DCTX_SIZE=${DCTX_SIZE:-0}
+DCTX_LINES=${DCTX_LINES:-0}
+LARGE_FRAME=0
+if [ "$DCTX_SIZE" -gt 51200 ] || [ "$DCTX_LINES" -gt 600 ]; then
+  LARGE_FRAME=1
+fi
+
+emit_navigation_hints() {
+  echo "<!--"
+  echo "  LARGE design-context.md detected (${DCTX_SIZE} bytes, ${DCTX_LINES} lines)."
+  echo "  To save tokens during Pass 2, READ design-context.md by section using"
+  echo "  the Read tool with offset/limit, NOT the full file. Gate C3-Pass2 still"
+  echo "  verifies your verbatim quotes against the full file via grep, so"
+  echo "  reading less doesn't weaken the gate — it just saves agent tokens."
+  echo ""
+  echo "  Top-level section starts (heuristic — top-level JSX tags):"
+  awk '
+    /^<[A-Za-z]/ {
+      indent = match($0, /[^ ]/) - 1
+      if (indent == 0) {
+        match($0, /^<[A-Za-z][A-Za-z0-9]*/)
+        tag = substr($0, RSTART+1, RLENGTH-1)
+        # Try to grab a className attr for context
+        cls = ""
+        if (match($0, /className="[^"]*"/)) {
+          cls = substr($0, RSTART+11, RLENGTH-12)
+          # Trim long classNames
+          if (length(cls) > 40) cls = substr(cls, 1, 37) "..."
+        }
+        printf "    L%-5d %-12s %s\n", NR, tag, cls
+      }
+    }
+  ' "$DESIGN_CTX" | head -25
+  echo ""
+  echo "  Per-Pass-2-check grep hits (read these line numbers for verbatim quotes):"
+  emit_check_hits() {
+    local code="$1" pattern="$2"
+    local hits
+    hits=$(grep -nE "$pattern" "$DESIGN_CTX" 2>/dev/null | head -8 | awk -F: '{printf "L%s ", $1}')
+    [ -n "$hits" ] && printf "    %-3s %s\n" "$code" "$hits"
+  }
+  emit_check_hits "LH" "lineHeight:|leading-\["
+  emit_check_hits "LS" "letterSpacing:|tracking-\["
+  emit_check_hits "SH" "shadow:|boxShadow:|shadow-\["
+  emit_check_hits "BD" "border-radius:|borderRadius:|rounded-\["
+  emit_check_hits "OP" "opacity:|opacity-\["
+  emit_check_hits "IS" "<Image|<Icon"
+  emit_check_hits "RM" "renderingMode:|tintColor:|text-\[#"
+  emit_check_hits "AL" "textAlign:|text-(left|center|right)"
+  emit_check_hits "FS" "fontSize:|text-\["
+  echo "-->"
+  echo ""
+}
+
 {
   echo "# C3 Pass 2 — Code vs Screenshot Diff Report"
   echo "nodeId: $NODE_ID"
@@ -451,6 +514,9 @@ SS=$(ss_verdict);  IF=$(if_verdict);  BW=$(bw_verdict)
   echo "  Gate C3-Pass2 (PostToolUse hook) still validates the final report unchanged."
   echo "-->"
   echo ""
+  if [ "$LARGE_FRAME" = "1" ]; then
+    emit_navigation_hints
+  fi
   echo "## Checklist coverage"
   echo "- LH    line-height"
   echo "- LS    letter-spacing / tracking"
