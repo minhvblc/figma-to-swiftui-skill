@@ -45,6 +45,31 @@ done
 # Not a figma task → allow stop.
 [ -z "$CACHE_ROOT" ] && exit 0
 
+# ── Session-aware bypass ─────────────────────────────────────────────────────
+# A leftover .figma-cache/ from a prior session should not block unrelated
+# future tasks (xcstrings translate, refactors, debugging, etc.). Read the
+# Stop hook payload from stdin and look at the live transcript: if the
+# current session has not invoked the figma-to-swiftui workflow (skill or
+# Figma MCP tools), allow stop.
+PAYLOAD=""
+if ! [ -t 0 ]; then
+  PAYLOAD=$(cat 2>/dev/null || true)
+fi
+TRANSCRIPT_PATH=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+
+if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
+  # Match real workflow activity in tool_use blocks:
+  #   - Skill calls for figma-to-swiftui / figma-flow-to-swiftui-feature
+  #   - MCP tool calls whose name contains "figma" (Figma desktop, plugin,
+  #     figma-assets servers, etc.)
+  #   - Direct figma-assets tool calls (figma_extract_tokens,
+  #     figma_export_assets[_unified], figma_build_registry)
+  FIGMA_SIGNAL='"skill":[[:space:]]*"figma-to-swiftui|"skill":[[:space:]]*"figma-flow-to-swiftui-feature|"name":[[:space:]]*"mcp__[A-Za-z0-9_]*[Ff]igma|"name":[[:space:]]*"figma_(extract_tokens|export_assets|export_assets_unified|build_registry)'
+  if ! grep -qE "$FIGMA_SIGNAL" "$TRANSCRIPT_PATH" 2>/dev/null; then
+    exit 0
+  fi
+fi
+
 PROJECT_ROOT=$(dirname "$CACHE_ROOT")
 
 # Locate scripts dir (sibling to hooks dir).
