@@ -144,13 +144,30 @@ for DIR in "${SCREEN_DIRS[@]}"; do
     PHASE_B=$(jq -r '.phaseB // empty' "$MANIFEST" 2>/dev/null)
     ROWS_LEN=$(jq -r '(.rows // []) | length' "$MANIFEST" 2>/dev/null || echo 0)
     FAILED_ROWS=$(jq -r '[(.rows // [])[] | select(.status == "failed") | .nodeId] | join(", ")' "$MANIFEST" 2>/dev/null)
+    NO_TAGGED=$(jq -r '.noTaggedAssets // false' "$MANIFEST" 2>/dev/null)
 
     if [ "$PHASE_B" != "done" ]; then
       PROBLEMS+="    - manifest.phaseB != \"done\" (run figma_export_assets_unified with autoDiscover: true, persist phaseB: \"done\")\n"
     fi
 
-    if [ "${ROWS_LEN:-0}" -lt 1 ]; then
-      PROBLEMS+="    - manifest.rows[] empty (Phase B never ran — every visible icon/logo/illustration must be a row)\n"
+    # Empty rows[] is OK when the screen has no tagged Figma raster assets
+    # (legitimate for PIN-entry, text-only, vector-only screens). Two ways to
+    # opt out:
+    #   1. Explicit: manifest.noTaggedAssets = true
+    #   2. Auto-detect: registry.taggedAssets is empty for the whole flow OR
+    #      the screen has no descendants in registry.taggedAssets[]
+    # Otherwise empty rows = Phase B never ran and is a real failure.
+    if [ "${ROWS_LEN:-0}" -lt 1 ] && [ "$NO_TAGGED" != "true" ]; then
+      AUTO_NO_TAGGED="false"
+      if [ -s "$REG" ] && grep -q '"taggedAssets"' "$REG"; then
+        TAGGED_TOTAL=$(jq -r '(.taggedAssets // []) | length' "$REG" 2>/dev/null || echo 0)
+        if [ "${TAGGED_TOTAL:-0}" -eq 0 ]; then
+          AUTO_NO_TAGGED="true"
+        fi
+      fi
+      if [ "$AUTO_NO_TAGGED" != "true" ]; then
+        PROBLEMS+="    - manifest.rows[] empty (Phase B never ran — every visible icon/logo/illustration must be a row; if this screen genuinely has no tagged assets, set manifest.noTaggedAssets = true)\n"
+      fi
     fi
 
     if [ -n "$FAILED_ROWS" ]; then

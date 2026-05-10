@@ -127,49 +127,88 @@ base="$(basename "$FILE_PATH" .swift)"
 parent_dir="$(dirname "$rel")"
 parent_name="$(basename "$parent_dir")"
 grandparent="$(basename "$(dirname "$parent_dir")")"
+greatgrand="$(basename "$(dirname "$(dirname "$parent_dir")")")"
 
 VIOLATIONS=""
 
 # ── 1. Path correctness ─────────────────────────────────────────────────────
+# Branches per screenFolderConvention:
+#   - "screen-based": Screens/<X>Screen/<X>Screen.swift   (one folder per screen)
+#   - "ikame-feature-flat": Screens/<Feature>/<Name>Screen.swift
+#                            + ViewModel/, Subviews/, Models/ subfolders
 
-# 1a. -Screen suffix in subview folders → suffix misuse
-if [[ "$base" == *Screen ]] && [[ "$base" != *Screens ]]; then
+if [ "$LAYOUT" = "ikame-feature-flat" ]; then
+  # 1a-ikame. -Screen suffix in subview / VM / model folders → suffix misuse
+  if [[ "$base" == *Screen ]] && [[ "$base" != *Screens ]] && [[ "$base" != *+* ]]; then
+    case "$parent_name" in
+      Subviews|ViewModel|Models)
+        VIOLATIONS+="${rel}: '-Screen' suffix is reserved for parent (full-screen) views; ViewModels go in ViewModel/, subviews in Subviews/, models in Models/ (project-structure.md §2)\n"
+        ;;
+      *)
+        # 1b-ikame. -Screen file at Screens/<Feature>/<Name>Screen.swift —
+        # grandparent must be 'Screens' (the parent IS the feature folder).
+        # Allow extension files <Name>Screen+<Topic>.swift in the same folder.
+        if [[ "$grandparent" != "Screens" ]]; then
+          VIOLATIONS+="${rel}: screen view should live at Screens/<Feature>/${base}.swift (got grandparent: ${grandparent})\n"
+        fi
+        ;;
+    esac
+  fi
+
+  # 1c-ikame. ViewModel placement — must be at Screens/<Feature>/ViewModel/<Name>ViewModel.swift
+  if [[ "$base" == *ViewModel ]]; then
+    if [[ "$parent_name" != "ViewModel" ]]; then
+      VIOLATIONS+="${rel}: ViewModel '${base}' should live at Screens/<Feature>/ViewModel/${base}.swift\n"
+    fi
+  fi
+
+  # 2-ikame. Subview prefix rule — files in <Feature>/Subviews/ start with feature folder name
+  # (or <Feature>Home* for screens whose entry is named <Feature>HomeScreen).
+  if [[ "$parent_name" == "Subviews" ]] && [[ "$greatgrand" == "Screens" ]]; then
+    feature_folder="$(basename "$(dirname "$parent_dir")")"
+    if [[ "$base" != ${feature_folder}* ]]; then
+      VIOLATIONS+="${rel}: subview should start with parent feature folder name '${feature_folder}' (got: ${base})\n"
+    fi
+  fi
+else
+  # ── screen-based branch (existing default behavior) ────────────────────────
+
+  # 1a. -Screen suffix in subview folders → suffix misuse
+  if [[ "$base" == *Screen ]] && [[ "$base" != *Screens ]]; then
+    case "$parent_name" in
+      Subviews|Models|Enums|SubViewModels)
+        VIOLATIONS+="${rel}: '-Screen' suffix is reserved for parent (full-screen) views; subviews use '-View' suffix (project-structure.md §3)\n"
+        ;;
+      *)
+        # 1b. -Screen file but NOT at Screens/<X>Screen/<X>Screen.swift
+        if [[ "$parent_name" != "$base" ]] || [[ "$grandparent" != "Screens" ]]; then
+          VIOLATIONS+="${rel}: parent-view '${base}.swift' should live at Screens/${base}/${base}.swift\n"
+        fi
+        ;;
+    esac
+  fi
+
+  # 1c. Top-level file in Screens/<X>Screen/ MUST end with -Screen or -ViewModel.
+  if [[ "$grandparent" == "Screens" ]] && [[ "$parent_name" == *Screen ]]; then
+    case "$base" in
+      *Screen|*ViewModel) ;;
+      *)
+        VIOLATIONS+="${rel}: top-level file in Screens/${parent_name}/ must end with '-Screen' (parent view) or '-ViewModel'; subviews go in Subviews/\n"
+        ;;
+    esac
+  fi
+
+  # 2. Subview prefix rule — files in <X>Screen/Subviews/ etc. start with <X>
   case "$parent_name" in
     Subviews|Models|Enums|SubViewModels)
-      VIOLATIONS+="${rel}: '-Screen' suffix is reserved for parent (full-screen) views; subviews use '-View' suffix (project-structure.md §3)\n"
-      ;;
-    *)
-      # 1b. -Screen file but NOT at Screens/<X>Screen/<X>Screen.swift
-      if [[ "$parent_name" != "$base" ]] || [[ "$grandparent" != "Screens" ]]; then
-        VIOLATIONS+="${rel}: parent-view '${base}.swift' should live at Screens/${base}/${base}.swift\n"
+      screen_folder="$(basename "$(dirname "$parent_dir")")"
+      screen_prefix="${screen_folder%Screen}"
+      if [[ -n "$screen_prefix" ]] && [[ "$base" != ${screen_prefix}* ]]; then
+        VIOLATIONS+="${rel}: file in '${parent_name}/' must start with screen prefix '${screen_prefix}' (got: ${base})\n"
       fi
       ;;
   esac
 fi
-
-# 1c. Top-level file in Screens/<X>Screen/ MUST end with -Screen or -ViewModel.
-#     Anything else (e.g. HomeView.swift sitting at the screen folder root)
-#     means the agent named a parent view incorrectly OR placed a subview at
-#     the wrong level.
-if [[ "$grandparent" == "Screens" ]] && [[ "$parent_name" == *Screen ]]; then
-  case "$base" in
-    *Screen|*ViewModel) ;;
-    *)
-      VIOLATIONS+="${rel}: top-level file in Screens/${parent_name}/ must end with '-Screen' (parent view) or '-ViewModel'; subviews go in Subviews/\n"
-      ;;
-  esac
-fi
-
-# 2. Subview prefix rule — files in <X>Screen/Subviews/ etc. start with <X>
-case "$parent_name" in
-  Subviews|Models|Enums|SubViewModels)
-    screen_folder="$(basename "$(dirname "$parent_dir")")"
-    screen_prefix="${screen_folder%Screen}"
-    if [[ -n "$screen_prefix" ]] && [[ "$base" != ${screen_prefix}* ]]; then
-      VIOLATIONS+="${rel}: file in '${parent_name}/' must start with screen prefix '${screen_prefix}' (got: ${base})\n"
-    fi
-    ;;
-esac
 
 # 3. Suffix / type-declaration agreement
 if [[ "$base" == *Screen ]] && [[ "$base" != *Screens ]] \

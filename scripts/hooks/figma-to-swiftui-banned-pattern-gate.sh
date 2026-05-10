@@ -203,19 +203,36 @@ while IFS= read -r line; do
   add_violation "line $lineno: '$match' — iOS renders system chrome, custom struct redrawing it is banned"
 done < <(grep -nE '\b(struct|class)\s+(FakeStatusBar|HomeIndicator|NotchView|DynamicIslandView)\b' "$TMP" 2>/dev/null || true)
 
-# 2d. Home-indicator capsule lookalike. Two heuristics combined:
-#   (a) single line: `Capsule(...)...frame(...height: 1..6...)`
-#   (b) multi-line:  `Capsule(...)` followed within 3 lines by `.frame(...height: 1..6...)`
+# 2d. Home-indicator capsule lookalike. Home indicator is fixed at ~139×5pt.
+# Heuristic: Capsule with height 1-6 AND (no width specified OR width 100-180).
+# A progress bar at 200×6 or a thin separator at 50×4 should NOT trigger this.
+# Two checks combined:
+#   (a) single line: `Capsule(...)...frame(...height: 1..6...)` AND width matches
+#       home-indicator zone (or width missing, ambiguous)
+#   (b) multi-line:  `Capsule(...)` followed within 3 lines by frame matching
+#       above, with width also constrained
 # BSD awk on macOS doesn't support \s — use [[:space:]]* instead.
+#
+# Width filter: when frame call has explicit width, require width 100-180 to flag.
+# When width missing (height-only frame), still flag (ambiguous default size).
 
-# (a) single-line — grep with PCRE-friendly extended regex.
+# (a) single-line — grep then post-filter on width.
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   lineno="${line%%:*}"
-  add_violation "line $lineno: Capsule() with height≤6pt — looks like a home-indicator redraw, iOS renders it"
+  content="${line#*:}"
+  # Extract width if specified; if missing → flag (ambiguous). If present and
+  # outside home-indicator zone (100-180) → skip (legit non-indicator capsule).
+  width=$(printf '%s\n' "$content" | sed -nE 's/.*width:[[:space:]]*([0-9]+).*/\1/p' | head -1)
+  if [ -n "$width" ]; then
+    if [ "$width" -lt 100 ] || [ "$width" -gt 180 ]; then
+      continue
+    fi
+  fi
+  add_violation "line $lineno: Capsule() with height≤6pt in home-indicator zone — looks like a home-indicator redraw, iOS renders it (use RoundedRectangle for thin progress / separator)"
 done < <(grep -nE 'Capsule[[:space:]]*\(.*frame[[:space:]]*\([^)]*height:[[:space:]]*[1-6]([^0-9]|$)' "$TMP" 2>/dev/null || true)
 
-# (b) multi-line — awk with POSIX-only regex.
+# (b) multi-line — awk capture both lines, then post-filter on width.
 HI_HITS=$(awk '
   /Capsule[[:space:]]*\(/ { capsule_at=NR }
   /frame[[:space:]]*\([^)]*height:[[:space:]]*[1-6]([^0-9]|$)/ {
@@ -227,7 +244,14 @@ HI_HITS=$(awk '
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   lineno="${line%%:*}"
-  add_violation "line $lineno: Capsule() within 3 lines of small-height frame — likely home-indicator redraw"
+  content="${line#*:}"
+  width=$(printf '%s\n' "$content" | sed -nE 's/.*width:[[:space:]]*([0-9]+).*/\1/p' | head -1)
+  if [ -n "$width" ]; then
+    if [ "$width" -lt 100 ] || [ "$width" -gt 180 ]; then
+      continue
+    fi
+  fi
+  add_violation "line $lineno: Capsule() within 3 lines of small-height frame in home-indicator zone — likely home-indicator redraw (use RoundedRectangle for thin progress / separator)"
 done <<< "$HI_HITS"
 
 # ─── Check 3: hand-drawn letter-as-logo (heuristic) ────────────────────────────
