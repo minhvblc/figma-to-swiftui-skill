@@ -132,6 +132,23 @@ def grep_first_capture(pattern, files):
 SWIFT_FILES = list(walk_files((".swift",)))
 PBXPROJ = list(walk_files(("pbxproj",)))
 XCCONFIG = list(walk_files((".xcconfig",)))
+PODFILE = os.path.join(project, "Podfile")
+PODFILE_TEXT = ""
+if os.path.isfile(PODFILE):
+    try:
+        PODFILE_TEXT = open(PODFILE, errors="replace").read()
+    except OSError:
+        pass
+
+# ── 0. usesIKCoreApp (Ikame umbrella pod) — CASCADES ─────────────────────
+# When IKCoreApp is detected (Podfile pod or Swift import), every dependent
+# ik-* flag is forced to true (umbrella re-exports IKNavigation, IKFont,
+# IKMacros, IKPopup, IKFeedback, IKTracking, IKLocalized, IKAsset). The
+# individual sub-libs do NOT appear as separate pod lines in Podfile, so
+# probing them by-name would yield false negatives for Ikame projects.
+uses_ik_core_app = bool(re.search(r"^\s*pod\s+'IKCoreApp'", PODFILE_TEXT, re.MULTILINE))
+if not uses_ik_core_app:
+    uses_ik_core_app = grep_first(r"\bimport\s+IKCoreApp\b", SWIFT_FILES) is not None
 
 def latest_file(paths):
     best = None
@@ -156,6 +173,9 @@ for f in SWIFT_FILES:
     if parent == base and grand == "Screens":
         screen_files.append(f)
 screen_folder_convention = "screen-based" if len(screen_files) >= 2 else "flat"
+# Ikame override — feature-flat layout when usesIKCoreApp.
+if uses_ik_core_app:
+    screen_folder_convention = "ikame-feature-flat"
 
 # ── 2. viewModelPattern ───────────────────────────────────────────────────
 vm_files = [f for f in SWIFT_FILES if os.path.basename(f).endswith("ViewModel.swift")]
@@ -171,6 +191,9 @@ if vm_files:
     has_send = re.search(r"\bfunc\s+send\s*\(\s*_?\s*action:\s*Action\b", text) is not None
     if has_main and has_enum_action and has_send:
         vm_pattern = "state-action-reducer"
+        # Ikame variant — Combine PassthroughSubject for routes (D-405).
+        if "PassthroughSubject" in text and "routePublisher" in text:
+            vm_pattern = "state-action-route-publisher"
     else:
         vm_pattern = "ad-hoc"
 
@@ -218,7 +241,7 @@ ikn_signals = [
     r":\s*IKRouter\b",
     r"@Environment\(\\\.ikNavigationable\)|@Environment\(\\\.ik_navigation\)",
 ]
-uses_iknavigation = any(grep_any(p, SWIFT_FILES) for p in ikn_signals)
+uses_iknavigation = uses_ik_core_app or any(grep_any(p, SWIFT_FILES) for p in ikn_signals)
 router_name = None
 if uses_iknavigation:
     # Find class/struct that conforms to IKRouter — most recent one wins.
@@ -238,7 +261,7 @@ ikm_signals = [
     r"@APIProtocol\b",
     r"@JsonSerializable\b",
 ]
-uses_ikmacros = any(grep_any(p, SWIFT_FILES) for p in ikm_signals)
+uses_ikmacros = uses_ik_core_app or any(grep_any(p, SWIFT_FILES) for p in ikm_signals)
 api_repo_type = None
 if uses_ikmacros:
     api_repo_type = grep_first_capture(
@@ -317,6 +340,99 @@ for src in PBXPROJ + XCCONFIG:
     if re.search(r"STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*YES", text):
         string_catalog_symbols = True
 
+# ── 12. Ikame cascade flags + Entities + Tracking/Toast/NavItem captures ─
+uses_ikpopup = uses_ik_core_app \
+    or grep_any(r"IKPopup\.shared\.showPopup", SWIFT_FILES) \
+    or grep_any(r"@Environment\(\\.ikPopupDismiss\)", SWIFT_FILES)
+uses_ikfeedback = uses_ik_core_app \
+    or grep_any(r"\bIKLoading\.(show|dismiss)Loading", SWIFT_FILES) \
+    or grep_any(r"\bIKHaptics\.", SWIFT_FILES) \
+    or grep_any(r"showAppBottomToast", SWIFT_FILES)
+uses_iktracking = uses_ik_core_app \
+    or grep_any(r"\.ikLogScreenActive\(", SWIFT_FILES) \
+    or grep_any(r"AppTrackingFeature\.shared", SWIFT_FILES)
+uses_iklocalized = uses_ik_core_app or grep_any(r"\.ikLocalized\(\)", SWIFT_FILES)
+uses_ikfont = uses_ik_core_app or (ik_font_enum is not None)
+uses_ikasset_symbol = uses_ik_core_app or generate_asset_symbols
+
+# Entities folder + per-source buckets + prefix detection.
+entities_path = None
+entities_prefix = ""
+entities_sources = []
+candidate_roots = [os.path.join(project, "Entities")]
+try:
+    candidate_roots += [
+        os.path.join(project, d, "Entities")
+        for d in os.listdir(project)
+        if os.path.isdir(os.path.join(project, d)) and d not in SKIP_DIR
+    ]
+except OSError:
+    pass
+for candidate_root in candidate_roots:
+    if not os.path.isdir(candidate_root):
+        continue
+    entities_path = os.path.relpath(candidate_root, project)
+    sources = sorted(
+        d for d in os.listdir(candidate_root)
+        if os.path.isdir(os.path.join(candidate_root, d))
+    )
+    entities_sources = sources
+    prefixes = []
+    for source in sources:
+        sdir = os.path.join(candidate_root, source)
+        try:
+            for f in os.listdir(sdir):
+                m = re.match(r"^([A-Z])\w+Model\.swift$", f)
+                if m:
+                    prefixes.append(m.group(1))
+        except OSError:
+            pass
+    if prefixes:
+        from collections import Counter
+        entities_prefix = Counter(prefixes).most_common(1)[0][0]
+    break
+
+# Locate NavigationItem / AppRoute / MainRoute enum.
+navigation_item_enum_name = None
+navigation_item_path = None
+if uses_iknavigation:
+    for f in SWIFT_FILES:
+        try:
+            text = open(f, errors="replace").read()
+        except OSError:
+            continue
+        m = re.search(r"\benum\s+(NavigationItem|AppRoute|MainRoute)\b", text)
+        if m:
+            navigation_item_enum_name = m.group(1)
+            navigation_item_path = os.path.relpath(f, project)
+            break
+
+# Locate AppTracking enum.
+tracking_enum_name = None
+tracking_enum_path = None
+for f in SWIFT_FILES:
+    try:
+        text = open(f, errors="replace").read()
+    except OSError:
+        continue
+    m = re.search(r"\benum\s+(AppTracking)\b", text)
+    if m:
+        tracking_enum_name = m.group(1)
+        tracking_enum_path = os.path.relpath(f, project)
+        break
+
+# Locate ToastSceenType / ToastScreenType / ToastType.
+toast_type_enum_name = None
+for f in SWIFT_FILES:
+    try:
+        text = open(f, errors="replace").read()
+    except OSError:
+        continue
+    m = re.search(r"\benum\s+(ToastSceenType|ToastScreenType|ToastType|AppToastType)\b", text)
+    if m:
+        toast_type_enum_name = m.group(1)
+        break
+
 # ── Assemble JSON ────────────────────────────────────────────────────────
 result = {
     "_probedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -325,17 +441,32 @@ result = {
     "viewModelPattern": vm_pattern,
     "minDeploymentTarget": min_target,
     "observationFlavor": observation_flavor,
+    "usesIKCoreApp": uses_ik_core_app,
     "usesIKNavigation": uses_iknavigation,
     "routerName": router_name,
-    "viewToRouteWiring": None,  # left for agent; bridge §3 has the choice rules
+    "navigationItemEnumName": navigation_item_enum_name,
+    "navigationItemPath": navigation_item_path,
+    "viewToRouteWiring": "routePublisher" if vm_pattern == "state-action-route-publisher" else None,
     "usesIKMacros": uses_ikmacros,
     "apiRepoTypeName": api_repo_type,
+    "usesIKPopup": uses_ikpopup,
+    "usesIKFeedback": uses_ikfeedback,
+    "usesIKTracking": uses_iktracking,
+    "usesIKLocalized": uses_iklocalized,
+    "usesIKFont": uses_ikfont,
+    "usesIKAssetSymbol": uses_ikasset_symbol,
+    "trackingEnumName": tracking_enum_name,
+    "trackingEnumPath": tracking_enum_path,
+    "toastTypeEnumName": toast_type_enum_name,
     "ikFontEnum": ik_font_enum,
     "ikFontCases": ik_font_cases if ik_font_enum else [],
     "spacingEnum": spacing_enum,
     "spacingCases": spacing_cases if spacing_enum else [],
     "colorEnum": color_enum,
     "colorCases": color_cases if color_enum else [],
+    "entitiesPath": entities_path,
+    "entitiesPrefix": entities_prefix,
+    "entitiesSources": entities_sources,
     "xcstringsPath": xcstrings_path,
     "assetCatalogPath": asset_catalog_path,
     "assetCatalogChoices": asset_catalog_choices,
@@ -356,11 +487,19 @@ print(f"  screenFolderConvention    = {result['screenFolderConvention']}")
 print(f"  viewModelPattern          = {result['viewModelPattern']}")
 print(f"  minDeploymentTarget       = {result['minDeploymentTarget']}")
 print(f"  observationFlavor         = {result['observationFlavor']}")
+print(f"  usesIKCoreApp             = {result['usesIKCoreApp']}")
 print(f"  usesIKNavigation          = {result['usesIKNavigation']}    routerName = {result['routerName']}")
 print(f"  usesIKMacros              = {result['usesIKMacros']}    apiRepoTypeName = {result['apiRepoTypeName']}")
+print(f"  usesIKPopup/Feedback/Tracking/Localized/Font/AssetSymbol")
+print(f"                            = {result['usesIKPopup']}/{result['usesIKFeedback']}/{result['usesIKTracking']}/"
+      f"{result['usesIKLocalized']}/{result['usesIKFont']}/{result['usesIKAssetSymbol']}")
 print(f"  ikFontEnum                = {result['ikFontEnum']}    ({len(result['ikFontCases'])} case(s))")
 print(f"  spacingEnum               = {result['spacingEnum']}    ({len(result['spacingCases'])} case(s))")
 print(f"  colorEnum                 = {result['colorEnum']}    ({len(result['colorCases'])} case(s))")
+print(f"  trackingEnum              = {result['trackingEnumName']}    path = {result['trackingEnumPath']}")
+print(f"  toastTypeEnum             = {result['toastTypeEnumName']}")
+print(f"  navigationItemEnum        = {result['navigationItemEnumName']}    path = {result['navigationItemPath']}")
+print(f"  entitiesPath              = {result['entitiesPath']}    prefix = '{result['entitiesPrefix']}'    sources = {result['entitiesSources']}")
 print(f"  hasColorHexExtension      = {result['hasColorHexExtension']}")
 print(f"  useGeneratedSymbols       = {result['useGeneratedSymbols']}")
 print(f"  useStringCatalogSymbols   = {result['useStringCatalogSymbols']}")

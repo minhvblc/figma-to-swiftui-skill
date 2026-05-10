@@ -68,6 +68,10 @@ GATES=(
   "func-length:c8-func-length.sh:enforcing:no"
   "iknavigation:c8-iknavigation.sh:enforcing:yes"
   "ikfont:c8-ikfont.sh:enforcing:yes"
+  "ikpopup:c8-ikpopup.sh:enforcing:yes"
+  "ikfeedback:c8-ikfeedback.sh:enforcing:yes"
+  "iktracking:c8-iktracking.sh:enforcing:yes"
+  "iklocalized:c8-iklocalized.sh:enforcing:yes"
   "weak-self:c8-weak-self.sh:informational:no"
 )
 

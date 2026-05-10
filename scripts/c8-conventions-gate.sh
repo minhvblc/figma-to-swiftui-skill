@@ -89,6 +89,141 @@ if [ "$LAYOUT" = "flat" ]; then
   exit 0
 fi
 
+# ── ikame-feature-flat branch ─────────────────────────────────────────────
+# Feature-folder layout (Ikame projects):
+#   Screens/<Feature>/<Name>Screen.swift           — entry + additional screens
+#   Screens/<Feature>/<Name>Screen+<Topic>.swift   — extension files
+#   Screens/<Feature>/ViewModel/<Name>ViewModel.swift
+#   Screens/<Feature>/ViewModel/<Name>Repository.swift   (optional)
+#   Screens/<Feature>/Subviews/<FeatureBase>Home<Role>View.swift
+#   Screens/<Feature>/Models/<Name>.swift          (optional flow-only model)
+# See references/project-structure.md §2 + §7, ikame-decision-table.md
+# D-201..D-218.
+if [ "$LAYOUT" = "ikame-feature-flat" ]; then
+  HITS_FILE=$(mktemp -t c8-conventions.XXXXXX)
+  trap 'rm -f "$HITS_FILE"' EXIT
+  violation() { printf "%s\n" "$1" >> "$HITS_FILE"; }
+
+  enum_files_ikame() {
+    if [ "$FILES_PROVIDED" = "1" ]; then
+      for f in $FILES; do
+        [ -n "$f" ] && [ -f "$f" ] && [[ "$f" == *.swift ]] && printf '%s\0' "$f"
+      done
+    else
+      find "$SRC" -name '*.swift' -type f -print0 2>/dev/null
+    fi
+  }
+
+  while IFS= read -r -d '' file; do
+    if [ -n "$SRC" ]; then
+      rel="${file#$SRC/}"
+    else
+      rel="$file"
+    fi
+    base="$(basename "$file" .swift)"
+    parent_dir="$(dirname "$rel")"
+    parent_name="$(basename "$parent_dir")"
+    grandparent="$(basename "$(dirname "$parent_dir")")"
+
+    # 1. Screen file location: Screens/<Feature>/<Name>Screen.swift
+    #    Allow extension files <Name>+<Topic>.swift in same folder.
+    if [[ "$base" == *Screen ]] && [[ "$base" != *+* ]]; then
+      if [[ "$parent_name" == "Subviews" ]] || [[ "$parent_name" == "ViewModel" ]] \
+           || [[ "$parent_name" == "Models" ]]; then
+        violation "$rel: '-Screen' suffix is reserved for parent (full-screen) views; ViewModels go in ViewModel/, subviews in Subviews/, models in Models/ (see project-structure.md §2)"
+      elif [[ "$grandparent" != "Screens" ]]; then
+        violation "$rel: screen view should live at Screens/<Feature>/${base}.swift (got grandparent: ${grandparent})"
+      fi
+    fi
+
+    # 2. ViewModel placement: Screens/<Feature>/ViewModel/<Name>ViewModel.swift
+    if [[ "$base" == *ViewModel ]]; then
+      if [[ "$parent_name" != "ViewModel" ]]; then
+        violation "$rel: ViewModel '${base}' should live at Screens/<Feature>/ViewModel/${base}.swift"
+      fi
+    fi
+
+    # 3. Subview prefix: Screens/<Feature>/Subviews/<FeatureBase>Home*View.swift
+    if [[ "$parent_name" == "Subviews" ]]; then
+      feature_folder="$(basename "$(dirname "$parent_dir")")"
+      grand_grand="$(basename "$(dirname "$(dirname "$parent_dir")")")"
+      if [[ "$grand_grand" == "Screens" ]]; then
+        prefix1="${feature_folder}Home"
+        prefix2="${feature_folder}"
+        if [[ "$base" != ${prefix1}* ]] && [[ "$base" != ${prefix2}* ]]; then
+          violation "$rel: subview should start with parent screen prefix '${prefix1}' or '${prefix2}' (got: ${base})"
+        fi
+      fi
+    fi
+
+    # 4. Suffix-type agreement.
+    if [[ "$base" == *Screen ]] && [[ "$base" != *+* ]] && ! grep -qE "(struct|class)[[:space:]]+${base}\b" "$file"; then
+      violation "$rel: '${base}.swift' should declare a type named '${base}'"
+    fi
+    if [[ "$base" == *ViewModel ]] && ! grep -qE "(class|final class|@Observable[[:space:]]+(@MainActor[[:space:]]+)?(final[[:space:]]+)?class)[[:space:]]+${base}\b" "$file"; then
+      violation "$rel: '${base}.swift' should declare a class named '${base}'"
+    fi
+    if [[ "$base" == *View ]] && [[ "$base" != *Screen ]] && [[ "$base" != *+* ]] \
+         && ! grep -qE "struct[[:space:]]+${base}\b" "$file"; then
+      violation "$rel: '${base}.swift' should declare a struct named '${base}'"
+    fi
+
+    # 5. Extension file naming.
+    if [[ "$rel" == Utilities/Extensions/* ]] || [[ "$parent_name" == "Extensions" ]]; then
+      if [[ "$base" != *+*Ext ]]; then
+        violation "$rel: extension file must use '<Type>+Ext.swift' or '<Type>+<Feature>Ext.swift' naming (got: ${base}.swift)"
+      fi
+    fi
+  done < <(enum_files_ikame)
+
+  # Folder-level: every feature folder under Screens/ that has a session file
+  # must contain at least one *Screen.swift entry. Screens/<F>/ with only
+  # ViewModel/, Subviews/, etc. (no parent screen) is invalid.
+  if [ "$FILES_PROVIDED" = "1" ]; then
+    FEATURE_DIRS=$(for f in $FILES; do
+      [ -f "$f" ] || continue
+      d=$(dirname "$f")
+      while [ "$d" != "/" ] && [ -n "$d" ]; do
+        parent=$(basename "$(dirname "$d")")
+        if [ "$parent" = "Screens" ]; then
+          echo "$d"
+          break
+        fi
+        d=$(dirname "$d")
+      done
+    done | sort -u)
+    while IFS= read -r feature_dir; do
+      [ -z "$feature_dir" ] && continue
+      if ! find "$feature_dir" -maxdepth 1 -name '*Screen.swift' -type f 2>/dev/null | head -1 | grep -q . ; then
+        violation "${feature_dir}/: missing parent-screen file; every feature folder must contain at least one *Screen.swift"
+      fi
+    done <<< "$FEATURE_DIRS"
+  elif [ -d "$SRC/Screens" ]; then
+    while IFS= read -r -d '' feature_dir; do
+      if ! find "$feature_dir" -maxdepth 1 -name '*Screen.swift' -type f 2>/dev/null | head -1 | grep -q . ; then
+        rel_dir="${feature_dir#$SRC/}"
+        violation "${rel_dir}/: missing parent-screen file; every feature folder must contain at least one *Screen.swift"
+      fi
+    done < <(find "$SRC/Screens" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+  fi
+
+  if [ -s "$HITS_FILE" ]; then
+    COUNT=$(wc -l < "$HITS_FILE" | tr -d ' ')
+    echo "${C_RED}GATE: FAIL: ikame-feature-flat convention violations${C_RST} (${COUNT} hit(s)):"
+    cat "$HITS_FILE"
+    echo "${C_DIM}fix: see references/project-structure.md §2 (ikame-feature-flat layout) and ikame-decision-table.md D-201..D-218${C_RST}"
+    exit 1
+  fi
+
+  if [ "$FILES_PROVIDED" = "1" ]; then
+    echo "${C_GRN}GATE: PASS${C_RST}: ikame-feature-flat conventions OK (session-scope: $(echo $FILES | wc -w | tr -d ' ') file(s))"
+  else
+    echo "${C_GRN}GATE: PASS${C_RST}: ikame-feature-flat conventions OK in $SRC"
+  fi
+  exit 0
+fi
+
+# ── screen-based branch (existing behavior) ───────────────────────────────
 HITS_FILE=$(mktemp -t c8-conventions.XXXXXX)
 trap 'rm -f "$HITS_FILE"' EXIT
 
