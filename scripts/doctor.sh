@@ -333,9 +333,11 @@ for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
               c6-asset-completeness.sh c7-no-system-chrome.sh \
               c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
               c8-iknavigation.sh c8-ikfont.sh c8-weak-self.sh \
+              c8-ikpopup.sh c8-ikfeedback.sh c8-iktracking.sh c8-iklocalized.sh \
               c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
               c1-probe.sh c1-project-color-audit.sh \
               b0a-extract-copy.sh b0b-tokens-codegen.sh \
+              mode-detect.sh \
               colorset-codegen.sh timing-report.sh; do
   path="$SCRIPTS_DIR/$script"
   if [ ! -f "$path" ]; then
@@ -358,6 +360,7 @@ if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
                 c6-asset-completeness.sh c7-no-system-chrome.sh \
                 c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
                 c8-iknavigation.sh c8-ikfont.sh \
+                c8-ikpopup.sh c8-ikfeedback.sh c8-iktracking.sh c8-iklocalized.sh \
                 c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
                 c1-probe.sh \
                 b0a-extract-copy.sh b0b-tokens-codegen.sh \

@@ -375,6 +375,7 @@ else
                "$SCRIPTS_SRC"/c1-*.sh "$SCRIPTS_SRC"/c3-*.sh \
                "$SCRIPTS_SRC"/c5-*.sh "$SCRIPTS_SRC"/c6-*.sh \
                "$SCRIPTS_SRC"/c7-*.sh "$SCRIPTS_SRC"/c8-*.sh \
+               "$SCRIPTS_SRC"/mode-detect.sh \
                "$SCRIPTS_SRC"/colorset-codegen.sh \
                "$SCRIPTS_SRC"/timing-report.sh \
                "$SCRIPTS_SRC"/timed-run.sh; do

@@ -192,7 +192,10 @@ if vm_files:
     if has_main and has_enum_action and has_send:
         vm_pattern = "state-action-reducer"
         # Ikame variant — Combine PassthroughSubject for routes (D-405).
-        if "PassthroughSubject" in text and "routePublisher" in text:
+        # Scan ALL VM files (not just latest) — the most-recently-edited VM
+        # may be a legacy form while most are routePublisher-flavored.
+        if grep_any(r"\bPassthroughSubject\b", vm_files) \
+                and grep_any(r"\brouteP[uU]blisher\b", vm_files):
             vm_pattern = "state-action-route-publisher"
     else:
         vm_pattern = "ad-hoc"
