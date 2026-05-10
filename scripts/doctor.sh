@@ -447,6 +447,65 @@ PY
   esac
 done
 
+# ── 9. Drift detection — repo vs installed copies ────────────────────────────
+# Catches the "I updated the skill but forgot to re-run install.sh" failure
+# mode. Compares sha256 of every script in the repo's scripts/ + scripts/hooks/
+# to the corresponding installed copy. Mismatch → warn user to re-run install.
+echo
+echo "9. Drift between repo and installed copies"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPTS_REPO="$REPO_ROOT/scripts"
+HOOKS_REPO="$REPO_ROOT/scripts/hooks"
+SCRIPTS_INSTALLED="$HOME/.claude/scripts"
+HOOKS_INSTALLED="$HOME/.claude/hooks"
+
+DRIFT_COUNT=0
+sha() {
+  shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+}
+
+if [ -d "$SCRIPTS_INSTALLED" ]; then
+  for src in "$SCRIPTS_REPO"/c1-*.sh "$SCRIPTS_REPO"/c3-*.sh "$SCRIPTS_REPO"/c5-*.sh \
+             "$SCRIPTS_REPO"/c6-*.sh "$SCRIPTS_REPO"/c7-*.sh "$SCRIPTS_REPO"/c8-*.sh \
+             "$SCRIPTS_REPO"/b0a-*.sh "$SCRIPTS_REPO"/b0b-*.sh \
+             "$SCRIPTS_REPO"/mode-detect.sh "$SCRIPTS_REPO"/colorset-codegen.sh \
+             "$SCRIPTS_REPO"/timing-report.sh "$SCRIPTS_REPO"/xcodeproj-add-files.sh; do
+    [ -f "$src" ] || continue
+    name=$(basename "$src")
+    dst="$SCRIPTS_INSTALLED/$name"
+    if [ -f "$dst" ]; then
+      if [ "$(sha "$src")" != "$(sha "$dst")" ]; then
+        DRIFT_COUNT=$((DRIFT_COUNT+1))
+        bad "$name: drift between repo and installed (repo updated, install.sh not re-run)"
+        hint "Repo: $src"
+        hint "Installed: $dst"
+      fi
+    fi
+  done
+fi
+
+if [ -d "$HOOKS_INSTALLED" ] && [ -d "$HOOKS_REPO" ]; then
+  for src in "$HOOKS_REPO"/*.sh; do
+    [ -f "$src" ] || continue
+    name=$(basename "$src")
+    dst="$HOOKS_INSTALLED/$name"
+    if [ -f "$dst" ]; then
+      if [ "$(sha "$src")" != "$(sha "$dst")" ]; then
+        DRIFT_COUNT=$((DRIFT_COUNT+1))
+        bad "hooks/$name: drift between repo and installed"
+        hint "Repo: $src"
+        hint "Installed: $dst"
+      fi
+    fi
+  done
+fi
+
+if [ "$DRIFT_COUNT" -eq 0 ]; then
+  ok "no drift detected — repo and installed copies match"
+else
+  hint "Fix all drift at once: scripts/install.sh --yes (re-runs the install loops)"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo
 TOTAL=$((PASS+FAIL))

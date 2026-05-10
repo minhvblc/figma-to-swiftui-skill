@@ -8,7 +8,8 @@
 # `figma-to-swiftui/references/ikxcodegen-bridge.md` §1.
 #
 # Detection rules:
-#   greenfield        — folder is empty (or has no .xcodeproj AND no Podfile)
+#   greenfield        — folder does not exist OR exists empty
+#                       (also accepts: no .xcodeproj AND no Podfile in folder)
 #   brownfield-ikame  — .xcodeproj + Podfile present AND Podfile contains
 #                       `pod 'IKCoreApp'`
 #   brownfield-vanilla — .xcodeproj + Podfile present, no IKCoreApp
@@ -23,14 +24,22 @@
 # Exit codes:
 #   0 — emitted one of the four mode strings
 #  64 — bad usage
-#  65 — target folder missing
 
 set -euo pipefail
 
 TARGET="${1:-$PWD}"
 
+# Non-existing folder = greenfield (caller will create it via ikxcodegen).
+# This matches ikxcodegen's "create new folder, refuse existing" semantics —
+# the canonical greenfield workflow is `cd <parent> && ikxcodegen <ProjectName>`
+# where <parent>/<ProjectName>/ does NOT yet exist.
+if [ ! -e "$TARGET" ]; then
+  echo "greenfield"
+  exit 0
+fi
+
 if [ ! -d "$TARGET" ]; then
-  echo "FAIL: target is not a directory: $TARGET" >&2
+  echo "FAIL: target exists but is not a directory: $TARGET" >&2
   exit 65
 fi
 

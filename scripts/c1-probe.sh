@@ -343,6 +343,23 @@ for src in PBXPROJ + XCCONFIG:
     if re.search(r"STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*YES", text):
         string_catalog_symbols = True
 
+# ── 11b. Greenfield Ikame defaults — when usesIKCoreApp but user code is empty ──
+# In greenfield mode (just-ran ikxcodegen, no user-defined enums yet), the
+# probes above return None for ikFontEnum / trackingEnumName / toastTypeEnum /
+# entitiesPath. But the bridge files reference these names. Subagents emit
+# code that references AppTracking.<case> or AppFont.<token>; without the
+# enums existing, compile fails.
+#
+# When usesIKCoreApp is true AND the corresponding probe returned None,
+# set the canonical Ikame default name. The skill's B0b/B0c phase auto-creates
+# skeleton enum files; subagents' emitted references then resolve.
+if uses_ik_core_app:
+    if ik_font_enum is None:
+        ik_font_enum = "AppFont"
+        # ik_font_cases stays empty — agent populates per-feature
+    # tracking_enum_name set later (it has independent grep)
+    # entities_path set later
+
 # ── 12. Ikame cascade flags + Entities + Tracking/Toast/NavItem captures ─
 uses_ikpopup = uses_ik_core_app \
     or grep_any(r"IKPopup\.shared\.showPopup", SWIFT_FILES) \
@@ -395,6 +412,12 @@ for candidate_root in candidate_roots:
         entities_prefix = Counter(prefixes).most_common(1)[0][0]
     break
 
+# Greenfield Ikame default: when usesIKCoreApp but no Entities folder exists,
+# default to "Entities" path so subagents have a place to escalate new app-wide
+# models to. Empty prefix (project decides) and empty sources (no buckets yet).
+if uses_ik_core_app and entities_path is None:
+    entities_path = "Entities"
+
 # Locate NavigationItem / AppRoute / MainRoute enum.
 navigation_item_enum_name = None
 navigation_item_path = None
@@ -424,6 +447,11 @@ for f in SWIFT_FILES:
         tracking_enum_path = os.path.relpath(f, project)
         break
 
+# Greenfield Ikame default: when usesIKCoreApp but no AppTracking enum,
+# default to "AppTracking" name. Subagent delta-requests will populate cases.
+if uses_ik_core_app and tracking_enum_name is None:
+    tracking_enum_name = "AppTracking"
+
 # Locate ToastSceenType / ToastScreenType / ToastType.
 toast_type_enum_name = None
 for f in SWIFT_FILES:
@@ -435,6 +463,10 @@ for f in SWIFT_FILES:
     if m:
         toast_type_enum_name = m.group(1)
         break
+
+# Greenfield Ikame default: ToastSceenType is the authenv2 convention.
+if uses_ik_core_app and toast_type_enum_name is None:
+    toast_type_enum_name = "ToastSceenType"
 
 # ── Assemble JSON ────────────────────────────────────────────────────────
 result = {
