@@ -186,6 +186,8 @@ fi
 XCASSETS=$(find "$PROJECT_ROOT" -maxdepth 4 -type d -name '*.xcassets' 2>/dev/null | head -1)
 
 PHASE_A_DONE_COUNT=0
+PHASE_A_WIP_COUNT=0
+PHASE_A_WIP_LIST=""
 SCREEN_TOTAL=0
 for DIR in "${SCREEN_DIRS[@]}"; do
   BASE=$(basename "$DIR")
@@ -195,9 +197,15 @@ for DIR in "${SCREEN_DIRS[@]}"; do
   MANIFEST="$DIR/manifest.json"
   [ ! -f "$MANIFEST" ] && continue
 
-  # Only enforce when Phase A actually ran. Pre-Phase-A caches are work-in-progress.
+  # WIP screens — manifest.json exists but phaseA isn't "done". Track them
+  # so the per-flow summary surfaces partial runs (was silently skipped via
+  # `continue` before).
   PHASE_A=$(jq -r '.phaseA // empty' "$MANIFEST" 2>/dev/null)
-  [ "$PHASE_A" != "done" ] && continue
+  if [ "$PHASE_A" != "done" ]; then
+    PHASE_A_WIP_COUNT=$((PHASE_A_WIP_COUNT+1))
+    PHASE_A_WIP_LIST+="$BASE (phaseA=${PHASE_A:-unset}), "
+    continue
+  fi
   PHASE_A_DONE_COUNT=$((PHASE_A_DONE_COUNT+1))
 
   PROBLEMS=""
@@ -267,6 +275,18 @@ if [ "$PHASE_A_DONE_COUNT" = "0" ]; then
   fi
   VIOLATIONS+="    - Run Phase A per screen: figma_build_registry + get_design_context + get_screenshot + figma_extract_tokens + figma_extract_fills + get_metadata, persist phaseA: \"done\"\n"
   VIOLATIONS+="    - Then Phase B: figma_export_assets_unified(autoDiscover: true) to populate Assets.xcassets, persist phaseB: \"done\"\n"
+fi
+
+# ── Partial-flow WIP surfacing (Gap F) ─────────────────────────────────────
+# Some screens have Phase A done, others are work-in-progress. Don't silently
+# accept stop — list the WIP screens so the user (and agent) sees the partial
+# state explicitly. This is a soft block: the user can decide to ship partial
+# or finish the WIP screens.
+if [ "$PHASE_A_DONE_COUNT" -gt 0 ] && [ "$PHASE_A_WIP_COUNT" -gt 0 ]; then
+  WIP_LIST_TRIMMED="${PHASE_A_WIP_LIST%, }"
+  VIOLATIONS+="  (flow-level)\n"
+  VIOLATIONS+="    - $PHASE_A_WIP_COUNT screen(s) in-progress (phaseA != \"done\"): $WIP_LIST_TRIMMED\n"
+  VIOLATIONS+="    - Finish Phase A for those screens or remove their cache dirs if no longer in scope\n"
 fi
 
 # ── 4. Project-wide C6 + C7 (run once, not per-screen) ─────────────────────────

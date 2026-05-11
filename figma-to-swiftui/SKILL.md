@@ -19,6 +19,8 @@ Turn Figma nodes into production SwiftUI with pixel-matching fidelity. **Three p
 
 The full SKILL.md below is comprehensive but long. For a fast pass before starting a task, use this index. Hooks enforce most rules automatically — you generally do not need to memorize them, just understand when each fires.
 
+> **Script path resolution.** Every `scripts/X.sh` shown below is `~/.claude/scripts/X.sh` when running from an iOS project (the cwd you actually work in). The repo-relative path is what the skill source uses; `scripts/install.sh` copies them to `~/.claude/scripts/` so they are reachable wherever you invoke the skill. `~/.claude/skills/figma-to-swiftui/references/` similarly holds the installed reference docs. When in doubt: `ls ~/.claude/scripts/`, or run `bash ~/.claude/scripts/doctor.sh`.
+
 **Decision flow at task start:**
 
 ```
@@ -198,16 +200,16 @@ Run-once-per-project. **If you skip Phase 0, you will write Swift into a folder 
 ### Step 0.1 — Mode detection (always runs)
 
 ```bash
-bash scripts/mode-detect.sh <projectFolder> --write-cache
+bash ~/.claude/scripts/mode-detect.sh <projectFolder> --write-cache
 ```
 
-Writes `.figma-cache/_shared/mode.json`. The hook checks for this file's presence before allowing any `*.swift` Write/Edit. Four possible outcomes:
+Writes `<projectFolder>/.figma-cache/_shared/mode.json`. The mode-gate hook checks for this file's presence before allowing any `*.swift` Write/Edit. Four possible outcomes:
 
 | mode | What it means | Required follow-up |
 |---|---|---|
-| `greenfield-ikame` | Empty folder + `ikxcodegen` on PATH (Ikame fleet detected) | **ASK USER** (one-line Y/n): *"Detected Ikame fleet (ikxcodegen on PATH). Scaffold via ikxcodegen? [Y/n]"*. On Y/default → `bash scripts/ikxcodegen-scaffold.sh <ProjectName>`. On n → fall through to vanilla. |
-| `greenfield-vanilla` | Empty folder, no `ikxcodegen` (or user opted out) | `bash scripts/vanilla-scaffold.sh <ProjectName>` |
-| `brownfield-ikame` | Existing project with `pod 'IKCoreApp'` (or any `import IKCoreApp`) | No scaffold needed. Load Ikame conventions per `references/ikame-decision-table.md`. |
+| `greenfield-ikame` | Empty folder + `ikxcodegen` on PATH (Ikame fleet detected) | **ASK USER** (one-line Y/n): *"Detected Ikame fleet (ikxcodegen on PATH). Scaffold via ikxcodegen? [Y/n]"*. On Y/default → `bash ~/.claude/scripts/ikxcodegen-scaffold.sh <ProjectName>`. On n → fall through to vanilla. |
+| `greenfield-vanilla` | Empty folder, no `ikxcodegen` (or user opted out) | `bash ~/.claude/scripts/vanilla-scaffold.sh <ProjectName>` |
+| `brownfield-ikame` | Existing project with `pod 'IKCoreApp'` (or any `import IKCoreApp`) | No scaffold needed. Load Ikame conventions per `~/.claude/skills/figma-to-swiftui/references/ikame-decision-table.md`. |
 | `brownfield-vanilla` | Existing project, no Ikame umbrella | No scaffold needed. Load vanilla conventions. |
 | `ambiguous` | Mixed signals / partial scaffold | **STOP.** Ask user before scaffolding over existing files. When OK'd, persist `userConfirmed: true` into `mode.json` (`jq '. + {userConfirmed: true}' mode.json > tmp && mv tmp mode.json`). |
 
