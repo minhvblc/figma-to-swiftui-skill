@@ -191,6 +191,53 @@ See `references/source-document.md`.
 
 ---
 
+# Phase 0 — Pre-flight (MANDATORY before any Phase A work)
+
+Run-once-per-project. **If you skip Phase 0, you will write Swift into a folder that has no scaffolded project, the `figma-to-swiftui-mode-gate.sh` hook will block your first Write, and you will have to come back to Phase 0 anyway. Do it first.**
+
+### Step 0.1 — Mode detection (always runs)
+
+```bash
+bash scripts/mode-detect.sh <projectFolder> --write-cache
+```
+
+Writes `.figma-cache/_shared/mode.json`. The hook checks for this file's presence before allowing any `*.swift` Write/Edit. Four possible outcomes:
+
+| mode | What it means | Required follow-up |
+|---|---|---|
+| `greenfield-ikame` | Empty folder + `ikxcodegen` on PATH (Ikame fleet detected) | **ASK USER** (one-line Y/n): *"Detected Ikame fleet (ikxcodegen on PATH). Scaffold via ikxcodegen? [Y/n]"*. On Y/default → `bash scripts/ikxcodegen-scaffold.sh <ProjectName>`. On n → fall through to vanilla. |
+| `greenfield-vanilla` | Empty folder, no `ikxcodegen` (or user opted out) | `bash scripts/vanilla-scaffold.sh <ProjectName>` |
+| `brownfield-ikame` | Existing project with `pod 'IKCoreApp'` (or any `import IKCoreApp`) | No scaffold needed. Load Ikame conventions per `references/ikame-decision-table.md`. |
+| `brownfield-vanilla` | Existing project, no Ikame umbrella | No scaffold needed. Load vanilla conventions. |
+| `ambiguous` | Mixed signals / partial scaffold | **STOP.** Ask user before scaffolding over existing files. When OK'd, persist `userConfirmed: true` into `mode.json` (`jq '. + {userConfirmed: true}' mode.json > tmp && mv tmp mode.json`). |
+
+**Banned at this step:** generating raw `.xcodeproj` / `Project.yml` for a greenfield Ikame run (the `mode-gate` hook also enforces this — if mode is `greenfield-ikame` and no `.xcodeproj` exists when Phase A is already done, Swift writes are blocked until scaffold runs).
+
+### Step 0.2 — C5 Engine probe (deferred to C5 start, but check Xcode is running NOW so you don't get blocked later)
+
+The deterministic Engine A vs Engine B selection happens at C5 start via `scripts/c5-engine-select.sh`. On the Xcode 26+ baseline (the fleet default), Engine A (`mcp__xcode__BuildProject` + `RenderPreview`) requires **Xcode app to be running with the target project open**. If Xcode is not running by the time Phase C reaches C5, the selector falls back to Engine B and the `engine-gate` hook flags it. Open Xcode now:
+
+```bash
+open -a Xcode <projectFolder>/<ProjectName>.xcworkspace  # or .xcodeproj if no workspace
+```
+
+This is a soft hint — the hook only blocks raw `xcodebuild`/`simctl` at C5 time, not in Phase 0.
+
+### Step 0.3 — Verify the figma-to-swiftui MCP stack is connected
+
+Per the [Prerequisites](#prerequisites) section above, run the connection check on `figma-desktop` AND `figma-assets` (MCPFigma). If either is missing, STOP — do not improvise with a substitute MCP. The skill *cannot* run with one MCP.
+
+### Phase 0 exit gate
+
+When all three steps complete, you have:
+- `.figma-cache/_shared/mode.json` with mode + optional `userChose` / `userConfirmed`
+- A scaffolded project (greenfield) OR an existing project (brownfield) — both confirmed by the presence of `*.xcodeproj`
+- Both Figma MCPs verified responding
+
+Only then proceed to Phase A.
+
+---
+
 # Phase A — Discover & Spec
 
 Goal: a complete design specification in the cache. **No asset downloads in this phase.**

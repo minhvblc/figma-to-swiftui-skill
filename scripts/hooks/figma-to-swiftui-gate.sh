@@ -51,7 +51,7 @@ case "$FILE_PATH" in
   *_NoFigma_*) exit 0 ;;
 esac
 
-# Walk up looking for .figma-cache. If none, this is not a figma task — allow.
+# Walk up looking for .figma-cache.
 DIR=$(dirname "$FILE_PATH" 2>/dev/null || echo "")
 CACHE_ROOT=""
 while [ -n "$DIR" ] && [ "$DIR" != "/" ]; do
@@ -66,8 +66,71 @@ if [ -z "$CACHE_ROOT" ] && [ -d "$PWD/.figma-cache" ]; then
   CACHE_ROOT="$PWD/.figma-cache"
 fi
 
+# Cache missing → before allowing, ask the shared probe whether this is a
+# figma task by any other signal (transcript skill invocation / Figma MCP
+# tool call / user message mentioning "figma"). If yes, BLOCK — the agent
+# is about to write Swift in a figma task without running Phase A.
 if [ -z "$CACHE_ROOT" ]; then
-  exit 0
+  PROBE="$(dirname "$0")/_figma-task-probe.sh"
+  IS_FIGMA="no"
+  if [ -x "$PROBE" ]; then
+    IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
+  fi
+  if [ "$IS_FIGMA" != "yes" ]; then
+    exit 0
+  fi
+  # Figma task detected (transcript/user-message signal) but no Phase A
+  # artifacts on disk yet. Block with the Phase 0 + Phase A + Phase B
+  # checklist verbatim — this is the chicken-and-egg failure mode the
+  # probe exists to close.
+  {
+    echo "BLOCKED: figma task detected (transcript / user message mentions Figma) but no Phase A artifacts on disk."
+    echo ""
+    echo "You're about to Write a .swift file BEFORE running the figma-to-swiftui workflow. Do Phase 0 → Phase A → Phase B FIRST."
+    echo ""
+    echo "PHASE 0 (pre-flight, run once per project):"
+    echo "  bash scripts/mode-detect.sh <projectFolder> --write-cache"
+    echo "    → greenfield-ikame: ASK USER \"Scaffold via ikxcodegen? [Y/n]\", then"
+    echo "        bash scripts/ikxcodegen-scaffold.sh <ProjectName>"
+    echo "    → greenfield-vanilla: bash scripts/vanilla-scaffold.sh <ProjectName>"
+    echo "    → brownfield-*: no scaffold; proceed to Phase A"
+    echo "    → ambiguous: STOP, ask user, then set mode.json.userConfirmed = true"
+    echo ""
+    echo "PHASE A per screen (mandatory before any .swift Write):"
+    echo "  1. mcp__figma-assets__figma_build_registry(fileKey, rootNodeId, depth=10)"
+    echo "     → .figma-cache/<nodeId>/registry.json"
+    echo "  2. mcp__figma-desktop__get_design_context(fileKey, nodeId)"
+    echo "     → .figma-cache/<nodeId>/design-context.md"
+    echo "  3. mcp__figma-desktop__get_screenshot(fileKey, nodeId, scale=3)"
+    echo "     → .figma-cache/<nodeId>/screenshot.png + sips -Z 2000 screenshot-cmp.png"
+    echo "  4. mcp__figma-assets__figma_extract_tokens(fileKey)"
+    echo "     → .figma-cache/_shared/tokens.json"
+    echo "  5. mcp__figma-assets__figma_extract_fills(fileKey, nodeId, depth=10)"
+    echo "     → .figma-cache/<nodeId>/fills.json"
+    echo "  6. mcp__figma-desktop__get_metadata(fileKey, nodeId)"
+    echo "     → .figma-cache/<nodeId>/metadata.json"
+    echo "  7. Persist .figma-cache/<nodeId>/manifest.json with phaseA: \"done\""
+    echo ""
+    echo "PHASE B per screen (asset export, mandatory before any .swift Write):"
+    echo "  mcp__figma-assets__figma_export_assets_unified("
+    echo "    fileKey, nodeId, outputDir, sharedAssetsDir,"
+    echo "    assetCatalogPath: \"<project>/Resources/Assets.xcassets\","
+    echo "    autoDiscover: true)"
+    echo "  → Every eIC*/eImage* in the screen subtree exports to xcassets."
+    echo "  → Persist manifest.phaseB: \"done\" + rows[]: [...]"
+    echo ""
+    echo "ABSOLUTE RULE — every icon/logo/illustration in the generated Swift"
+    echo "code MUST trace to a Figma node exported via figma_export_assets_unified."
+    echo "SF Symbols (Image(systemName:)), hand-drawn Shape/Path, Text(\"G\") for"
+    echo "logos, or any \"simplified\" substitute are BANNED. Missing asset → STOP"
+    echo "and re-fetch from Figma, never improvise."
+    echo ""
+    echo "If this is NOT a figma task (probe false-positive — e.g. user mentioned"
+    echo "Figma in passing but the current request is unrelated), bypass per-file:"
+    echo "  place the file under a path containing _NoFigma_ (e.g."
+    echo "  $(dirname "$FILE_PATH")/_NoFigma_/$(basename "$FILE_PATH"))."
+  } >&2
+  exit 2
 fi
 
 # Iterate every screen-cache subdirectory (excluding _shared) and check artifacts.
@@ -75,9 +138,49 @@ shopt -s nullglob
 SCREEN_DIRS=( "$CACHE_ROOT"/*/ )
 shopt -u nullglob
 
-# No screen subdirs → cache empty, treat as not-a-figma-task. Allow.
-if [ ${#SCREEN_DIRS[@]} -eq 0 ]; then
-  exit 0
+# Count real screen dirs (excluding _shared).
+SCREEN_COUNT=0
+for D in "${SCREEN_DIRS[@]}"; do
+  BASE=$(basename "$D")
+  [ "$BASE" = "_shared" ] && continue
+  SCREEN_COUNT=$((SCREEN_COUNT+1))
+done
+
+# No screen subdirs → cache only contains _shared (mode-detect ran but
+# Phase A never started). Previously this was "treat as not-a-figma-task,
+# allow" — but that's the failure mode the probe exists to close. When
+# the probe sees a figma session, block with the Phase A checklist.
+if [ "$SCREEN_COUNT" = "0" ]; then
+  PROBE="$(dirname "$0")/_figma-task-probe.sh"
+  IS_FIGMA="no"
+  if [ -x "$PROBE" ]; then
+    IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
+  fi
+  if [ "$IS_FIGMA" != "yes" ]; then
+    exit 0
+  fi
+  {
+    echo "BLOCKED: figma task with .figma-cache/ but no screen-level Phase A artifacts."
+    echo ""
+    echo "$CACHE_ROOT/ exists (Phase 0 mode-detect ran), but no <nodeId>/ subdir"
+    echo "has run Phase A. You cannot Write Swift yet — every visible icon must"
+    echo "trace to a Figma node and that requires Phase A first."
+    echo ""
+    echo "Run Phase A per screen:"
+    echo "  1. figma_build_registry → registry.json"
+    echo "  2. get_design_context   → design-context.md"
+    echo "  3. get_screenshot       → screenshot.png"
+    echo "  4. figma_extract_tokens → _shared/tokens.json"
+    echo "  5. figma_extract_fills  → fills.json"
+    echo "  6. get_metadata         → metadata.json"
+    echo "  7. Persist manifest.json (phaseA: \"done\")"
+    echo ""
+    echo "Then Phase B (figma_export_assets_unified with autoDiscover: true)"
+    echo "to export every eIC*/eImage* into Assets.xcassets."
+    echo ""
+    echo "Cache root: $CACHE_ROOT"
+  } >&2
+  exit 2
 fi
 
 FAILED=""

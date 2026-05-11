@@ -36,7 +36,7 @@ case "$FILE_PATH" in
   *_NoFigma_*) exit 0 ;;
 esac
 
-# Walk up looking for .figma-cache. If absent, this isn't a figma task — allow.
+# Walk up looking for .figma-cache.
 DIR=$(dirname "$FILE_PATH" 2>/dev/null || echo "")
 CACHE_ROOT=""
 while [ -n "$DIR" ] && [ "$DIR" != "/" ]; do
@@ -51,7 +51,22 @@ if [ -z "$CACHE_ROOT" ] && [ -d "$PWD/.figma-cache" ]; then
   CACHE_ROOT="$PWD/.figma-cache"
 fi
 
-[ -z "$CACHE_ROOT" ] && exit 0
+# Cache missing → ask probe whether this is a figma task by any other signal.
+# If yes, fabricate the expected mode.json path so the "missing" branch fires
+# below with the right guidance. If no, exit 0 (non-figma session).
+if [ -z "$CACHE_ROOT" ]; then
+  PROBE="$(dirname "$0")/_figma-task-probe.sh"
+  IS_FIGMA="no"
+  if [ -x "$PROBE" ]; then
+    IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
+  fi
+  [ "$IS_FIGMA" != "yes" ] && exit 0
+  # Synthesize an expected cache path so the message below points to where
+  # mode-detect should write. Use the project root inferred from FILE_PATH
+  # (parent of "<project>/Screens/<Name>/<Name>Screen.swift" etc.) — walk
+  # up 4 levels max, prefer the dir directly under $PWD if reachable.
+  CACHE_ROOT="$PWD/.figma-cache"
+fi
 
 MODE_JSON="$CACHE_ROOT/_shared/mode.json"
 

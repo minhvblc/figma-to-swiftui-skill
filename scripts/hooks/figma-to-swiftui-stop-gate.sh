@@ -29,6 +29,12 @@
 
 set -uo pipefail
 
+# Read hook payload from stdin.
+PAYLOAD=""
+if ! [ -t 0 ]; then
+  PAYLOAD=$(cat 2>/dev/null || true)
+fi
+
 # Locate cache root (walk up 6 levels).
 CACHE_ROOT=""
 D="$PWD"
@@ -42,32 +48,54 @@ for _ in 1 2 3 4 5 6; do
   D="$PARENT"
 done
 
-# Not a figma task → allow stop.
-[ -z "$CACHE_ROOT" ] && exit 0
-
-# ── Session-aware bypass ─────────────────────────────────────────────────────
-# A leftover .figma-cache/ from a prior session should not block unrelated
-# future tasks (xcstrings translate, refactors, debugging, etc.). Read the
-# Stop hook payload from stdin and look at the live transcript: if the
-# current session has not invoked the figma-to-swiftui workflow (skill or
-# Figma MCP tools), allow stop.
-PAYLOAD=""
-if ! [ -t 0 ]; then
-  PAYLOAD=$(cat 2>/dev/null || true)
+# ── Session-aware detection ──────────────────────────────────────────────────
+# Use the shared probe (transcript figma signal / user message / cache).
+# Two outcomes:
+#   IS_FIGMA == "yes" AND no cache → block stop, agent skipped Phase A entirely
+#   IS_FIGMA == "no"  AND no cache → not a figma task, allow stop
+PROBE="$(dirname "$0")/_figma-task-probe.sh"
+IS_FIGMA="no"
+if [ -x "$PROBE" ]; then
+  IS_FIGMA=$(printf '%s' "$PAYLOAD" | "$PROBE" 2>/dev/null || echo "no")
 fi
-TRANSCRIPT_PATH=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null || true)
 
-if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
-  # Match real workflow activity in tool_use blocks:
-  #   - Skill calls for figma-to-swiftui / figma-flow-to-swiftui-feature
-  #   - MCP tool calls whose name contains "figma" (Figma desktop, plugin,
-  #     figma-assets servers, etc.)
-  #   - Direct figma-assets tool calls (figma_extract_tokens,
-  #     figma_export_assets[_unified], figma_build_registry)
-  FIGMA_SIGNAL='"skill":[[:space:]]*"figma-to-swiftui|"skill":[[:space:]]*"figma-flow-to-swiftui-feature|"name":[[:space:]]*"mcp__[A-Za-z0-9_]*[Ff]igma|"name":[[:space:]]*"figma_(extract_tokens|export_assets|export_assets_unified|build_registry)'
-  if ! grep -qE "$FIGMA_SIGNAL" "$TRANSCRIPT_PATH" 2>/dev/null; then
+if [ -z "$CACHE_ROOT" ]; then
+  if [ "$IS_FIGMA" != "yes" ]; then
     exit 0
   fi
+  # Figma task per probe but no .figma-cache/ on disk → agent attempted
+  # the run without Phase A at all. This is the failure mode the user
+  # reported ("skill không tôn trọng Figma, MCP không chạy"). Block.
+  {
+    echo "Done-Gate violated: figma task detected (transcript/user message"
+    echo "mentions Figma) but no .figma-cache/ on disk — Phase A was never"
+    echo "run. The skill does not respect Figma when this happens."
+    echo ""
+    echo "Required to declare done (minimum):"
+    echo "  Phase 0  scripts/mode-detect.sh <projectFolder> --write-cache"
+    echo "             greenfield-ikame → scripts/ikxcodegen-scaffold.sh"
+    echo "             greenfield-vanilla → scripts/vanilla-scaffold.sh"
+    echo "  Phase A  per screen: figma_build_registry + get_design_context"
+    echo "             + get_screenshot + figma_extract_tokens"
+    echo "             + figma_extract_fills + get_metadata"
+    echo "             + manifest.phaseA = \"done\""
+    echo "  Phase B  per screen: figma_export_assets_unified(autoDiscover: true)"
+    echo "             → every eIC*/eImage* exported into Assets.xcassets"
+    echo "             + manifest.phaseB = \"done\""
+    echo "  Phase C  self-check passes (Pass 2/3/3b/4/5) + C5 build + render"
+    echo "             + C5.6 side-by-side visual diff per screen"
+    echo "             + manifest.verification.c5.gate = \"PASS\""
+    echo ""
+    echo "If this run is NOT actually a figma task (probe false positive),"
+    echo "use a .swift path containing _NoFigma_ — that bypasses the gates."
+  } >&2
+  exit 2
+fi
+
+# Cache exists — apply original session-aware bypass: if probe says no
+# (cache is leftover from a prior unrelated session), allow stop.
+if [ "$IS_FIGMA" != "yes" ]; then
+  exit 0
 fi
 
 PROJECT_ROOT=$(dirname "$CACHE_ROOT")
@@ -157,9 +185,12 @@ fi
 # Locate xcassets — first hit under PROJECT_ROOT (max 4 levels).
 XCASSETS=$(find "$PROJECT_ROOT" -maxdepth 4 -type d -name '*.xcassets' 2>/dev/null | head -1)
 
+PHASE_A_DONE_COUNT=0
+SCREEN_TOTAL=0
 for DIR in "${SCREEN_DIRS[@]}"; do
   BASE=$(basename "$DIR")
   [ "$BASE" = "_shared" ] && continue
+  SCREEN_TOTAL=$((SCREEN_TOTAL+1))
 
   MANIFEST="$DIR/manifest.json"
   [ ! -f "$MANIFEST" ] && continue
@@ -167,6 +198,7 @@ for DIR in "${SCREEN_DIRS[@]}"; do
   # Only enforce when Phase A actually ran. Pre-Phase-A caches are work-in-progress.
   PHASE_A=$(jq -r '.phaseA // empty' "$MANIFEST" 2>/dev/null)
   [ "$PHASE_A" != "done" ] && continue
+  PHASE_A_DONE_COUNT=$((PHASE_A_DONE_COUNT+1))
 
   PROBLEMS=""
 
@@ -220,6 +252,22 @@ for DIR in "${SCREEN_DIRS[@]}"; do
     VIOLATIONS+="  $BASE/\n${PROBLEMS}"
   fi
 done
+
+# ── Global Phase A coverage check ───────────────────────────────────────────
+# If this is a figma task (probe yes) but NO screen has Phase A done, the
+# agent never actually ran Phase A on disk — even though the cache directory
+# exists. Surface this distinctly because the per-screen loop skips silently
+# in that case (continue when phaseA != "done").
+if [ "$PHASE_A_DONE_COUNT" = "0" ]; then
+  VIOLATIONS+="  (flow-level)\n"
+  if [ "$SCREEN_TOTAL" = "0" ]; then
+    VIOLATIONS+="    - No screen-cache directories under $CACHE_ROOT/ (Phase A never started for any screen)\n"
+  else
+    VIOLATIONS+="    - $SCREEN_TOTAL screen-cache dir(s) found but ZERO have manifest.phaseA = \"done\"\n"
+  fi
+  VIOLATIONS+="    - Run Phase A per screen: figma_build_registry + get_design_context + get_screenshot + figma_extract_tokens + figma_extract_fills + get_metadata, persist phaseA: \"done\"\n"
+  VIOLATIONS+="    - Then Phase B: figma_export_assets_unified(autoDiscover: true) to populate Assets.xcassets, persist phaseB: \"done\"\n"
+fi
 
 # ── 4. Project-wide C6 + C7 (run once, not per-screen) ─────────────────────────
 PROJECT_PROBLEMS=""
