@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ikxcodegen-wrap.sh — wraps `ikxcodegen` to auto-fix the 2 system-level
-# friction points discovered during real-run testing (see
-# /tmp/figma-skill-test-v2/ANALYSIS-V2.md §5):
+# friction points discovered during real-run testing (full rationale +
+# call-site contract: figma-to-swiftui/references/ikxcodegen-bridge.md §3):
 #
 #   1. CocoaPods + Ruby 4 unicode bug ("Encoding::CompatibilityError") —
 #      `pod install` fails when LANG is not UTF-8. Wrap sets

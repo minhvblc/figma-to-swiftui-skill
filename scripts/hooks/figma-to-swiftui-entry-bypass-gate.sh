@@ -129,6 +129,13 @@ if [ -z "$VIOLATIONS" ]; then
   exit 0
 fi
 
+# Escape: if the agent already added the legitimate-flow-state marker anywhere
+# in the new content, allow silently. Check BEFORE emitting the BLOCKED block
+# so the agent doesn't see a misleading "BLOCKED ... allowing" sequence.
+if grep -q 'figma-entry-bypass-gate: legitimate-flow-state' "$TMP" 2>/dev/null; then
+  exit 0
+fi
+
 {
   echo "BLOCKED: figma-to-swiftui entry-path bypass detector"
   echo ""
@@ -161,11 +168,5 @@ fi
   echo "on the same line as the assignment, OR include the segment '_NoFigma_' in"
   echo "the file path. Both bypass this hook by design."
 } >&2
-
-# Final escape: if the agent already added the legitimate-flow-state marker
-# anywhere in the new content, allow.
-if grep -q 'figma-entry-bypass-gate: legitimate-flow-state' "$TMP" 2>/dev/null; then
-  exit 0
-fi
 
 exit 2

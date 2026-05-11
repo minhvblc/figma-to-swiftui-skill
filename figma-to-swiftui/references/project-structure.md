@@ -304,3 +304,52 @@ Action handler functions should start with a domain-specific verb. C8-vm-pattern
 The gate prints `GATE: SKIP (flat layout)` and exits 0. §4 naming rules still apply via inline grep checks in C3 Pass 1.
 
 Output (all branches): `GATE: PASS` or `GATE: FAIL: <reason>` — exit code matches.
+
+---
+
+## §8. Registering generated files in `.xcodeproj`
+
+After Phase C writes Swift / asset files to disk, Xcode needs to see them as members of the target. Two cases — driven by the project's `.xcodeproj` shape, NOT by the skill:
+
+### Xcode 16+ synchronized folders (default for ikxcodegen output)
+
+Modern projects use `PBXFileSystemSynchronizedRootGroup`. Files placed on disk under the target's source folder are **auto-included** in the target by Xcode — no `pbxproj` edit needed. The skill writes files via `Write` / `Edit` and Xcode picks them up on next open / build.
+
+Detection: grep `pbxproj` for `PBXFileSystemSynchronizedRootGroup`. Present → skip §8 entirely.
+
+### Pre-Xcode-16 projects (PBXGroup-style file lists)
+
+Legacy projects use explicit file references inside `PBXGroup` and `PBXSourcesBuildPhase`. Writing a `.swift` file to disk does NOT add it to the build — the project file must be edited too. For these projects the skill calls `scripts/xcodeproj-add-files.sh`:
+
+```bash
+scripts/xcodeproj-add-files.sh \
+  --project   <abs-path>/<Name>.xcodeproj \
+  --target    <TargetName> \
+  --files     "<space-separated absolute paths to new Swift / asset files>" \
+  [--src-root <abs-path-to-target-src-folder>] \
+  [--dry-run]
+```
+
+The script uses the Ruby `xcodeproj` gem (1.27+, bundled with CocoaPods or installed via `gem install --user-install xcodeproj`). It:
+
+1. Auto-detects synchronized-folder mode and exits as no-op (idempotent).
+2. Else derives group hierarchy from `<file path> - <src-root>` so the new file lands in the right group tree.
+3. Routes by extension:
+   - `*.swift` → `PBXSourcesBuildPhase`
+   - `*.xcassets`, `*.bundle` → `PBXResourcesBuildPhase` (folder reference)
+   - `*.plist`, `*.xcconfig`, `*.json`, `*.md`, `*.yaml` → file reference only, no build phase
+
+**Exit codes:**
+- `0` — all files added (or already present — script is idempotent)
+- `1` — Ruby gem missing AND auto-install failed → surface to user
+- `64` — bad usage
+- `65` — project / target not found
+
+**When the skill calls this script:**
+
+- After `Phase C4 — Copy Assets to Project` AND the project's `pbxproj` lacks `PBXFileSystemSynchronizedRootGroup`. Surface `--dry-run` output to user once before applying for the first time per session.
+- Greenfield via `ikxcodegen` → the produced project is Xcode 16+ synchronized → script is a no-op. Run anyway as a sanity confirmation.
+- Brownfield Ikame on an older project (Xcode 14 / 15 import) → script does the real work.
+- Vanilla SwiftUI projects post-Xcode 16 → typically no-op.
+
+**Banned:** hand-editing `pbxproj` to add file references. The format is fragile (UUID stability, build-phase ordering, group nesting); use the script. If the script fails on a project the user maintains by hand, surface the failure and ask — do NOT improvise a `sed` patch.

@@ -229,6 +229,33 @@ Button(action: tapped) {
 
 ---
 
+## Escape hatches (when an enforcement hook is wrong for your case)
+
+Every hook ships with one or two opt-out paths so legitimate edge cases don't get hard-blocked. Use them sparingly — each one defeats a rule that exists for a reason — and always include the explanation comment on the same line OR the line immediately above so a code reviewer can see WHY.
+
+| Hook | Trigger | Escape | When to use |
+|---|---|---|---|
+| `figma-to-swiftui-gate.sh` (PreToolUse, Phase A/B coverage) | Block `.swift` Write when manifest / design-context / screenshot / tokens / registry incomplete for any cached screen | Path segment `_NoFigma_` (e.g. `App/_NoFigma_/NetworkClient.swift`) | The file is non-UI scaffolding unrelated to Figma — networking, persistence, AppDelegate hooks. Not for view code. |
+| `figma-to-swiftui-banned-pattern-gate.sh` (PreToolUse, content) | `Image(systemName:)` outside chevron / share / xmark / keyboard allow-list | `// allow-systemName: <reason>` on same line or line above | Legitimate iOS-system glyph (ShareLink button, search-field clear icon). Never for a Figma-designed icon. |
+| same hook | Text in fill-width container needs `.frame(maxWidth: .infinity)` AT THE TEXT | `// allow-text-fill: <reason>` | Rare — when parent stack is non-Button AND a sibling forces the row to width: .infinity. Better: move maxWidth to the outer container. Never to defeat a Button bloat. |
+| same hook | `.frame(width: <num>)` on Text | `// Figma fixed-width: <reason>` | Figma's `primaryAxisSizingMode === FIXED` on the Text node. Note the exact Figma size in the reason. |
+| same hook | Screen-root `.padding(.top, 44\|47\|59\|64\|67\|79\|88)` | `// safe-area-adjusted: raw=<y>, inset=<n>, adjusted=<y-n>` | Math IS correct (not a double-count). Comment shows the calculation. |
+| same hook | `.cornerRadius` / `clipShape(.rect(cornerRadius:))` ≥ 30pt | `// allow-screen-corner-radius: <reason>` | Presented sheet card / inner hero card whose Figma node legitimately specifies radius ≥ 30pt. NEVER on the screen root (that's the bezel). |
+| `figma-to-swiftui-entry-bypass-gate.sh` (PreToolUse, App/Root/ContentView entry surface) | `initialStep` / `currentStep` / `VERIFY_ROUTE` / `#if DEBUG` deep-link parser | `// figma-entry-bypass-gate: legitimate-flow-state` on the assignment line, OR `_NoFigma_` segment | Real onboarding state init that just happens to look like a verification jump. Never to make C5 reachable for screenshot purposes. |
+| `figma-to-swiftui-c8-gate.sh` (PostToolUse) | Path / naming / ViewModel pattern / function length / IK* violations | None — fix the file | C8 gates have no escape by design. If the project genuinely doesn't follow C1's detected convention, fix `c1-conventions.json` (re-run `c1-probe.sh`), don't try to dodge per-file. |
+| `figma-to-swiftui-pass2-gate.sh` (PostToolUse on `c3-pass2-diff.md`) | Pass 2 report structure / weasel words / counter | None — fix the report | Same — diff-report quality has no shortcut. |
+| `figma-to-swiftui-stop-gate.sh` (Stop) | Phase B not done / C5 not satisfied / C6/C7/C8 fail | `manifest.verification.c5.skipped` set to one of `no_project`, `simctl_error`, `ci_environment`, `no_entry_path` (auto-detected — user phrases like "skip C5" do NOT bypass) | One of four genuine system reasons. Never set manually to dodge — the gate re-verifies the underlying condition (e.g. `no_project` requires no `.xcodeproj` walking up 3 levels). |
+
+**Comment-form rules.** Every comment-style escape (`// allow-…`, `// Figma fixed-width:`, `// safe-area-adjusted:`, `// figma-entry-bypass-gate:`) must:
+- Live on the SAME line as the modifier OR the line directly above it (no further). The hook's grep window is `lineno` and `lineno - 1`.
+- Carry a real reason in the freeform tail. `// allow-systemName: needed` is not enough — write `// allow-systemName: ShareLink default icon` so review sees the WHY.
+
+**Path-form rule.** The `_NoFigma_` token requires the surrounding underscores literally (the shell match is `case "$FILE_PATH" in *_NoFigma_*`). `MyNoFigmaView.swift` does NOT match. Preferred form is a path component: `<Target>/_NoFigma_/Network/Client.swift`. A basename also matches if you write the underscores explicitly (e.g. `_NoFigma_NetworkClient.swift`), but the folder form is clearer to readers.
+
+**STOP-line:** the moment an escape hatch becomes your default tool, you've drifted into the failure mode the hook exists to prevent. Re-read the corresponding §1–§12 entry and fix the real cause instead.
+
+---
+
 ## Failure-mode self-check (read at the end of every run)
 
 Before you write the Verification summary, scan your draft for these phrases. If you find any, you have NOT finished the run — you have a failed run with a footnote:

@@ -103,9 +103,20 @@ OPTIONS:
 
 ### Skill invocation (greenfield path)
 
-The skill calls `ikxcodegen` exactly once per run. Arguments are derived from input:
+**Preferred entry:** call `scripts/ikxcodegen-wrap.sh` instead of `ikxcodegen` directly. The wrapper is a drop-in replacement that auto-fixes two friction points observed in real runs:
 
-| Skill input | CLI flag |
+1. **CocoaPods + Ruby 4 unicode bug** (`Encoding::CompatibilityError` when `pod install` sees a non-UTF-8 `LANG`). The wrap sets `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8` in the subshell.
+2. **`Copy InfoPlist` Run Script fails when `GOOGLE_SERVICE_INFO_NAME` is unset.** ikxcodegen ships the xcconfig files but doesn't wire them as the Configuration's xcconfig source, so the variable resolves to empty at build time. The wrap patches build settings to point at `GoogleService-Info-Firebase.plist` (dev) by default.
+
+The wrap accepts every flag `ikxcodegen` accepts and adds one extra:
+
+| New flag | Effect |
+|---|---|
+| `--google-plist <filename>` | Sets `GOOGLE_SERVICE_INFO_NAME` in build settings. Default `GoogleService-Info-Firebase.plist` (dev). Pass `GoogleService-Info-Appstore.plist` for production-config builds. |
+
+Arguments are derived from input:
+
+| Skill input | CLI flag (passes through to `ikxcodegen`) |
 |---|---|
 | Project name (from user prompt or feature-spec) | positional `<project-name>` (PascalCase coerced) |
 | Bundle ID (when user specifies) | `--bundle-id` (else default Ikame bundle prefix) |
@@ -113,11 +124,31 @@ The skill calls `ikxcodegen` exactly once per run. Arguments are derived from in
 | `--skip-pods` | only when offline OR user explicitly requested. Default: pods install. |
 
 ```bash
+# Recommended — auto-fixes LANG + GOOGLE_SERVICE_INFO_NAME
+scripts/ikxcodegen-wrap.sh MyAuthApp \
+  --bundle-id com.ikameglobal.myauthapp \
+  --output ./MyAuthApp \
+  --verbose
+
+# Raw form — only when wrap is unavailable, e.g. a sandboxed shell or the
+# wrap script has not been installed yet (re-run scripts/install.sh).
 ikxcodegen MyAuthApp \
   --bundle-id com.ikameglobal.myauthapp \
   --output ./MyAuthApp \
   --verbose
 ```
+
+**When to NOT use the wrap:**
+- `pod install` will be skipped (`--skip-pods` or offline) AND the agent will manually wire xcconfigs to the build configurations themselves. Then `ikxcodegen` raw is fine.
+- Project doesn't use the Firebase config flow (rare in Ikame).
+
+**Wrap exit codes** (distinct from raw `ikxcodegen`):
+- `0` — scaffold + pod install succeeded; build settings patched
+- `1` — ikxcodegen itself failed
+- `2` — pod install failed even with LANG fix → surface verbatim, do NOT retry
+- `3` — build settings patch failed (project file format unexpected — likely ikxcodegen template changed) → surface and ask user
+- `64` — bad usage
+- `65` — `ikxcodegen` not on PATH (see §2 install)
 
 After successful exit:
 - `<output>/<ProjectName>.xcodeproj` exists

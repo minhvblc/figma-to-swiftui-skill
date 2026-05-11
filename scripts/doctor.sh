@@ -190,12 +190,66 @@ else
   esac
 fi
 
-# ── 5. figma-desktop MCP registered (with substitute detection) ───────────────
+# ── 5. figma-desktop MCP — runtime probe + config check ──────────────────────
+# Two ways to install figma-desktop MCP:
+#   (a) Runtime auto-discovery — user enables "Dev Mode MCP Server" in the
+#       Figma desktop app (Figma → Preferences). The app listens on
+#       http://127.0.0.1:3845/mcp and Claude Code auto-discovers it WITHOUT
+#       any JSON config entry. This is the most common path.
+#   (b) Manual JSON config — user adds an mcpServers entry for figma-desktop
+#       in ~/.claude.json or ~/.../claude_desktop_config.json. Older docs
+#       suggested this; current docs prefer (a).
+#
+# Doctor must accept either. We probe TCP first (cheap, definitive); if the
+# port is up, the MCP works regardless of config state. Banned-substitute
+# detection in config still runs so a stale Framelink entry surfaces.
 echo
 echo "5. figma-desktop MCP"
-if [ -z "$CONFIG_FOUND" ]; then
-  bad "No config to check"
+
+FD_PORT_UP=0
+if command -v nc >/dev/null 2>&1 && nc -z -w 1 127.0.0.1 3845 2>/dev/null; then
+  FD_PORT_UP=1
+fi
+
+# Always detect banned substitutes in any config — runs even when runtime
+# is up, because a stale Framelink entry in config CAN shadow auto-discovery
+# on some Claude Code builds (server-name collision).
+BANNED_FOUND=""
+if [ -n "$CONFIG_FOUND" ]; then
+  BANNED_FOUND=$(python3 - "$CONFIG_FOUND" <<'PY' 2>/dev/null
+import json, sys
+try:
+    cfg = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+hits = []
+for name, spec in cfg.get("mcpServers", {}).items():
+    if name == "figma-assets":
+        continue
+    blob = json.dumps(spec).lower()
+    if "figma-developer-mcp" in blob or "framelink" in blob \
+       or name.lower() in ("figma", "figma-mcp"):
+        hits.append(name)
+print(",".join(hits))
+PY
+  )
+fi
+
+if [ "$FD_PORT_UP" = "1" ]; then
+  ok "figma-desktop MCP listening on 127.0.0.1:3845 (Dev Mode MCP server up — runtime auto-discovered)"
+  if [ -n "$BANNED_FOUND" ]; then
+    bad "Banned substitute Figma MCP also registered in config: $BANNED_FOUND"
+    hint "Remove from $CONFIG_FOUND — even with figma-desktop running, a substitute server entry can shadow auto-discovery on some builds"
+    hint "See figma-to-swiftui/SKILL.md §\"BANNED substitute MCPs\""
+  fi
+elif [ -z "$CONFIG_FOUND" ]; then
+  bad "figma-desktop MCP not listening on 127.0.0.1:3845 AND no Claude config to check"
+  hint "Enable Dev Mode MCP server in Figma: Figma → Preferences → 'Enable Dev Mode MCP Server'"
+  hint "Or install per https://developers.figma.com/docs/figma-mcp-server/"
+  hint "Without it the skill MUST stop — get_design_context / get_screenshot / get_metadata are required"
 else
+  # Runtime not up — fall back to JSON config detection (legacy path for
+  # users who manually registered figma-desktop via mcpServers config).
   # Categorize every figma-shaped MCP server in config:
   #   - figma-assets               → MCPFigma (already covered in step 2)
   #   - figma-desktop / mcp.figma.com URLs / matches Figma's official server  → REQUIRED
@@ -297,7 +351,7 @@ elif ! xcrun mcpbridge --help >/dev/null 2>&1; then
   hint "Update Xcode to 26+ to enable RenderPreview-based C5 verification"
 else
   ok "xcrun mcpbridge available"
-  if pgrep -lf "Xcode.app/Contents/MacOS/Xcode$" >/dev/null 2>&1; then
+  if pgrep -lf "Xcode[^/]*\.app/Contents/MacOS/Xcode$" >/dev/null 2>&1; then
     ok "Xcode app is running (BuildProject will use the live session)"
   else
     warn "Xcode not running — start Xcode and open the target project for Engine A to work"
