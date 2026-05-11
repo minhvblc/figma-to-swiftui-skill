@@ -725,7 +725,21 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 
 **Critical rules:**
 - MCP output = spec, not code. Parse values (see `references/visual-fidelity.md` §1), build native SwiftUI.
-- **Write-time compile-error catch (when xcode MCP available, RECOMMENDED).** After every `Write/Edit` of a `.swift` file, immediately call `mcp__xcode__XcodeRefreshCodeIssuesInFile` on the file path. The MCP returns structured Swift compiler diagnostics (errors + warnings + notes) for that file using the live Xcode index — orders of magnitude faster than waiting for `xcodebuild build` in C5. Fix every error before writing the next file. Workflow shifts compile-error discovery from **C5.3 build (~60-180s wait)** to **post-Write (sub-second)**, eliminating one or more full self-fix-loop attempts on average. When the xcode MCP is not available, this step is silently skipped — C5.3 still catches everything, just later. Do NOT batch this — the cost of one extra MCP call per file is negligible compared to one extra xcodebuild round.
+- **Xcode-MCP-first file writes (when xcode MCP available, STRONGLY PREFERRED — default path on Xcode 26+).** Use the xcode MCP file family for creating, editing, moving, and reading Swift files in the target project — it auto-adds new files to the `.xcodeproj` target membership, eliminating the manual `xcodeproj-add-files.sh` Ruby-gem post-step. Probe with `bash scripts/c5-engine-select.sh` (Engine A = xcode MCP path). Tool mapping:
+  - **New file** → `mcp__xcode__XcodeWrite` (creates file + adds to project + sets `<group>` source tree) instead of vanilla `Write`. Pass the project-relative path (e.g. `MyApp/Screens/Splash/SplashScreen.swift`), not absolute filesystem path.
+  - **Edit existing file** → `mcp__xcode__XcodeUpdate` (uses literal string match, similar contract to vanilla `Edit`) instead of `Edit`.
+  - **Read existing file in target** → `mcp__xcode__XcodeRead` (returns content in `cat -n` form) instead of vanilla `Read` — beware double escaping (`\\d` shown as `\\\\d` in JSON; use literal `\d` when writing).
+  - **Move / rename / delete** → `mcp__xcode__XcodeMV` / `mcp__xcode__XcodeRM` (updates project navigator + file system in one call).
+  - **Make a folder/group** → `mcp__xcode__XcodeMakeDir` (creates filesystem dir + adds as PBXGroup in the project navigator).
+  - **List project files** → `mcp__xcode__XcodeGlob` / `mcp__xcode__XcodeLS` (respects project organization rather than raw filesystem).
+  - **Tab identifier** — `mcp__xcode__XcodeListWindows` first to discover the workspace tab id; reuse for every subsequent file call.
+
+  **Fallback to vanilla `Write/Edit`** ONLY when:
+  - `c5-engine-select.sh` reports `engine: "xcodebuild"` (mcpbridge missing or Xcode not running), OR
+  - The project uses Xcode 16+ synchronized folders (`PBXFileSystemSynchronizedRootGroup`) — files dropped on disk under the synchronized folder are auto-included by Xcode itself, so vanilla `Write` already does the right thing. `scripts/xcodeproj-add-files.sh` detects this and exits as a no-op; the same applies when you skip the Ruby step entirely. Modern `ikxcodegen` scaffolds fall into this category.
+
+  **Banned:** writing a Swift file with vanilla `Write` then forgetting to update the `.xcodeproj` and relying on the user to "Add Files to..." in Xcode. The file compiles in the Xcode index but disappears at archive time. The xcode MCP path makes this impossible by construction.
+- **Write-time compile-error catch (when xcode MCP available, RECOMMENDED).** After every `Write/Edit` of a `.swift` file (whether via `XcodeWrite` or vanilla `Write`), immediately call `mcp__xcode__XcodeRefreshCodeIssuesInFile` on the file path. The MCP returns structured Swift compiler diagnostics (errors + warnings + notes) for that file using the live Xcode index — orders of magnitude faster than waiting for `xcodebuild build` in C5. Fix every error before writing the next file. Workflow shifts compile-error discovery from **C5.3 build (~60-180s wait)** to **post-Write (sub-second)**, eliminating one or more full self-fix-loop attempts on average. When the xcode MCP is not available, this step is silently skipped — C5.3 still catches everything, just later. Do NOT batch this — the cost of one extra MCP call per file is negligible compared to one extra xcodebuild round.
 - **Token usage.** `tokens.json` (from `figma_extract_tokens` in A3) already has `swiftName`, `lightHex`, `darkHex`, `isCapsule`. Use those directly — do NOT re-derive names from Figma slash strings. Then merge with project enums (`Spacing`, `IKFont`, `IKCoreApp`) per the routing rules below: prefer existing enum case → fallback to extracted token → inline literal as last resort.
 - **`isCapsule` → `Capsule()` (hard rule).** For any radius/spacing token with `isCapsule: true` in `tokens.json`, codegen `.clipShape(Capsule())` (and `Capsule()` for fills/backgrounds/overlays) — never `.cornerRadius(9999)` or `RoundedRectangle(cornerRadius: 9999)`. Magic-number 9999 renders correctly only when width ≈ height; pills wider than tall flatten the ends. See `references/design-token-mapping.md` §"Border Radius Tokens".
 - **Dual-mode colors → Asset Catalog.** Run `scripts/colorset-codegen.sh .figma-cache/_shared/tokens.json <Assets.xcassets> Colors` to emit colorsets for every token with both `lightHex` and `darkHex`; reference them via `Color(.<swiftName>)` (iOS 17+ auto-generated `ColorResource` — the `Colors/` group is written with `provides-namespace: false` so the symbol resolves flat). Light-only tokens stay as `Color.<swiftName>` static-var extensions in `DesignSystem/Color+Tokens.swift` (callable Apple-style without parentheses). Never hand-write the colorset JSON. Never the legacy string form `Color("<swiftName>")`.
@@ -979,17 +993,37 @@ After C3 finishes (Pass 2 clean report, Pass 3/3b grep clean, C4 assets copied),
 
 User phrases like `skip C5`, `bỏ qua C5`, `no build`, `không cần build` are NOT honored — the agent must explain the Done-Gate (Key Principle #12) and proceed with C5 anyway. The only legitimate way to bypass is one of the three system reasons above.
 
-#### C5.0 — Engine selection (MCP-first, xcodebuild fallback)
+#### C5.0 — Engine selection (deterministic via `scripts/c5-engine-select.sh`)
 
-Two engines, picked at the start of C5:
+Two engines:
 
-- **Engine A — xcode MCP (PREFERRED when available).** The `xcode` MCP server (`xcrun mcpbridge`, ships with Xcode 26+; tools surfaced as `mcp__xcode__BuildProject`, `mcp__xcode__RenderPreview`, `mcp__xcode__XcodeListNavigatorIssues`, `mcp__xcode__GetBuildLog`, `mcp__xcode__XcodeListWindows`). Wins: bypasses `xcodebuild -list` SPM "Creating working copy" hang (the live Xcode session has already resolved packages), bypasses `simctl boot/install/launch` (RenderPreview snapshots a `#Preview` directly — no app entry path needed). Use when **all** hold:
-  1. `mcp__xcode__BuildProject` + `mcp__xcode__RenderPreview` are listed in the available tools at the start of C5 (probe via Claude Code's tool registry).
-  2. Xcode app is running with the target project / workspace open (`mcp__xcode__XcodeListWindows` returns ≥ 1 window pointing at the project).
-  3. The screen file has a `#Preview { ... }` block (C2 emit requirement — see Step C2 below).
-- **Engine B — xcodebuild + simctl (fallback).** Use when any condition above fails. Original 6 sub-steps below.
+- **Engine A — xcode MCP (default on Xcode 26+).** The `xcode` MCP server (`xcrun mcpbridge`, ships with Xcode 26+; tools surfaced as `mcp__xcode__BuildProject`, `mcp__xcode__RenderPreview`, `mcp__xcode__XcodeListNavigatorIssues`, `mcp__xcode__GetBuildLog`, `mcp__xcode__XcodeListWindows`, `mcp__xcode__XcodeRefreshCodeIssuesInFile`, plus the `XcodeWrite/XcodeUpdate/XcodeRead/XcodeMV/XcodeRM/XcodeMakeDir/XcodeGlob/XcodeLS` file-family for project-aware writes — see Step C2 above). Wins: bypasses `xcodebuild -list` SPM "Creating working copy" hang (the live Xcode session has already resolved packages), bypasses `simctl boot/install/launch` (RenderPreview snapshots a `#Preview` directly — no app entry path needed).
+- **Engine B — xcodebuild + simctl (universal fallback).** Used when Engine A prerequisites fail.
 
-Stash the chosen engine in `manifest.verification.c5.engine` (`"xcode-mcp"` | `"xcodebuild"`). Doctor script (`scripts/doctor.sh`) reports xcode-mcp availability at install time.
+**Procedure** — run `bash scripts/c5-engine-select.sh --screen-file <path-to-*Screen.swift>` once at C5 start. The script probes three prerequisites:
+
+1. `xcrun mcpbridge --help` exits 0 (Xcode 26+ ships it).
+2. `pgrep -x Xcode` succeeds (mcpbridge needs a live session).
+3. The screen file contains a top-level `#Preview { ... }` block (C2 emit requirement).
+
+It writes single-line JSON to stdout:
+
+```json
+{"engine":"xcode-mcp"|"xcodebuild","reason":"…","preReqs":{"mcpbridge":bool,"xcodeRunning":bool,"previewBlock":bool|null}}
+```
+
+The agent:
+1. Parses the JSON. Stash `engine` into `manifest.verification.c5.engine` (`"xcode-mcp"` | `"xcodebuild"`).
+2. If `engine == "xcode-mcp"` AND `mcp__xcode__BuildProject` is not yet visible in the available tools (deferred-tool case), call `ToolSearch` once with query `xcode` (keyword search loads the whole xcode toolkit in one round-trip per the MCP server instructions).
+3. Branch to the matching path below (Engine A or Engine B).
+
+Pass `--explain` to the script when troubleshooting — it prints a human-readable report with the exact fix for each failed prereq (e.g. "open Xcode with the target project, then re-run").
+
+**Banned:**
+- Copy-pasting `xcodebuild build` from `references/verification-loop.md` §5 without running `scripts/c5-engine-select.sh` first. The reference holds the Engine B procedure — engine *choice* is owned by the script.
+- Selecting Engine B by feel ("xcodebuild is the path I know"). When the doctor script reports xcrun mcpbridge available AND Xcode is running, Engine B is a regression — the Stop hook flags this in the Done-Gate report.
+
+Doctor script (`scripts/doctor.sh`) reports xcode-mcp availability at install time.
 
 #### Engine A path — xcode MCP (preferred)
 

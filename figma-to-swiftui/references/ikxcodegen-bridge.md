@@ -224,6 +224,20 @@ What this shape implies for the skill:
 - **`Utilities/Extensions/`, `Utilities/Helpers/`** — skill appends new files when needed (e.g. `Utilities/Tracking/AppTracking.swift`, `Utilities/Fonts/AppFont.swift`) — these were not created by ikxcodegen and the skill creates them as needed.
 - **`Components/`, `Entities/`** — NOT created by ikxcodegen. Skill creates these top-level folders inside `<ProjectName>/<ProjectName>/` when the first reusable component or entity model is needed.
 
+### File-writing approach (xcode MCP vs vanilla Write)
+
+Modern `ikxcodegen` (Xcode 16+ template) emits the target folder as a **`PBXFileSystemSynchronizedRootGroup`** — Xcode auto-includes anything you drop on disk under that folder in the target's build phase. You can verify by opening the pbxproj and searching for `PBXFileSystemSynchronizedRootGroup`; if present, vanilla `Write` is sufficient. `scripts/xcodeproj-add-files.sh` detects this and exits as a no-op confirmation.
+
+When the project does NOT use synchronized folders (rare on a fresh ikxcodegen scaffold; common on legacy hand-built Ikame projects), pick the file-write tool deterministically:
+
+| C5 engine (from `scripts/c5-engine-select.sh`) | Project layout | Recommended write tool |
+|---|---|---|
+| `xcode-mcp` | any (synchronized OR legacy) | **`mcp__xcode__XcodeWrite`** — atomic create + target membership in one call. See `figma-to-swiftui/SKILL.md` §C2 critical rules. |
+| `xcodebuild` (Engine A unavailable) | synchronized folder | vanilla `Write` (filesystem alone is enough) |
+| `xcodebuild` (Engine A unavailable) | legacy PBXGroup | vanilla `Write` then `scripts/xcodeproj-add-files.sh --project <…>.xcodeproj --target <Name> --files "<abs path1> <abs path2>"` |
+
+The Ruby `xcodeproj`-gem dance in `xcodeproj-add-files.sh` is the fragile path — auto-installs `xcodeproj` gem, parses pbxproj, walks groups. The `XcodeWrite` MCP path avoids it entirely. Treat the Ruby script as the back-up for sandboxed shells / missing-mcp runs, not the default.
+
 ---
 
 ## §5. Default Podfile (what ikxcodegen produces)

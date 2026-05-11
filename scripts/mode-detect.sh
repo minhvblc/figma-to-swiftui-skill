@@ -99,11 +99,14 @@ MODE=""
 CONFIDENCE="0.5"
 if [ $GREENFIELD -eq 1 ]; then
   if [ $IKXCODEGEN_AVAILABLE -eq 1 ]; then
-    # Greenfield + ikxcodegen → Ikame is the recommended path, but the user
-    # should be asked. Output a tentative classification with confidence 0.65.
+    # Greenfield + ikxcodegen on PATH → user is on the Ikame fleet (the CLI
+    # ships only via gitlab.ikameglobal.com Mint install). Default to the
+    # Ikame scaffold path with high confidence; the skill still ASKS the user
+    # to confirm before running ikxcodegen (one-line Y/n), but it does NOT
+    # silently fall back to vanilla. Use --explain to see the next-step.
     MODE="greenfield-ikame"
-    CONFIDENCE="0.65"
-    add_signal "tentative: greenfield+ikxcodegen — confirm user wants Ikame scaffold or fall back to vanilla"
+    CONFIDENCE="0.85"
+    add_signal "ikxcodegen_available — default path, confirm with user before scaffolding"
   else
     MODE="greenfield-vanilla"
     CONFIDENCE="0.90"
@@ -141,8 +144,9 @@ if [ $EXPLAIN -eq 1 ]; then
   echo ""
   case "$MODE" in
     greenfield-ikame)
-      echo "next: confirm with user → if Ikame, run scripts/ikxcodegen-scaffold.sh <ProjectName>"
-      echo "      else override to greenfield-vanilla and run scripts/vanilla-scaffold.sh <ProjectName>"
+      echo "next: ASK USER (one-line Y/n): \"Detected Ikame fleet (ikxcodegen on PATH). Scaffold via ikxcodegen? [Y/n]\""
+      echo "      Y / default → scripts/ikxcodegen-scaffold.sh <ProjectName>"
+      echo "      n → scripts/vanilla-scaffold.sh <ProjectName> (rare — only when user opts out explicitly)"
       ;;
     greenfield-vanilla)
       echo "next: run scripts/vanilla-scaffold.sh <ProjectName>"

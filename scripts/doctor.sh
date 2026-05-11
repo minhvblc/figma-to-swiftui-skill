@@ -384,7 +384,7 @@ echo
 echo "7. Verification gate scripts"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
-              c5-capture.sh \
+              c5-capture.sh c5-engine-select.sh \
               c6-asset-completeness.sh c7-no-system-chrome.sh \
               c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
               c8-iknavigation.sh c8-ikfont.sh c8-weak-self.sh \
@@ -413,7 +413,7 @@ done
 # skill in an iOS project unrelated to this repo.
 INSTALLED_SCRIPTS_DIR="$HOME/.claude/scripts"
 if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
-  for script in c5-coverage-check.sh c5-capture.sh \
+  for script in c5-coverage-check.sh c5-capture.sh c5-engine-select.sh \
                 c6-asset-completeness.sh c7-no-system-chrome.sh \
                 c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
                 c8-iknavigation.sh c8-ikfont.sh \

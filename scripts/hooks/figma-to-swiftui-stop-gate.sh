@@ -192,6 +192,23 @@ for DIR in "${SCREEN_DIRS[@]}"; do
     PROBLEMS+="    - C5 not satisfied (gate=${GATE:-unset}, skipped=${SKIPPED:-unset})\n"
   fi
 
+  # ── 2b. Engine choice regression check ───────────────────────────────────────
+  # Flag when C5 was completed via Engine B (xcodebuild) despite Engine A
+  # (xcode MCP) being available. Engine A is the default on Xcode 26+ fleets
+  # — picking Engine B means slower builds, simctl cold-start, and SPM resolve
+  # hang. This is informational (does NOT block stop), but raises visibility
+  # so the user can re-run with Engine A.
+  if [ "$C5_OK" = "1" ] && [ -z "$SKIPPED" ]; then
+    ENGINE=$(jq -r '.verification.c5.engine // empty' "$MANIFEST" 2>/dev/null)
+    if [ "$ENGINE" = "xcodebuild" ]; then
+      ENGINE_A_AVAIL=0
+      xcrun mcpbridge --help >/dev/null 2>&1 && pgrep -x Xcode >/dev/null 2>&1 && ENGINE_A_AVAIL=1
+      if [ "$ENGINE_A_AVAIL" = "1" ]; then
+        PROBLEMS+="    - C5 used Engine B (xcodebuild) but Engine A is available — re-run with mcp__xcode__BuildProject / RenderPreview for the speed wins. Probe with: scripts/c5-engine-select.sh --explain\n"
+      fi
+    fi
+  fi
+
   # ── 3. C5.6 coverage check (only when not skipped at system level) ───────────
   if [ "$C5_OK" = "1" ] && [ -z "$SKIPPED" ] && [ -x "$C5_COV_SCRIPT" ]; then
     if ! "$C5_COV_SCRIPT" --cache "$DIR" >/dev/null 2>&1; then
