@@ -379,6 +379,8 @@ else
                "$SCRIPTS_SRC"/mode-detect.sh \
                "$SCRIPTS_SRC"/colorset-codegen.sh \
                "$SCRIPTS_SRC"/ikxcodegen-wrap.sh \
+               "$SCRIPTS_SRC"/ikxcodegen-scaffold.sh \
+               "$SCRIPTS_SRC"/vanilla-scaffold.sh \
                "$SCRIPTS_SRC"/xcodeproj-add-files.sh \
                "$SCRIPTS_SRC"/timing-report.sh \
                "$SCRIPTS_SRC"/timed-run.sh; do

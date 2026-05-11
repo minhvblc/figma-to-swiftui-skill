@@ -8,7 +8,10 @@
 # Why: tokens.json (figma_extract_tokens) already returns the dark-mode hex.
 # The default B0b path emits a single-hex Color extension and silently loses
 # dark-mode fidelity. Pushing dual-mode tokens through Asset Catalog lets
-# Xcode handle the appearance switch — Color("name") adapts automatically.
+# Xcode handle the appearance switch — the iOS 17+ auto-generated
+# ColorResource symbol (Color(.name)) adapts automatically. The group folder
+# (default "Colors/") is written with provides-namespace=false so the symbol
+# resolves flat at the call site, never nested as Color(.colors.name).
 #
 # Usage:
 #   colorset-codegen.sh <tokens.json> <Assets.xcassets> [<group=Colors>]
@@ -36,9 +39,19 @@ command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 required" >&2; exit 
 GROUP_DIR="$XCASSETS/$GROUP"
 mkdir -p "$GROUP_DIR"
 
-# Group-level Contents.json (provides-namespace so Color("Colors/foo") resolves)
+# Group-level Contents.json (provides-namespace=false so iOS 17+ auto-generated
+# ColorResource symbols resolve flat — Color(.foo), not Color(.colors.foo)).
+# Overwrite if exists with namespace=true (legacy from the string-form era).
 GROUP_META="$GROUP_DIR/Contents.json"
-if [ ! -f "$GROUP_META" ]; then
+need_rewrite=1
+if [ -f "$GROUP_META" ]; then
+  # Re-write only when the existing file enables namespace; leave hand-tuned
+  # configs alone if they already opt out.
+  if grep -q '"provides-namespace"[[:space:]]*:[[:space:]]*false' "$GROUP_META"; then
+    need_rewrite=0
+  fi
+fi
+if [ "$need_rewrite" = "1" ]; then
   cat > "$GROUP_META" <<'EOF'
 {
   "info" : {
@@ -46,7 +59,7 @@ if [ ! -f "$GROUP_META" ]; then
     "version" : 1
   },
   "properties" : {
-    "provides-namespace" : true
+    "provides-namespace" : false
   }
 }
 EOF
@@ -125,5 +138,5 @@ for c in (tokens.get("colors") or []):
     print(f"  + {group_name}/{swift_name}.colorset (Figma: {figma_name})")
 
 print(f"EMITTED: {emitted} colorset(s) under {group_dir} (skipped: {skipped})")
-print(f'USE: Color("{group_name}/<swiftName>")  // auto-adapts to light/dark')
+print(f'USE: Color(.<swiftName>)  // iOS 17+ auto-generated ColorResource — auto-adapts to light/dark')
 PY

@@ -87,13 +87,13 @@ Bảng High-impact:
 | 4 | Top toolbar leading | `.navigationBarLeading` | `.topBarLeading` | api.md L11 |
 | 5 | Top toolbar trailing | `.navigationBarTrailing` | `.topBarTrailing` | api.md L11 |
 | 6 | Tab bar | `.tabItem { Label(...) }` | `Tab("Home", systemImage: "house", value: .home) { ... }` (iOS 18+) | api.md L5 |
-| 7 | Decorative Image | `Image("decorativeBlob")` | `Image(decorative: "decorativeBlob")` | accessibility.md L6 |
+| 7 | Decorative Image | `Image(.decorativeBlob)` | `Image(decorative: .decorativeBlob)` | accessibility.md L6 |
 | 8 | Icon-only Button | `Button { } label: { Image(...) }` | `Button("Close", systemImage: "xmark", action: close)` + `.labelStyle(.iconOnly)` if needed; or add `.accessibilityLabel("Close")` | accessibility.md L9 |
 | 9 | onTapGesture for action | `.onTapGesture { ... }` | `Button { ... } label: { ... }` | accessibility.md L12 |
 | 10 | Scroll indicators off | `ScrollView(showsIndicators: false)` | `ScrollView { ... }.scrollIndicators(.hidden)` | api.md L17 |
 | 11 | Overlay with content | `.overlay(Text("..."), alignment: .top)` | `.overlay(alignment: .top) { Text("...") }` | api.md L10 |
 | 12 | Stroke + fill shape | `RoundedRectangle().fill(c).overlay(RoundedRectangle().stroke(...))` | chained `.fill(c).stroke(...)` (iOS 17+) | api.md L13 |
-| 13 | Image accessibility | `Image("icAIClose")` no label | `Image("icAIClose").accessibilityLabel("Close")` derived from semantic Figma name | accessibility.md L6 |
+| 13 | Image accessibility | `Image(.icAIClose)` no label | `Image(.icAIClose).accessibilityLabel("Close")` derived from semantic Figma name | accessibility.md L6 |
 | 14 | Custom Preview | `struct V_Previews: PreviewProvider { static var previews: some View { ... } }` | `#Preview { V() }` | views.md L12 |
 | 15 | Conditional modifier | `if highlighted { v.opacity(0.5) } else { v }` | `v.opacity(highlighted ? 0.5 : 1.0)` | performance.md L3 |
 | 16 | Animation | `.animation(.easeIn)` | `.animation(.easeIn, value: stateVar)` | views.md L20 |
@@ -103,7 +103,7 @@ Bảng Project-context (cần C1 audit):
 
 | # | Condition | Output if YES | Output if NO |
 |---|---|---|---|
-| 1 | `GENERATE_ASSET_SYMBOLS = YES` in pbxproj | `Image(.icAIClose)`, `Color(.brandRed)` | `Image("icAIClose")`, `Color("brandRed")` |
+| 1 | `GENERATE_ASSET_SYMBOLS = YES` in pbxproj (default-on Xcode 15+; the c1-probe treats absence as YES). Effectively always TRUE on the skill's Xcode 15+ baseline. | `Image(.icAIClose)`, `Color(.brandRed)` (canonical) | Legacy `Image("icAIClose")`, `Color("brandRed")` only when project explicitly sets NO. |
 | 2 | Localizable.xcstrings exists | `Text(.welcome)` (symbol key), offer to translate | `Text("Welcome")` with `LocalizedStringKey` |
 | 3 | Design constants enum exists (`Spacing`, `Sizes`, `IKFont`) | `.padding(Spacing.l24)` | `.padding(24)` |
 | 4 | iOS deployment target ≥ 26 | `.font(.body.scaled(by: 16/17))` | `@ScaledMetric var fontSize: CGFloat = 16` + `.font(.system(size: fontSize))` |
@@ -133,7 +133,7 @@ Insert sau "Project pre-flight" hiện tại trong Step C1 (~line 379):
 
 ```markdown
 **swiftui-pro pre-flight (mandatory; routes downstream rules):**
-6. Generated symbol assets — grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = YES` or check Xcode 15+ default. If yes → emit `Image(.icAIClose)` not `Image("icAIClose")`. Stash result in run flag `useGeneratedSymbols`.
+6. Generated symbol assets — grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = NO` (the probe treats absence as YES — Xcode 15+ default-on). If NO → flag `useGeneratedSymbols = false` and use legacy string form; otherwise (the canonical case) emit `Image(.icAIClose)` / `Color(.brandRed)`.
 7. Design constants enum — grep `enum Spacing`, `enum Colors`, `enum Sizes`, `IKFont`, `IKCoreApp`. If any found, list them and route Figma values through them in C2. Stash list in run flag `designConstants`.
 8. iOS deployment target — read `IPHONEOS_DEPLOYMENT_TARGET` from pbxproj. Decides @ScaledMetric vs `.scaled(by:)`, Tab API availability, iOS 26+ APIs. Stash as `deploymentTarget`.
 9. Localizable.xcstrings vs .strings — check for `.xcstrings` files. If yes → use symbol-key API `Text(.welcomeMessage)` and offer to translate. Stash as `localizationStyle`.
@@ -250,7 +250,7 @@ Sau bullet "Reuse existing project components":
 
 | Tag | Source | Example | swiftui-pro route |
 |---|---|---|---|
-| tokens | Figma variable | `--text-primary` | `Color(.textPrimary)` if `useGeneratedSymbols`, else `Color("textPrimary")` |
+| tokens | Figma variable | `--text-primary` | `Color(.textPrimary)` (canonical — `useGeneratedSymbols` effectively always TRUE on Xcode 15+ baseline). Legacy `Color("textPrimary")` only when project explicitly sets `GENERATE_ASSET_SYMBOLS = NO`. |
 | inline | Figma node style | `font-weight: 700` | `.bold()` (api transform) |
 | class | Figma component class | shared button style | Reuse via project's `ButtonStyle` |
 | screenshot | Visual measurement | spacing 24px | `.padding(Spacing.l24)` if enum exists, else `.padding(24)` |

@@ -15,6 +15,54 @@ Turn Figma nodes into production SwiftUI with pixel-matching fidelity. **Three p
 
 ---
 
+## Quick Reference (read this first)
+
+The full SKILL.md below is comprehensive but long. For a fast pass before starting a task, use this index. Hooks enforce most rules automatically — you generally do not need to memorize them, just understand when each fires.
+
+**Decision flow at task start:**
+
+```
+1. Mode detect → scripts/mode-detect.sh <project>
+     greenfield-vanilla       → scripts/vanilla-scaffold.sh
+     greenfield-ikame         → scripts/ikxcodegen-scaffold.sh (ASK USER first)
+     brownfield-ikame         → load Ikame conventions, no scaffold
+     brownfield-vanilla       → load vanilla conventions, no scaffold
+     ambiguous                → STOP, ask user
+2. Pin Figma file → figma_build_registry
+     screens populated        → iterate per screen
+     candidateScreens populated → references/registry-empty-fallback.md case 1
+     both empty               → references/registry-empty-fallback.md case 2 (re-root)
+3. For each screen → Phase A → Phase B → Phase C → C5 (tier 1–3 per c5-tiered-verification.md)
+```
+
+**References, by trigger:**
+
+| When you... | Read |
+|---|---|
+| Start a greenfield project | `references/greenfield-vanilla.md` + `references/ikxcodegen-bridge.md` |
+| `figma_build_registry` returns 0 screens | `references/registry-empty-fallback.md` |
+| Have ≥ 10 screens / ≥ 3 feature areas | `references/parallel-subagent-pattern.md` |
+| Need to enter "rough scaffold" mode | `references/scaffold-mode.md` |
+| Reach Phase B for a feature | `references/anti-patterns.md` (especially §1 + §13) |
+| Reach C5 verification | `references/c5-tiered-verification.md` + `references/verification-loop.md` |
+| Find a phrase you're tempted to write in summary | `references/anti-patterns.md` §"Failure-mode self-check" |
+| Hook blocked your Write/Edit | The 1-line stderr; expand with `HOOK_VERBOSE=1` env var |
+
+**P0 STOP gates (these are hard, even in scaffold mode):**
+
+- Empty registry (no screens, no candidateScreens) → STOP, re-root before any Swift Write.
+- `figma_extract_tokens` returned `forbidden` → use fallback per `mcpfigma-setup.md`, do NOT proceed without color/typography tokens.
+- ikxcodegen / vanilla-scaffold output already exists → refuse to overwrite, ask user.
+
+**The two most common failure modes:**
+
+1. **Anti-pattern §1: SwiftUI shapes for icons.** Sneaks in when "the icon is simple". Hook `figma-to-swiftui-banned-pattern-gate.sh` blocks `Image(systemName:)` outside the allow-list. Bypass with `// allow-systemName: <reason>` ONLY for genuine iOS HIG glyphs.
+2. **Anti-pattern §13: Template-from-doc.** Sneaks in on multi-screen flows when "they all look the same". Each screen needs its own Phase A artifact. The flow skill must reject templates built from doc wording instead of per-screen `get_design_context`.
+
+If you're not sure which mode/tier/escape applies, read the reference. The reference docs are short and focused; SKILL.md below is exhaustive.
+
+---
+
 ## Mandatory Output Checklist
 
 Every run MUST satisfy these five items. Cite each item by number in the verification report.
@@ -165,15 +213,16 @@ This check is mandatory before Step A3 batch fetch — if you don't run it, you 
 
 ### Step A3 — Batch Fetch Spec
 
-For a single screen, issue calls 1+2+4 in **one parallel message** (`get_design_context` + `get_screenshot` + `get_metadata` on the same node land independently). Call 3 (`figma_extract_tokens`) is per-`fileKey` — issue it once and reuse via symlink. For multi-screen flows, the flow skill clusters across screens (default 3 screens × 2 calls per cluster); see [references/fetch-strategy.md](references/fetch-strategy.md) §"Parallelism Inside Phase A". Save to `.figma-cache/<nodeId>/`:
+For a single screen, issue calls 1+2+4+5 in **one parallel message** (`get_design_context` + `get_screenshot` + `get_metadata` + `figma_extract_fills` on the same node land independently). Call 3 (`figma_extract_tokens`) is per-`fileKey` — issue it once and reuse via symlink. For multi-screen flows, the flow skill clusters across screens (default 3 screens × 2 calls per cluster); see [references/fetch-strategy.md](references/fetch-strategy.md) §"Parallelism Inside Phase A". Save to `.figma-cache/<nodeId>/`:
 
 1. `get_design_context(fileKey, nodeId, prompt="generate for iOS using SwiftUI")` → `design-context.md` *(figma-desktop MCP)*
 2. `get_screenshot(fileKey, nodeId)` at **scale 3** (fine details visible) → `screenshot.png` *(figma-desktop MCP — this is the FRAME screenshot used for visual diff in C3 Pass 2 and C5; it is NOT an asset. Per-asset PNG export happens in Phase B via `figma_export_assets_unified`.)* Then immediately produce a comparison-safe sibling: `sips -Z 2000 .figma-cache/<nodeId>/screenshot.png --out .figma-cache/<nodeId>/screenshot-cmp.png`. Bản gốc (`screenshot.png`) giữ cho crop chất lượng cao (C5.6.3) và single-image read (C3 Pass 2). Bản `-cmp.png` (≤2000px long-side) dùng cho mọi many-image read (C5.6.1/.2/.4/.5). Lý do split: Claude many-image API reject ảnh >2000px khi request có ≥2 ảnh — frame iPhone scale-3 luôn vượt.
 3. `figma_extract_tokens(fileKey)` → `tokens.json` *(MCPFigma 0.3.0+ — once per `fileKey`, dedup by copying/symlinking)*. This replaces `get_variable_defs` + manual SwiftUI naming. Output has `swiftName`, `lightHex`/`darkHex`, `isCapsule` for radius, plus a `typography[]` array (sourced from `/v1/files/<key>/styles` + `/v1/files/<key>/nodes`) carrying `fontFamily`, `fontPostScriptName`, `fontWeight`, `fontSize`, `lineHeightPx`, `letterSpacing`, `textCase`, `textAlignHorizontal`, `italic`. Each pass (variables, typography) fails independently — empty + non-empty `warnings` for one section means fall back to `design-context.md` inline tokens for that section only.
 4. `get_metadata(fileKey, nodeId)` → `metadata.json` *(figma-desktop MCP — kept for design-context cross-ref in Phase C; A2's registry handles asset discovery)*
-5. Optional: Code Connect mapping — only if your Figma MCP exposes such a tool. Skip silently if unavailable.
+5. `figma_extract_fills(fileKey, nodeId, depth: 10, resolveImageUrls: true)` → `fills.json` *(MCPFigma — per-screen, NOT per-fileKey)*. Output: per-node fill stack for any descendant whose fills are non-trivial (gradient, image, stacked, translucent, blended). Single 100%-opacity SOLID fills are filtered out (already covered by `tokens.json` + `design-context.md`). Each gradient has normalized `stops[].position/hex`, `startPoint`/`endPoint` in 0..1 unit space (SwiftUI `UnitPoint`), and paint-level `opacity`. Each IMAGE fill carries `imageRef`, `scaleMode`, and (when `resolveImageUrls: true`) a CDN `imageUrl` resolved via `/v1/files/<key>/images`. **This is the canonical source for background-image + gradient-overlay composition in C2** — see [references/fills-handling.md](references/fills-handling.md). When fills.json is missing or empty, fall back to parsing `design-context.md` gradient classes/comments, but flag in summary so user knows fidelity is approximated.
+6. Optional: Code Connect mapping — only if your Figma MCP exposes such a tool. Skip silently if unavailable.
 
-**Hard rule on missing tools.** If steps 1, 2, or 4 error because figma-desktop MCP is not connected → STOP and ask the user to install it. **Do NOT** proceed with metadata-only + guessing styles — Pass 2 / C5 visual diff cannot run without `screenshot.png`, and Phase C cannot ground colors/typography without `design-context.md`. Same rule for step 3: if MCPFigma is missing, STOP and ask — do not invent token enums.
+**Hard rule on missing tools.** If steps 1, 2, or 4 error because figma-desktop MCP is not connected → STOP and ask the user to install it. **Do NOT** proceed with metadata-only + guessing styles — Pass 2 / C5 visual diff cannot run without `screenshot.png`, and Phase C cannot ground colors/typography without `design-context.md`. Same rule for steps 3 + 5: if MCPFigma is missing, STOP and ask — do not invent token enums and do not improvise background-image/gradient stacks from screenshot pixels.
 
 On truncation: don't retry — fall back to metadata + per-section fetch. See `references/fetch-strategy.md`.
 
@@ -196,6 +245,7 @@ parallel batch = [
   get_screenshot(fileKey, nodeId, scale=3),         # A3 step 2
   figma_extract_tokens(fileKey),                    # A3 step 3 (skip if shared cache hit)
   get_metadata(fileKey, nodeId),                    # A3 step 4
+  figma_extract_fills(fileKey, nodeId),             # A3 step 5 (per-screen)
   figma_export_assets_unified(                      # B3 — early-start
     fileKey, nodeId, outputDir, sharedAssetsDir,
     assetCatalogPath, rows: [], autoDiscover: true
@@ -231,6 +281,7 @@ file "$CACHE/screenshot-cmp.png" 2>/dev/null | grep -q "PNG image data" && {
 } || { echo "FAIL: screenshot-cmp (run 'sips -Z 2000' on screenshot.png)"; FAIL=1; }
 [ -s "$CACHE/metadata.json" ] && grep -q '"id"' "$CACHE/metadata.json" && echo "PASS: metadata" || { echo "FAIL: metadata"; FAIL=1; }
 [ -f "$CACHE/tokens.json" ] && echo "PASS: tokens" || { echo "FAIL: tokens"; FAIL=1; }
+[ -f "$CACHE/fills.json" ] && grep -q '"nodes"' "$CACHE/fills.json" && echo "PASS: fills" || { echo "FAIL: fills (run figma_extract_fills — needed for background image + gradient overlay fidelity)"; FAIL=1; }
 [ -s "$CACHE/registry.json" ] && grep -q '"rootNode"' "$CACHE/registry.json" && echo "PASS: registry" || { echo "FAIL: registry"; FAIL=1; }
 [ $FAIL -eq 0 ] && echo "GATE: PASS (Phase A)" || echo "GATE: FAIL (Phase A)"
 ```
@@ -291,7 +342,7 @@ Read `tokens.json` (from A3 `figma_extract_tokens`). Generate **read-only** Swif
    ```bash
    scripts/colorset-codegen.sh .figma-cache/_shared/tokens.json <Assets.xcassets> Colors
    ```
-   Each token becomes `<Assets.xcassets>/Colors/<swiftName>.colorset/Contents.json` with universal (light) + dark appearances. Use `Color("Colors/<swiftName>")` in views — Xcode auto-adapts to the user's appearance setting. This avoids manual `@Environment(\.colorScheme)` branching and prevents the common "dark mode lệch" failure.
+   Each token becomes `<Assets.xcassets>/Colors/<swiftName>.colorset/Contents.json` with universal (light) + dark appearances. The `Colors/` group is written with `provides-namespace: false` so Xcode auto-generates a flat `ColorResource` symbol — use `Color(.<swiftName>)` in views (iOS 17+ type-safe symbol, always available on the Xcode 15+ baseline). Xcode auto-adapts to the user's appearance setting. This avoids manual `@Environment(\.colorScheme)` branching and prevents the common "dark mode lệch" failure. The legacy string form `Color("<swiftName>")` is BANNED.
 
    **1b. Light-only tokens (`darkHex` is null)** — emit `DesignSystem/Color+Tokens.swift` with one Color extension per token:
 
@@ -573,7 +624,7 @@ Goal: SwiftUI code that matches the screenshot pixel-for-pixel, using only asset
 2. `Color(hex:)` extension — grep; if absent, use Asset Catalog / `Color(red:green:blue:)`
 3. Localization — check `.strings`/`.xcstrings`. Project baseline is **`Localizable.xcstrings`**. If `STRING_CATALOG_GENERATE_SYMBOLS = YES`, set flag `useStringCatalogSymbols = true` → C2 emits `Text(.symbolKey)` and offers to translate new keys. Else use `LocalizedStringKey` literal form.
 4. Dark mode scope — if Figma light-only, ask user
-5. **Generated symbol assets** (swiftui-pro/api.md L14) — grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = YES` (default-on for Xcode 15+ projects). If on → flag `useGeneratedSymbols = true` → C2 emits `Image(.icAIClose)` / `Color(.brandRed)`. Else `Image("icAIClose")` / `Color("brandRed")`.
+5. **Generated symbol assets** (swiftui-pro/api.md L14) — grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = YES` (default-on for Xcode 15+; the skill's Xcode 26+ baseline is always-on, so `useGeneratedSymbols = true` is the canonical case). C2 ALWAYS emits `Image(.icAIClose)` / `Color(.brandRed)` (iOS 17+ auto-generated `ImageResource` / `ColorResource`). The legacy string form `Image("icAIClose")` / `Color("brandRed")` is BANNED — only ever surfaced when the project explicitly sets `GENERATE_ASSET_SYMBOLS = NO`, which the skill flags on the run summary as a non-modern project.
 6. **Design constants enums** (`Spacing`, `IKFont`, `IKCoreApp` — names vary by project). Grep for the canonical names AND common alternatives:
    ```bash
    grep -rln "enum \(Spacing\|AppSpacing\|Padding\)\b" --include="*.swift" .
@@ -646,7 +697,7 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 - **Write-time compile-error catch (when xcode MCP available, RECOMMENDED).** After every `Write/Edit` of a `.swift` file, immediately call `mcp__xcode__XcodeRefreshCodeIssuesInFile` on the file path. The MCP returns structured Swift compiler diagnostics (errors + warnings + notes) for that file using the live Xcode index — orders of magnitude faster than waiting for `xcodebuild build` in C5. Fix every error before writing the next file. Workflow shifts compile-error discovery from **C5.3 build (~60-180s wait)** to **post-Write (sub-second)**, eliminating one or more full self-fix-loop attempts on average. When the xcode MCP is not available, this step is silently skipped — C5.3 still catches everything, just later. Do NOT batch this — the cost of one extra MCP call per file is negligible compared to one extra xcodebuild round.
 - **Token usage.** `tokens.json` (from `figma_extract_tokens` in A3) already has `swiftName`, `lightHex`, `darkHex`, `isCapsule`. Use those directly — do NOT re-derive names from Figma slash strings. Then merge with project enums (`Spacing`, `IKFont`, `IKCoreApp`) per the routing rules below: prefer existing enum case → fallback to extracted token → inline literal as last resort.
 - **`isCapsule` → `Capsule()` (hard rule).** For any radius/spacing token with `isCapsule: true` in `tokens.json`, codegen `.clipShape(Capsule())` (and `Capsule()` for fills/backgrounds/overlays) — never `.cornerRadius(9999)` or `RoundedRectangle(cornerRadius: 9999)`. Magic-number 9999 renders correctly only when width ≈ height; pills wider than tall flatten the ends. See `references/design-token-mapping.md` §"Border Radius Tokens".
-- **Dual-mode colors → Asset Catalog.** Run `scripts/colorset-codegen.sh .figma-cache/_shared/tokens.json <Assets.xcassets> Colors` to emit colorsets for every token with both `lightHex` and `darkHex`; reference them via `Color("Colors/<swiftName>")`. Light-only tokens stay as `Color.<swiftName>` extensions in `DesignSystem/Color+Tokens.swift`. Never hand-write the colorset JSON — the script preserves alpha and namespace correctly.
+- **Dual-mode colors → Asset Catalog.** Run `scripts/colorset-codegen.sh .figma-cache/_shared/tokens.json <Assets.xcassets> Colors` to emit colorsets for every token with both `lightHex` and `darkHex`; reference them via `Color(.<swiftName>)` (iOS 17+ auto-generated `ColorResource` — the `Colors/` group is written with `provides-namespace: false` so the symbol resolves flat). Light-only tokens stay as `Color.<swiftName>` static-var extensions in `DesignSystem/Color+Tokens.swift` (callable Apple-style without parentheses). Never hand-write the colorset JSON. Never the legacy string form `Color("<swiftName>")`.
 - `Text` → `LocalizedStringKey`; `Text(verbatim:)` for dynamic data.
 - `Color(hex:)` only if project has the extension; else Asset Catalog or `Color(red:green:blue:)`.
 - Respect iOS deployment target — don't use iOS 17+ APIs if target lower.
@@ -704,6 +755,7 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 - `references/swiftui-pro/api.md`, `views.md`, `data.md`, `accessibility.md` — load on demand for specific rules
 - `references/layout-translation.md` — Auto Layout, stacks, sizing, effects, animations
 - `references/design-token-mapping.md` — typography, colors, gradients, opacity
+- `references/fills-handling.md` — background image / gradient overlay / image+gradient stack (read when a container has non-trivial fills in `fills.json`)
 - `references/component-variants.md` — state/size/style
 - `references/responsive-layout.md` — size classes, iPhone+iPad
 
@@ -814,7 +866,7 @@ For each row in `manifest.rows`, branch on `exporter`:
 **Lottie placeholder rows** are skipped here — codegen lives in C2.
 
 **SwiftUI call-site rules (both paths):**
-- `Image("<exportName>")` for tagged rows; `Image("<friendlyName>")` for fallback rows. The manifest is the single source of truth.
+- `Image(.<exportName>)` for tagged rows; `Image(.<friendlyName>)` for fallback rows (iOS 17+ auto-generated `ImageResource` — never the string form `Image("<name>")`). The manifest is the single source of truth.
 - Always `.resizable()` + explicit `.frame(width:height:)`.
 - Single-color icon (`renderingMode == "template"` in manifest):
   - tagged rows → `.renderingMode(.template)` + `.foregroundStyle(...)` at the call site.
@@ -826,7 +878,7 @@ For each row in `manifest.rows`, branch on `exporter`:
 ```bash
 SWIFT_FILES="<your-generated-swift-files>"
 
-# (a) Every Image("...") in generated views must appear in manifest as exportName or friendlyName.
+# (a) Every Image(.<name>) in generated views must appear in manifest as exportName or friendlyName.
 NAMES=$(python3 -c "
 import json
 m = json.load(open('.figma-cache/<nodeId>/manifest.json'))
@@ -835,17 +887,20 @@ for r in m.get('rows', []):
         continue
     print(r.get('exportName') or r.get('friendlyName'))
 ")
-USED=$(grep -hoE 'Image\("[^"]+"\)' $SWIFT_FILES | sed -E 's/Image\("([^"]+)"\)/\1/')
+# Catch both the canonical ImageResource form (Image(.name)) and the legacy string form (Image("name")).
+# Legacy form should not exist on the Xcode 15+ baseline; if it does, surface as ORPHAN candidates anyway.
+USED=$( { grep -hoE 'Image\(\s*\.[A-Za-z_][A-Za-z0-9_]*' $SWIFT_FILES | sed -E 's/Image\(\s*\.([A-Za-z_][A-Za-z0-9_]*).*/\1/';
+          grep -hoE 'Image\("[^"]+"\)' $SWIFT_FILES | sed -E 's/Image\("([^"]+)"\)/\1/'; } | sort -u )
 for h in $USED; do
-  echo "$NAMES" | grep -qx "$h" || echo "ORPHAN: Image(\"$h\") not in manifest"
+  echo "$NAMES" | grep -qx "$h" || echo "ORPHAN: Image reference \"$h\" not in manifest"
 done
 
-# (a2) Inverse — every manifest asset must be referenced by at least one Image("...") in code.
+# (a2) Inverse — every manifest asset must be referenced by at least one Image(.X) in code.
 # Orphan assets bloat the catalog and usually mean the agent extracted a node it later flattened away.
 # This is a WARNING, not a FAIL: the user decides whether to remove or keep the unused entry.
 for n in $NAMES; do
   [ -z "$n" ] && continue
-  echo "$USED" | grep -qx "$n" || echo "UNUSED: manifest entry $n not referenced by any Image(\"...\")"
+  echo "$USED" | grep -qx "$n" || echo "UNUSED: manifest entry $n not referenced by any Image(.X) call"
 done
 
 # (b) Every lottie-placeholder row must have a matching LottieView call.
@@ -961,7 +1016,7 @@ These hooks turn the in-skill gates into OS-level enforcement. Without them, gat
 
 1. **PreToolUse hook — Phase A+B coverage gate.** `figma-to-swiftui-gate.sh`: blocks `Write`/`Edit` on `*.swift` when any screen-cache lacks Phase A artifacts (manifest, design-context, screenshot, tokens, registry) OR Phase B is incomplete (`phaseB != "done"`, empty `rows[]`, failed rows, OR `registry.taggedAssets[].nodeId` not all present in `manifest.rows[]` with `status: "done"`). Closes the "downloaded the hero, built the rest with SwiftUI shapes" failure mode.
 
-2. **PreToolUse hook — banned-pattern detector.** `figma-to-swiftui-banned-pattern-gate.sh`: scans the Swift content the agent is about to write. Blocks `Image(systemName:)` outside the four-name allow-list (no `// allow-systemName:` comment), `Text("9:41")` and other status-bar redraws, `Capsule()` with height ≤ 6pt (home-indicator lookalike), `FakeStatusBar` / `HomeIndicator` / `NotchView` / `DynamicIslandView` struct names, letter-as-logo (`Text("G")` near a small frame), `Text(...).frame(width: <num>)` without `// Figma fixed-width:` justification, screen-root `.padding(.top, 44|47|59|64|67|79|88)` without `// safe-area-adjusted` comment (double-counts the iOS safe-area inset), `Image("...").frame(maxWidth: .infinity)` chains missing `.resizable()` + content mode (blank-gap bug), `cornerRadius`/`clipShape(.rect(cornerRadius:))`/`clipShape(RoundedRectangle(cornerRadius:))` ≥ 30pt without `// allow-screen-corner-radius:` justification (mimics the iPhone bezel — hardware already curves it), and `Text(...).frame(maxWidth: .infinity)` whose enclosing scope is a `Button { ... }` body, without `// allow-text-fill:` justification (cascades up through Button — overrides caller `.padding(.horizontal, N)` and bloats the button to screen width). Prevents the absolute-rule violations from landing on disk in the first place.
+2. **PreToolUse hook — banned-pattern detector.** `figma-to-swiftui-banned-pattern-gate.sh`: scans the Swift content the agent is about to write. Blocks `Image(systemName:)` outside the four-name allow-list (no `// allow-systemName:` comment), `Text("9:41")` and other status-bar redraws, `Capsule()` with height ≤ 6pt (home-indicator lookalike), `FakeStatusBar` / `HomeIndicator` / `NotchView` / `DynamicIslandView` struct names, letter-as-logo (`Text("G")` near a small frame), `Text(...).frame(width: <num>)` without `// Figma fixed-width:` justification, screen-root `.padding(.top, 44|47|59|64|67|79|88)` without `// safe-area-adjusted` comment (double-counts the iOS safe-area inset), `Image(...).frame(maxWidth: .infinity)` chains (both legacy `Image("X")` and modern `Image(.X)` form) missing `.resizable()` + content mode (blank-gap bug), `cornerRadius`/`clipShape(.rect(cornerRadius:))`/`clipShape(RoundedRectangle(cornerRadius:))` ≥ 30pt without `// allow-screen-corner-radius:` justification (mimics the iPhone bezel — hardware already curves it), and `Text(...).frame(maxWidth: .infinity)` whose enclosing scope is a `Button { ... }` body, without `// allow-text-fill:` justification (cascades up through Button — overrides caller `.padding(.horizontal, N)` and bloats the button to screen width). Prevents the absolute-rule violations from landing on disk in the first place.
 
 3. **PreToolUse hook — entry-path bypass detector.** `figma-to-swiftui-entry-bypass-gate.sh`: blocks edits to `*App.swift` / `*ContentView.swift` / `*RootView.swift` / `*MainView.swift` / `*AppRouter.swift` / `*AppCoordinator.swift` when the new content sets `initialStep`/`currentStep`/`verifyStep` to a screen literal, looks up `VERIFY_ROUTE` env vars, or adds `#if DEBUG` deep-link parsers. Closes the C5 verification-integrity bypass per `references/verification-loop.md` §"C5 Verification Integrity". Legitimate flow-state initialization carries `// figma-entry-bypass-gate: legitimate-flow-state` to bypass.
 

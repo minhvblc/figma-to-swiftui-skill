@@ -19,7 +19,7 @@ Read this when you reach Phase B or Phase C. Read it again at the end of every r
 - `figma-to-swiftui-gate.sh` (PreToolUse) blocks Swift writes when `manifest.rows[]` doesn't cover every `registry.taggedAssets[]` — i.e. the agent didn't run `figma_export_assets_unified` for icons it then substitutes.
 - `c6-asset-completeness.sh` (Stop) catches any that slipped through.
 
-**The fix:** re-run `figma_export_assets_unified(autoDiscover: true)` for the missing icons. Use `Image("icAI<Name>")` at the call site. If the asset isn't in Figma, **stop and ask the user** — do not improvise.
+**The fix:** re-run `figma_export_assets_unified(autoDiscover: true)` for the missing icons. Use `Image(.icAI<Name>)` at the call site (iOS 17+ auto-generated `ImageResource` symbol — never the string form `Image("icAI<Name>")`). If the asset isn't in Figma, **stop and ask the user** — do not improvise.
 
 ---
 
@@ -163,7 +163,7 @@ If you genuinely need to set the initial state of the real flow (not a verificat
 - `figma-to-swiftui-banned-pattern-gate.sh` (PreToolUse) blocks `Image(...).frame(maxWidth: .infinity, ...)` writes that don't have `.resizable()` AND a content-mode modifier (`.scaledToFill()` / `.scaledToFit()` / `.aspectRatio(contentMode:)`) within the same modifier chain.
 - C3 Pass 2 check letter `IF` (Image Fill mode) verifies for every fill-* Image: `.resizable()` present, content mode present, frame present.
 
-**The fix:** chain all three. `Image("hero").resizable().scaledToFill().frame(maxWidth: .infinity, maxHeight: 240).clipped()`. The `.clipped()` matters with `.scaledToFill()` — without it the over-flowing pixels render outside the frame and overlap neighbours.
+**The fix:** chain all three. `Image(.hero).resizable().scaledToFill().frame(maxWidth: .infinity, maxHeight: 240).clipped()`. The `.clipped()` matters with `.scaledToFill()` — without it the over-flowing pixels render outside the frame and overlap neighbours.
 
 ---
 
@@ -213,7 +213,7 @@ When the Button outer carries `.frame(maxWidth: .infinity)`, it propagates the f
 Button(action: tapped) { Text("Continue") }
   .frame(maxWidth: .infinity)
   .padding(.vertical, 12)
-  .background(Color.accent, in: .rect(cornerRadius: 8))
+  .background(Color(.accent), in: .rect(cornerRadius: 8))
   .padding(.horizontal, 16)
 ```
 
@@ -226,6 +226,38 @@ Button(action: tapped) {
 }
 .padding(.horizontal, 16)  // overridden — Button already fills the screen
 ```
+
+---
+
+## 13. Template-from-doc (the §1 of multi-screen flows)
+
+**The thought:** *"The product doc says the onboarding flow has 30 question screens. They all look like a single template (title + radio-button list + Continue). I'll build one generic `SingleChoiceQuestionView` and feed it strings from the doc's question list. Fetching `get_design_context` for each of the 30 screens would be wasteful."*
+
+**The actual outcome:** the app compiles, the screens render, the doc questions appear — but the screens **do not match Figma**. Each Figma screen has its own wording (sometimes different from the doc), its own option count, its own illustration on break screens, its own special states (some have Skip, some don't, some have a "What does this mean?" link, some don't), its own colors per topic, its own animations. The agent built 30 fake screens off a doc summary instead of 30 real screens off the actual frames.
+
+This is **§1 of multi-screen flows**: doc-as-spec, Figma-as-decoration. The single most common failure mode the flow skill exists to prevent — and the most insidious, because the agent's `xcodebuild build` will succeed and a single screenshot of one screen will look correct. The damage is only visible when the user side-by-sides 30 screenshots against 30 Figma frames.
+
+**The rule:** [SKILL.md §"BANNED shortcuts"](../SKILL.md). Doc describes BEHAVIOR. Figma defines STRUCTURE. They are not interchangeable. Every screen in `registry.screens[]` or `registry.candidateScreens[]` needs its own Phase A artifact: `design-context.md` + `screenshot.png`. Treating 30 frames as instances of 1 template assumes facts not in evidence.
+
+**The gate that should catch it:**
+- `figma-to-swiftui-gate.sh` (PreToolUse) blocks Swift writes for any screen whose `.figma-cache/<nodeId>/manifest.phaseA != "done"`. When all 30 screens lack Phase A artifacts, ALL Swift writes to that feature should block.
+- Flow skill's mandatory Step A0 → A3 enumerates per-screen and writes the manifest, so the gate has something to check.
+- **However:** the gate cannot detect "agent did Phase A for screen 1 then wrote 30 screens off a template" — the trail of Swift writes references files outside the cache. This anti-pattern is **agent-honesty** territory: the agent must structurally refuse to template from doc.
+
+**The fix:** when the doc lists 30 question screens and Figma lists 30 frames:
+1. Verify counts match (or surface the discrepancy to the user — Figma may have more / fewer / variant screens).
+2. Fetch `get_design_context` + `get_screenshot` for EACH of the 30 frames. Cluster in parallel batches of 3 per `fetch-strategy.md`.
+3. Cross-reference: which question does each frame correspond to? Wording may differ from the doc — Figma wins.
+4. Build screen-specific view files. Sharing a `SingleChoiceQuestionView` component is fine, but each `IntroXScreen.swift` is its own file with its own data (title literal, option array, illustration, special state flags).
+5. Run C5 per screen. The 30-vs-30 comparison is the only way to catch drift.
+
+**STOP signs that mean you've already drifted into this anti-pattern:**
+- A `switch step { case .source: ... case .name: ... }` enumeration over 20+ cases inside a single view file. Each case is a screen that should have its own view file.
+- A `Strings.Onboarding.questions: [Question]` constant where you copy-pasted questions from the doc. The strings should come from per-screen `Strings` enums populated by `b0a-extract-copy.sh` against design-context.
+- Your `screens[]` count in `registry.json` is 30 but `.figma-cache/<nodeId>/` exists for only 1 — 5 of them.
+- Your final summary contains "they're all variants of the same template" — you didn't verify, you assumed.
+
+**Why this is a top-line failure (not a minor bug):** unlike §1 (icon shortcut) which produces obvious visual divergence on a single screen, template-from-doc divergence is **distributed**: every screen is subtly wrong in a different way. Catching it requires going through 30 simulator screenshots one-by-one. The user typically discovers this *after* the build succeeds and you've moved on to other features. Trust damage is high.
 
 ---
 

@@ -149,7 +149,7 @@ if [ ${#VIOLATIONS[@]} -gt 0 ]; then
   for v in "${VIOLATIONS[@]}"; do
     echo "  - $v"
   done
-  echo "${C_DIM}fix: replace each with the matching Figma asset (Image(\"icAI...\")), OR if a system glyph is genuinely correct, add // allow-systemName: <reason> on the line above${C_RST}"
+  echo "${C_DIM}fix: replace each with the matching Figma asset (Image(.icAI...) — iOS 17+ auto-generated ImageResource), OR if a system glyph is genuinely correct, add // allow-systemName: <reason> on the line above${C_RST}"
 fi
 
 # Summary ──────────────────────────────────────────────────────────────────────

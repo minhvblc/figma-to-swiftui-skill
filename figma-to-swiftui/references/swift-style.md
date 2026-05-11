@@ -297,10 +297,10 @@ Within each group, smaller-scope modifiers come first.
 // ✓
 Text("Hello")
     .font(IKFont.bodyMedium16)
-    .foregroundStyle(Color.primaryText)
+    .foregroundStyle(Color(.primaryText))
     .padding(.horizontal, Spacing.l16)
     .frame(maxWidth: .infinity)
-    .background(Color.surfaceCard)
+    .background(Color(.surfaceCard))
     .clipShape(RoundedRectangle(cornerRadius: 12))
     .onTapGesture { viewModel.send(.tapped) }
 ```

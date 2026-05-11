@@ -394,7 +394,8 @@ for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
               b0a-extract-copy.sh b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
               mode-detect.sh \
               colorset-codegen.sh timing-report.sh \
-              ikxcodegen-wrap.sh xcodeproj-add-files.sh; do
+              ikxcodegen-wrap.sh ikxcodegen-scaffold.sh vanilla-scaffold.sh \
+              xcodeproj-add-files.sh; do
   path="$SCRIPTS_DIR/$script"
   if [ ! -f "$path" ]; then
     bad "$script missing at $path"
@@ -420,8 +421,9 @@ if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
                 c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
                 c1-probe.sh \
                 b0a-extract-copy.sh b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
-                timing-report.sh \
-                ikxcodegen-wrap.sh xcodeproj-add-files.sh; do
+                timing-report.sh mode-detect.sh \
+                ikxcodegen-wrap.sh ikxcodegen-scaffold.sh vanilla-scaffold.sh \
+                xcodeproj-add-files.sh; do
     p="$INSTALLED_SCRIPTS_DIR/$script"
     if [ ! -x "$p" ]; then
       bad "$script not installed at $p (stop-gate fallback may miss it)"

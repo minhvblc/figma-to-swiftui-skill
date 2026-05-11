@@ -37,7 +37,7 @@ struct CodesHomeScreen: View {
             headerView
             bodyWithFooterView
         }
-        .background(Color.bg)
+        .background(Color(.bg))
         .ikLogScreenActive(AppTracking.codesHome)        // ← MANDATORY
     }
 }

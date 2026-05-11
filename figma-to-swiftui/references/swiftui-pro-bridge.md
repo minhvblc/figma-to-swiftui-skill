@@ -32,10 +32,12 @@ Decision tree per text style in inventory:
 
 ### 1c. Figma colors vs Asset Catalog
 
-- If `useGeneratedSymbols = true` (C1 audit) AND project has a color asset matching the Figma value → `Color(.brandRed)`.
-- If project has `IKCoreApp.colors.*` or similar token enum → use that.
-- Else if `Color(hex:)` extension exists in project → `Color(hex: "#FF6600")`.
-- Else `Color(red: 1.0, green: 0.4, blue: 0.0)` with a `// TODO: extract to asset catalog` comment.
+Resolution order (highest priority first):
+1. If project has `IKCoreApp.colors.*` or similar token enum matching the Figma value → use that.
+2. Else if project asset catalog has a color asset matching the Figma value → `Color(.brandRed)` (iOS 17+ auto-generated `ColorResource` symbol — always available on Xcode 15+ baseline). The legacy `Color("brandRed")` string form is BANNED.
+3. Else if a light-only token exists in `Color+Tokens.swift` extension → `Color.brandRed` (static extension form).
+4. Else if `Color(hex:)` extension exists in project → `Color(hex: "#FF6600")`.
+5. Else `Color(red: 1.0, green: 0.4, blue: 0.0)` with a `// TODO: extract to asset catalog` comment.
 
 ### 1d. Hard-coded strings vs xcstrings symbol API
 
@@ -53,10 +55,10 @@ If the project's xcstrings symbols haven't been generated yet, fall back to `Tex
 ### 1e. Re-using project tokens — search order
 
 For every Figma value (color, font, spacing, radius, animation), search project in this order:
-1. **Project color audit map** (`.figma-cache/_shared/project-colors.json`, emitted by `scripts/c1-project-color-audit.sh`) — for colors only, when the Figma hex matches an entry in `colors[].hex`, emit the entry's `swiftPath` directly (e.g. `Color("Colors/primary500")` or `Color.brandSecondary`). This is the cheapest match and prevents inventing a parallel token.
+1. **Project color audit map** (`.figma-cache/_shared/project-colors.json`, emitted by `scripts/c1-project-color-audit.sh`) — for colors only, when the Figma hex matches an entry in `colors[].hex`, emit the entry's `swiftPath` directly (e.g. `Color(.primary500)` or `Color.brandSecondary`). This is the cheapest match and prevents inventing a parallel token.
 2. `IKCoreApp.colors.*`, `IKCoreApp.spacing.*`, etc. — top-level app tokens
 3. `Spacing.*`, `IKFont.*` — domain-specific enums
-4. Asset catalog symbol (`Color(.x)` if `useGeneratedSymbols`)
+4. Asset catalog symbol — `Color(.x)` (iOS 17+ auto-generated `ColorResource`, always available on Xcode 15+ baseline)
 5. Local computed constant in the same module
 6. Inline literal (last resort)
 
@@ -74,8 +76,8 @@ These rules apply on every emit, every project. The deployment target is **iOS 1
 | 2 | Color modifier | `.foregroundColor(.red)` | `.foregroundStyle(.red)` | api.md L3 |
 | 3 | Top toolbar leading slot | `.toolbar { ToolbarItem(placement: .navigationBarLeading)` | iOS 17+ → `.topBarLeading`. **iOS 16 → keep `.navigationBarLeading` (mandatory fallback)**. Always emit comment marker. See §6. | api.md L11 |
 | 4 | Top toolbar trailing | as above | Same fallback. See §6. | api.md L11 |
-| 5 | Decorative Figma image | `Image("decorativeBlob")` (no a11y) | `Image(decorative: "decorativeBlob")` | accessibility.md L6 |
-| 6 | Meaningful icon image | `Image("icAIClose")` (no a11y) | `Image("icAIClose").accessibilityLabel("Close")` (label derived from semantic Figma name) | accessibility.md L6 |
+| 5 | Decorative Figma image | `Image(.decorativeBlob)` (no a11y) | `Image(decorative: .decorativeBlob)` | accessibility.md L6 |
+| 6 | Meaningful icon image | `Image(.icAIClose)` (no a11y) | `Image(.icAIClose).accessibilityLabel("Close")` (label derived from semantic Figma name) | accessibility.md L6 |
 | 7 | Icon-only `Button` | `Button { } label: { Image(...) }` | `Button("Close", systemImage: "xmark", action: close)` form OR keep custom label and add `.accessibilityLabel("Close")`. Never icon-only without a label. | accessibility.md L9 |
 | 8 | Tap action via gesture | `.onTapGesture { ... }` | `Button { ... } label: { ... }` | accessibility.md L12 |
 | 9 | Hide scroll indicators | `ScrollView(showsIndicators: false)` | `ScrollView { ... }.scrollIndicators(.hidden)` | api.md L17 |
@@ -87,7 +89,7 @@ These rules apply on every emit, every project. The deployment target is **iOS 1
 | 15 | Tap target < 44pt | raw `.frame(width: 24, height: 24)` on `Button` | `.contentShape(.rect).frame(minWidth: 44, minHeight: 44)` (or wrap content in 44+ frame) | design.md L12 |
 | 16 | View body length > ~40 lines | computed property `private var header: some View { ... }` | Extract to a separate `View` struct in its own file (vd. `LoginHeaderView.swift`) | views.md L3 |
 | 17 | Inline business logic in `body`/`task`/`onAppear` | `.task { try? await api.fetch() }` | Extract to method (`loadData()`) called from `.task`, or move to `@Observable` view model | views.md L4–7 |
-| 18 | Avoid `Image(systemName:)` for designed icons | `Image(systemName: "xmark")` | `Image("icAIClose")` (downloaded in Phase B). Allowed exceptions: native `NavigationStack` back chevron, share-sheet icons. See ABSOLUTE RULE in SKILL.md. | (figma-to-swiftui rule, harmonizes with accessibility.md) |
+| 18 | Avoid `Image(systemName:)` for designed icons | `Image(systemName: "xmark")` | `Image(.icAIClose)` (downloaded in Phase B, referenced via iOS 17+ auto-generated `ImageResource` — never the string form `Image("icAIClose")`). Allowed exceptions: native `NavigationStack` back chevron, share-sheet icons. See ABSOLUTE RULE in SKILL.md. | (figma-to-swiftui rule, harmonizes with accessibility.md) |
 | 19 | `Text` concatenation with `+` | `Text("Hello") + Text("World")` | Interpolate: `let h = Text("Hello"); let w = Text("World"); Text("\(h)\(w)")` | api.md L18 |
 | 20 | `Group` wrapping single child | redundant `Group { ChildView() }` | Just `ChildView()` | (general SwiftUI hygiene) |
 | 21 | Nav title style | `.navigationTitle(...)` only | Confirm `.navigationBarTitleDisplayMode(.inline/.large)` matches Figma; use `Text(.titleKey)` symbol | navigation.md (general) |
@@ -102,7 +104,7 @@ Phase C1 sets these flags by inspecting the project AND writes them to `c1-conve
 
 | Flag (in `c1-conventions.json`) | C1 detection | If TRUE | If FALSE |
 |---|---|---|---|
-| `useGeneratedSymbols` | grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = YES`; or check Xcode 15+ default behavior | `Image(.icAIClose)`, `Color(.brandRed)` | `Image("icAIClose")`, `Color("brandRed")` |
+| `useGeneratedSymbols` | grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = YES`; treat the flag's absence as `YES` on Xcode 15+ (default-on). Effectively always TRUE on the Xcode 15+ baseline this skill assumes. | Emit `Image(.icAIClose)`, `Color(.brandRed)` (iOS 17+ auto-generated `ImageResource` / `ColorResource`). | Only when project explicitly sets `GENERATE_ASSET_SYMBOLS = NO`. Then emit the legacy string form `Image("icAIClose")`, `Color("brandRed")`. The skill flags this on the run summary as a non-modern project. |
 | `useStringCatalogSymbols` | xcstrings present + `STRING_CATALOG_GENERATE_SYMBOLS = YES` | `Text(.welcomeMessage)` + add key to .xcstrings (extractionState: manual) + offer translate | `Text("Welcome")` (LocalizedStringKey infers) |
 | `spacingEnum` | grep `enum Spacing\|enum AppSpacing\|enum Padding` | Route Figma spacing values through `<enum>.<token>` | Inline literal `.padding(24)` |
 | `ikFontEnum` | grep `enum IKFont\|enum AppFont\|enum Typography` | Use `<enum>.<token>` for typography | `@ScaledMetric` + `.font(.system(size:weight:))` |
@@ -120,7 +122,7 @@ Phase C1 sets these flags by inspecting the project AND writes them to `c1-conve
 | `usesIKFeedback` | `usesIKCoreApp` OR `IKLoading.show/dismissLoading` OR `IKHaptics.` OR `showAppBottomToast` | Emit `IKLoading` + `IKHaptics` + `AppUtils.shared.showAppBottomToast(...)` per `references/ikfeedback-bridge.md` (D-601..D-607). | Use `UIImpactFeedbackGenerator` / iOS 17 `.sensoryFeedback` |
 | `usesIKTracking` | `usesIKCoreApp` OR `.ikLogScreenActive(` OR `AppTrackingFeature.shared` | Emit `.ikLogScreenActive(AppTracking.<case>)` on every `*Screen.swift` body root + programmatic `AppTrackingFeature.shared.addTrackingFeature(...)` per `references/iktracking-bridge.md` (D-701..D-705). | Use third-party analytics (Firebase/Mixpanel) per project convention or skip |
 | `usesIKLocalized` | `usesIKCoreApp` OR `.ikLocalized()` extension call | Two paths per `references/iklocalized-bridge.md` (D-801..D-806): direct `Text("...")` literal (SwiftUI auto-localizes) or `"...".ikLocalized()` (String constants and non-Text APIs). Banned: `Text("...".ikLocalized())` double-localize, `LocalizedStringKey("...")` manual constructor, `NSLocalizedString`, `String(localized:)`. | Use `Text(.symbolKey)` symbol API or `NSLocalizedString` per project convention |
-| `usesIKAssetSymbol` | `usesIKCoreApp` OR `GENERATE_ASSET_SYMBOLS = YES` | Emit `Image(.<assetName>)` (Swift 5.9+ generated symbol) — `Image(.icCancel)`, NOT `Image("icCancel")` | Use `Image("icCancel")` string literal |
+| `usesIKAssetSymbol` | `usesIKCoreApp` OR `useGeneratedSymbols` (effectively always TRUE on Xcode 15+ baseline) | Emit `Image(.<assetName>)` (iOS 17+ auto-generated `ImageResource`) — `Image(.icCancel)`, NOT `Image("icCancel")` | Use `Image("icCancel")` string literal (legacy projects only) |
 | `entitiesPath` / `entitiesPrefix` / `entitiesSources` | folder `Entities/<Source>/<Prefix><Domain>Model.swift` pattern detected from existing code | New entity models go to `<entitiesPath>/<source>/<prefix><Domain>Model.swift` matching detected prefix (D-214). When `entitiesPrefix == ""`, emit unprefixed. | n/a (no entities folder) |
 | `trackingEnumName` / `trackingEnumPath` | `enum AppTracking` declaration grep | Reference `<enumName>.<case>` in `.ikLogScreenActive(...)`, `AppTrackingFeature.shared.addTrackingFeature(params: [.<key>: ..., ...])`. New cases require delta-request. | n/a |
 | `toastTypeEnumName` | `enum ToastSceenType\|ToastScreenType\|ToastType\|AppToastType` | Use `AppUtils.shared.showAppBottomToast(for: <enumName>.<case>)`. New cases require delta-request. | n/a |
@@ -180,11 +182,11 @@ Text("Hello").foregroundStyle(.red)
 
 ```swift
 // Before
-Button(action: close) { Image("icAIClose") }
+Button(action: close) { Image(.icAIClose) }
 
 // After
 Button("Close", action: close) {
-    Image("icAIClose")
+    Image(.icAIClose)
         .accessibilityHidden(true)   // image is decorative; the Button label provides accessibility
 }
 ```
@@ -217,7 +219,7 @@ Comment marker format:
 | `@Observable` (data.md L11) | iOS 17 | `ObservableObject` + `@Published` + `@StateObject`/`@ObservedObject` |
 | `@Bindable` (data.md L11) | iOS 17 | `@ObservedObject` + `$model.field` direct |
 | `WebView` native (api.md L15) | iOS 26 | `UIViewRepresentable` wrap of `WKWebView` |
-| `Image(.assetName)` symbol (api.md L14) | build-time only | ✓ Use directly when `useGeneratedSymbols` |
+| `Image(.assetName)` symbol (api.md L14) | build-time only | ✓ Use directly — `useGeneratedSymbols` is effectively always TRUE on Xcode 15+ baseline. Legacy `Image("assetName")` only when the project explicitly sets `GENERATE_ASSET_SYMBOLS = NO`. |
 | `Text(.symbolKey)` xcstrings (hygiene.md L8) | build-time only | ✓ Use directly when `useStringCatalogSymbols` |
 | `#Preview` macro (views.md L12) | Xcode 15+ runtime any | ✓ Use directly |
 | `containerRelativeFrame()` (api.md L7) | iOS 17 | Use `GeometryReader` (allowed exception on iOS 16) |
@@ -265,7 +267,7 @@ For each Figma typography style (size + weight + lineHeight + tracking), find th
 .foregroundStyle(IKCoreApp.colors.textPrimary)
 .padding(IKCoreApp.spacing.contentPadding)
 ```
-Often namespaces the others. C1 lists what's exposed. When `colorEnum == null`, prefer Asset Catalog (`Color("Colors/<name>")`) → tokens.json-emitted `Color.<swiftName>` → `Color(hex:)` extension → inline `Color(red:green:blue:)` (last resort).
+Often namespaces the others. C1 lists what's exposed. When `colorEnum == null`, prefer Asset Catalog (`Color(.<name>)` via iOS 17+ auto-generated `ColorResource`) → tokens.json-emitted light-only extension `Color.<swiftName>` → `Color(hex:)` extension → inline `Color(red:green:blue:)` (last resort). Never the legacy string form `Color("name")`.
 
 If a Figma value doesn't fit any detected token, surface it in the run summary so the user can decide whether to add a new case (skill never auto-edits enum files).
 
@@ -282,7 +284,7 @@ These are the most common drifts when generating from Figma. Self-check Pass 4 c
 .fontWeight(.bold)
 Text("Hello") + Text(" World")
 struct V_Previews: PreviewProvider { ... }
-Button(action: close) { Image("icAIClose") }       // missing accessibility
+Button(action: close) { Image(.icAIClose) }        // missing accessibility
 .onTapGesture { closeAction() }                     // not a Button
 if loading { v.opacity(0.5) } else { v }           // _ConditionalContent
 .animation(.easeIn)                                  // no value
@@ -296,8 +298,8 @@ Task { try! await api.load() }                      // force try
 .bold()
 let h = Text("Hello"); let w = Text(" World"); Text("\(h)\(w)")
 #Preview { V() }
-Button("Close", action: close) { Image("icAIClose").accessibilityHidden(true) }
-Button { closeAction() } label: { Image("icAIClose").accessibilityHidden(true) }.accessibilityLabel("Close")
+Button("Close", action: close) { Image(.icAIClose).accessibilityHidden(true) }
+Button { closeAction() } label: { Image(.icAIClose).accessibilityHidden(true) }.accessibilityLabel("Close")
 v.opacity(loading ? 0.5 : 1)
 .animation(.easeIn, value: loading)
 ScrollView { ... }.scrollIndicators(.hidden)

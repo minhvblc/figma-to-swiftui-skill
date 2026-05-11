@@ -122,7 +122,7 @@ Before generating any SwiftUI:
     - `usesIKFeedback` — `IKLoading` / `IKHaptics` / `AppUtils.shared.showAppBottomToast` instead of native equivalents per [`../figma-to-swiftui/references/ikfeedback-bridge.md`](../figma-to-swiftui/references/ikfeedback-bridge.md).
     - `usesIKTracking` (+ `trackingEnumName` + `trackingEnumPath`) — every new screen has `.ikLogScreenActive(<trackingEnumName>.<case>)` mandatory; programmatic tracking via `AppTrackingFeature.shared.addTrackingFeature(...)`. See [`../figma-to-swiftui/references/iktracking-bridge.md`](../figma-to-swiftui/references/iktracking-bridge.md). New cases require delta-request — subagents NEVER mutate the shared enum directly.
     - `usesIKLocalized` — two paths per [`../figma-to-swiftui/references/iklocalized-bridge.md`](../figma-to-swiftui/references/iklocalized-bridge.md): `Text("...")` literal (SwiftUI auto-localizes via LocalizedStringKey) vs `"...".ikLocalized()` (String constants and non-Text APIs). The double-localize pattern `Text("...".ikLocalized())` is BANNED (silently disables auto-localization).
-    - `usesIKAssetSymbol` — `Image(.<assetName>)` generated symbol form (Swift 5.9+) instead of `Image("<assetName>")` string literal.
+    - `usesIKAssetSymbol` — `Image(.<assetName>)` (iOS 17+ auto-generated `ImageResource`, also produced by Ikame's IKAssetSymbol macro). The legacy string form `Image("<assetName>")` is BANNED on the Xcode 15+ baseline regardless of this flag — the flag now only distinguishes Ikame's macro path from Apple's auto-gen path.
     - `entitiesPath` (+ `entitiesPrefix` + `entitiesSources`) — when the flow introduces a new app-wide model, place it at `<entitiesPath>/<source>/<entitiesPrefix><Domain>Model.swift`. Prefix is project-specific (`G` in authenv2 for GRDB; may be empty in other projects). Subagents emit delta-requests rather than write to `Entities/` directly.
     - `toastTypeEnumName` — `AppUtils.shared.showAppBottomToast(for: <enumName>.<case>)`. New cases require delta-request.
   - **Decision-table reference** — when `usesIKCoreApp == true`, every per-screen subagent reads [`../figma-to-swiftui/references/ikame-decision-table.md`](../figma-to-swiftui/references/ikame-decision-table.md) for the locked patterns (D-IDs). Subagents MAY NOT invent alternatives to D-101..D-1305 — they reference rows by ID and STOP-and-escalate via delta-request when an ambiguity falls outside the table (decision-table §16).
@@ -181,14 +181,14 @@ If `figma_extract_tokens` / `figma_build_registry` / `figma_export_assets_unifie
 
 ```
 Phase A artifacts per screen
-| Screen | design-context.md | screenshot.png | tokens.json | manifest.phaseA |
-|---|---|---|---|---|
-| <Name 1> (nodeId X)  | ✓ <bytes> | ✓ valid | ✓ <symlink to _shared> | ✓ "done" |
-| <Name 2> (nodeId Y)  | ✓ <bytes> | ✓ valid | ✓ <symlink to _shared> | ✓ "done" |
+| Screen | design-context.md | screenshot.png | tokens.json | fills.json | manifest.phaseA |
+|---|---|---|---|---|---|
+| <Name 1> (nodeId X)  | ✓ <bytes> | ✓ valid | ✓ <symlink to _shared> | ✓ <N interesting nodes> | ✓ "done" |
+| <Name 2> (nodeId Y)  | ✓ <bytes> | ✓ valid | ✓ <symlink to _shared> | ✓ <N interesting nodes> | ✓ "done" |
 ...
 ```
 
-The hook `figma-to-swiftui-gate.sh` enforces this at write-time — it will reject Swift writes when any of the four artifacts is missing for any screen-cache directory. Do not try to bypass the hook by writing a fake `manifest.json` with a stub `assetList`; the hook reads `phaseA: "done"` AND verifies `design-context.md` non-empty AND `tokens.json` present AND `screenshot.png` valid PNG. Fake one, the next is missing.
+The hook `figma-to-swiftui-gate.sh` enforces this at write-time — it will reject Swift writes when any of the five artifacts is missing for any screen-cache directory. Do not try to bypass the hook by writing a fake `manifest.json` with a stub `assetList`; the hook reads `phaseA: "done"` AND verifies `design-context.md` non-empty AND `tokens.json` present AND `screenshot.png` valid PNG AND `fills.json` parseable. Fake one, the next is missing.
 
 **Phase A sub-step A0 (flow-global): registry.** Once per flow, before fetching any screen:
 1. Call `figma_build_registry(fileKey, rootNodeId, depth=10)`.
@@ -250,7 +250,7 @@ Prefer this reuse order:
 
 For each screen's Phase B:
 - Tagged assets write directly into `Assets.xcassets` during B3, **per screen, in the order screens are processed**.
-- The tool groups imagesets into a folder named after the root node passed in the call (the screen). Two screens that both reference `eICHome` will land as `Assets.xcassets/Screen1/icAIHome.imageset` AND `Assets.xcassets/Screen2/icAIHome.imageset` — each under its screen folder. **Xcode resolves `Image("icAIHome")` by name across the whole catalog**, so this duplication on disk is harmless at the call site.
+- The tool groups imagesets into a folder named after the root node passed in the call (the screen). Two screens that both reference `eICHome` will land as `Assets.xcassets/Screen1/icAIHome.imageset` AND `Assets.xcassets/Screen2/icAIHome.imageset` — each under its screen folder. **Xcode resolves `Image(.icAIHome)` (iOS 17+ auto-generated `ImageResource`) by name across the whole catalog**, so this duplication on disk is harmless at the call site.
 - `skipIfExistsInCatalog` (default `true`) means a re-run will not re-download/re-import an imageset whose name already exists anywhere in the catalog. Effective behavior: the FIRST screen that processes a shared icon "wins" the import; subsequent screens silently skip it. Re-runs become cheap.
 - Different source nodeIds with the same Figma name (rare; two designers used `eICClose` on different nodes) → tool deduplicates with suffix (`icAIClose_2`) and emits a warning.
 - Fallback assets (untagged + FLATTEN regions) are deduped at the flow level via `_shared/assets/`, then imageset-imported in C4 per screen.
@@ -387,7 +387,7 @@ Stating "done" / "xong" / "BUILD SUCCEEDED, closing out" without this block — 
 - Do not invent backend contracts or business rules from a mockup
 - Do not create duplicate tokens, duplicate routers, or duplicate shared components
 - Do not stop at static UI when the request is for a feature flow
-- **Never fabricate manifest fields to make a gate pass.** `manifest.json` is a record of work actually done — `phaseA = "done"` means `design-context.md`, `screenshot.png`, `metadata.json`, `tokens.json`, `registry.json` all exist on disk per screen. `phaseB = "done"` means every `rows` entry has its PNG on disk (and, for tagged rows, its imageset in the catalog). `verification.c5.gate = "PASS"` means Gate C5 actually printed `GATE: PASS`. Writing these fields to satisfy a gate's bash check WITHOUT having executed the underlying step is gaming the gate and a protocol violation. If a gate would fail, do the work — do not edit the manifest. If you find yourself writing "manifests so the gate passes", **STOP** — that is the exact failure mode this rule exists to prevent.
+- **Never fabricate manifest fields to make a gate pass.** `manifest.json` is a record of work actually done — `phaseA = "done"` means `design-context.md`, `screenshot.png`, `metadata.json`, `tokens.json`, `fills.json`, `registry.json` all exist on disk per screen. `phaseB = "done"` means every `rows` entry has its PNG on disk (and, for tagged rows, its imageset in the catalog). `verification.c5.gate = "PASS"` means Gate C5 actually printed `GATE: PASS`. Writing these fields to satisfy a gate's bash check WITHOUT having executed the underlying step is gaming the gate and a protocol violation. If a gate would fail, do the work — do not edit the manifest. If you find yourself writing "manifests so the gate passes", **STOP** — that is the exact failure mode this rule exists to prevent.
 
 ## Output Expectations
 

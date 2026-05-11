@@ -1,28 +1,18 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Write/Edit on app-entry / root-navigation Swift files.
+# PreToolUse hook on app-entry / root-navigation Swift files.
 #
-# Detects the most common C5 verification-integrity bypass: editing the app's
-# launch surface (App.swift / ContentView.swift / RootView.swift) to "jump"
-# to a non-default screen so the agent can `simctl io screenshot` it without
-# driving the simulator. Banned per
-# figma-to-swiftui/references/verification-loop.md §"C5 Verification Integrity".
+# Detects C5 verification-integrity bypass: editing the app's launch surface
+# (App.swift / ContentView.swift / RootView.swift) to "jump" to a non-default
+# screen so the agent can `simctl io screenshot` it without driving the
+# simulator. Banned per verification-loop.md §"C5 Verification Integrity".
 #
-# Triggers when ALL of the following hold:
-#   1. File path matches *App.swift / *ContentView.swift / *RootView.swift /
-#      *MainView.swift / *AppRouter.swift (heuristic for root navigation surface).
-#   2. File lives inside a project whose tree contains .figma-cache/ — i.e. a
-#      figma-to-swiftui task is in progress.
-#   3. The pending content (Write.content or Edit.new_string) contains a pattern
-#      that strongly suggests a verification entry-path manipulation:
-#        - `initialStep`, `initialScreen`, `currentStep`, `verifyStep` set to a
-#          string literal naming a screen (e.g. `currentStep = .pinSetup`).
-#        - `VERIFY_ROUTE`, `--initial-screen`, `--initial-route` in launch args.
-#        - `#if DEBUG` block adding deep-link parsing or route override.
-#        - `LaunchEnvironment` set with `VERIFY_*` keys.
+# Revision (P0-5 + P1-3):
+#   - Terse output, HOOK_VERBOSE=1 for full reference text.
+#   - Mode-aware (c1-conventions.json `mode: "scaffold"` → WARN exit 0
+#     instead of BLOCK exit 2). Greenfield scaffolds still get the warning
+#     in their face, but the file lands so initial flow wiring can proceed.
 #
-# Exit codes:
-#   0 — allow (no pattern matched, OR legitimate non-bypass edit)
-#   2 — block + stderr (pattern matched, treat as banned bypass)
+# Exit codes: 0 allow (also for scaffold WARNs), 2 block.
 
 set -uo pipefail
 
@@ -32,76 +22,69 @@ TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
 FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')
 
 case "$TOOL" in
-  Write)
-    CONTENT=$(printf '%s' "$INPUT" | jq -r '.tool_input.content // empty')
-    ;;
-  Edit)
-    CONTENT=$(printf '%s' "$INPUT" | jq -r '.tool_input.new_string // empty')
-    ;;
-  *)
-    exit 0
-    ;;
+  Write) CONTENT=$(printf '%s' "$INPUT" | jq -r '.tool_input.content // empty') ;;
+  Edit)  CONTENT=$(printf '%s' "$INPUT" | jq -r '.tool_input.new_string // empty') ;;
+  *)     exit 0 ;;
 esac
 
-# Filter by file name. Use basename to avoid path-component false positives.
 BASE=$(basename "$FILE_PATH" 2>/dev/null || echo "")
 case "$BASE" in
   *App.swift|*ContentView.swift|*RootView.swift|*MainView.swift|*AppRouter.swift|*AppCoordinator.swift) ;;
   *) exit 0 ;;
 esac
+case "$FILE_PATH" in *_NoFigma_*) exit 0 ;; esac
 
-# Escape hatch.
-case "$FILE_PATH" in
-  *_NoFigma_*) exit 0 ;;
-esac
-
-# Require a figma task context.
+# Walk up looking for .figma-cache.
 DIR=$(dirname "$FILE_PATH" 2>/dev/null || echo "")
-FIGMA_TASK=0
+PROJECT_ROOT=""
 while [ -n "$DIR" ] && [ "$DIR" != "/" ]; do
-  if [ -d "$DIR/.figma-cache" ]; then
-    FIGMA_TASK=1
-    break
-  fi
+  if [ -d "$DIR/.figma-cache" ]; then PROJECT_ROOT="$DIR"; break; fi
   DIR=$(dirname "$DIR")
 done
+if [ -z "$PROJECT_ROOT" ] && [ -d "$PWD/.figma-cache" ]; then PROJECT_ROOT="$PWD"; fi
+[ -z "$PROJECT_ROOT" ] && exit 0
 
-if [ "$FIGMA_TASK" = "0" ] && [ -d "$PWD/.figma-cache" ]; then
-  FIGMA_TASK=1
-fi
-
-[ "$FIGMA_TASK" = "0" ] && exit 0
-
-# Empty content → allow.
 [ -z "$CONTENT" ] && exit 0
 
-# Detect bypass patterns. Each pattern is a regex; first match wins.
+# Read MODE from c1-conventions.json for P1-3 mode-awareness.
+MODE="production"
+CONV=""
+[ -f "$PROJECT_ROOT/.figma-cache/_shared/c1-conventions.json" ] \
+  && CONV="$PROJECT_ROOT/.figma-cache/_shared/c1-conventions.json"
+if [ -z "$CONV" ]; then
+  shopt -s nullglob
+  for d in "$PROJECT_ROOT"/.figma-cache/*/; do
+    [ -f "$d/c1-conventions.json" ] && CONV="$d/c1-conventions.json" && break
+  done
+  shopt -u nullglob
+fi
+if [ -n "$CONV" ] && [ -f "$CONV" ]; then
+  v=$(grep -oE '"mode"[[:space:]]*:[[:space:]]*"[^"]+"' "$CONV" | sed -E 's/.*"([^"]+)"$/\1/' | head -n1)
+  [ -n "$v" ] && MODE="$v"
+fi
+
 TMP=$(mktemp -t figma-entry.XXXXXX) || exit 0
 trap 'rm -f "$TMP"' EXIT
 printf '%s' "$CONTENT" > "$TMP"
 
 VIOLATIONS=""
+add_violation() { VIOLATIONS+="  $1\n"; }
 
-# Pattern 1: initial/current/verify-step state assignments / declarations.
-# Match the keyword on a line that also contains a single `=` (assignment, not `==`).
-# Allows `var initialStep: Step = .x` and `currentStep = .x` while rejecting `if x == .y`.
-P1=$(grep -nE '(initialStep|initialScreen|initialRoute|currentStep|verifyStep|verifyScreen|debugStep|debugRoute)[^=]*=([^=]|$)' "$TMP" 2>/dev/null || true)
+# Pattern 1: initial/current/verify-step state assignments.
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   lineno="${line%%:*}"
-  VIOLATIONS+="  line $lineno: ${line#*:}\n"
-done <<< "$P1"
+  add_violation "line $lineno: ${line#*:}"
+done < <(grep -nE '(initialStep|initialScreen|initialRoute|currentStep|verifyStep|verifyScreen|debugStep|debugRoute)[^=]*=([^=]|$)' "$TMP" 2>/dev/null || true)
 
 # Pattern 2: VERIFY_ROUTE / --initial-screen / launch-arg overrides.
-P2=$(grep -nE 'VERIFY_ROUTE|VERIFY_SCREEN|--initial-screen|--initial-route|LaunchEnvironment\[.*VERIFY' "$TMP" 2>/dev/null || true)
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   lineno="${line%%:*}"
-  VIOLATIONS+="  line $lineno: ${line#*:}\n"
-done <<< "$P2"
+  add_violation "line $lineno: ${line#*:}"
+done < <(grep -nE 'VERIFY_ROUTE|VERIFY_SCREEN|--initial-screen|--initial-route|LaunchEnvironment\[.*VERIFY' "$TMP" 2>/dev/null || true)
 
-# Pattern 3: #if DEBUG block adding deep-link / URL handler. Heuristic — match
-# `#if DEBUG` within 8 lines of `URL`/`urlScheme`/`onOpenURL` in this file.
+# Pattern 3: #if DEBUG within 8 lines of URL/onOpenURL.
 P3=$(awk '
   /^[[:space:]]*#if[[:space:]]+DEBUG/ { debug_at=NR; debug_line=$0 }
   /onOpenURL|URLScheme|urlScheme|deepLink|deep_link/ {
@@ -114,59 +97,58 @@ P3=$(awk '
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   lineno="${line%%:*}"
-  VIOLATIONS+="  line $lineno: $(echo "${line#*:}" | head -c 80) ... — looks like a debug-only deep link\n"
+  add_violation "line $lineno: debug-only deep link nearby"
 done <<< "$P3"
 
-# Pattern 4: ProcessInfo.processInfo.environment lookup with VERIFY-ish key.
-P4=$(grep -nE 'ProcessInfo\.processInfo\.environment\[[[:space:]]*"VERIFY' "$TMP" 2>/dev/null || true)
+# Pattern 4: ProcessInfo VERIFY_ key.
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   lineno="${line%%:*}"
-  VIOLATIONS+="  line $lineno: ${line#*:}\n"
-done <<< "$P4"
+  add_violation "line $lineno: ${line#*:}"
+done < <(grep -nE 'ProcessInfo\.processInfo\.environment\[[[:space:]]*"VERIFY' "$TMP" 2>/dev/null || true)
 
-if [ -z "$VIOLATIONS" ]; then
-  exit 0
-fi
+[ -z "$VIOLATIONS" ] && exit 0
 
-# Escape: if the agent already added the legitimate-flow-state marker anywhere
-# in the new content, allow silently. Check BEFORE emitting the BLOCKED block
-# so the agent doesn't see a misleading "BLOCKED ... allowing" sequence.
+# Escape: legitimate flow state marker.
 if grep -q 'figma-entry-bypass-gate: legitimate-flow-state' "$TMP" 2>/dev/null; then
   exit 0
 fi
 
+# P1-3 + P0-5: mode-aware terse output.
+TAG="figma-entry-bypass"
+HEADER=""
+EXIT_CODE=2
+if [ "$MODE" = "scaffold" ]; then
+  HEADER="WARN [$TAG, scaffold mode]: $BASE — fix before production switch"
+  EXIT_CODE=0
+else
+  HEADER="BLOCKED [$TAG]: $BASE"
+fi
+
 {
-  echo "BLOCKED: figma-to-swiftui entry-path bypass detector"
-  echo ""
-  echo "File: $FILE_PATH"
-  echo "Tool: $TOOL"
-  echo ""
-  echo "Suspicious patterns in pending content:"
-  printf "%b" "$VIOLATIONS"
-  echo ""
-  echo "These patterns look like a C5 verification entry-path bypass — banned by"
-  echo "references/verification-loop.md §\"C5 Verification Integrity\":"
-  echo ""
-  echo "  Adding a launch-arg / env-var route override / debug-only deep-link parser"
-  echo "  / mutating the app's initial step in source so the simulator boots into a"
-  echo "  non-default screen for screenshotting — these all bypass real navigation,"
-  echo "  ship a debug entrypoint into the binary, and produce screenshots that do"
-  echo "  not reflect the real journey."
-  echo ""
-  echo "Allowed paths to reach a non-default screen during C5:"
-  echo "  - Use an existing #Preview / scheme / test target the project already ships."
-  echo "  - Use the ios-simulator-verify skill (drives via accessibility identifiers)."
-  echo "  - Use the computer-use MCP with request_access for Simulator."
-  echo "  - If none of the above is available: set"
-  echo "      manifest.verification.c5.skipped = \"no_entry_path\""
-  echo "    and surface the limitation truthfully to the user."
-  echo ""
-  echo "If this edit is genuinely NOT a verification bypass (e.g. you are wiring up"
-  echo "the real onboarding flow's initial state), include the comment"
-  echo "    // figma-entry-bypass-gate: legitimate-flow-state"
-  echo "on the same line as the assignment, OR include the segment '_NoFigma_' in"
-  echo "the file path. Both bypass this hook by design."
+  if [ "${HOOK_VERBOSE:-0}" = "1" ]; then
+    echo "$HEADER"
+    echo ""
+    echo "File: $FILE_PATH"
+    echo ""
+    echo "Suspicious patterns:"
+    printf "%b" "$VIOLATIONS"
+    echo ""
+    echo "These look like C5 verification entry-path bypasses (verification-loop.md §C5 Integrity)."
+    echo "Allowed alternatives to reach a screen during verification:"
+    echo "  - Use the ios-simulator-verify skill (drives via accessibility ids)."
+    echo "  - Use computer-use MCP with request_access for Simulator."
+    echo "  - Use existing #Preview / test target."
+    echo "  - If none available: set manifest.verification.c5.skipped = \"no_entry_path\"."
+    echo ""
+    echo "Legitimate non-bypass edit? Add comment:"
+    echo "  // figma-entry-bypass-gate: legitimate-flow-state"
+  else
+    echo "$HEADER"
+    printf "%b" "$VIOLATIONS"
+    echo "Bypass legit? Add: // figma-entry-bypass-gate: legitimate-flow-state"
+    echo "Docs: ~/.claude/skills/figma-to-swiftui/references/verification-loop.md (C5 Integrity)"
+  fi
 } >&2
 
-exit 2
+exit "$EXIT_CODE"

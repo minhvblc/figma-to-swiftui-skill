@@ -53,7 +53,7 @@ Example — onboarding screen with hero illustration + title + CTA:
 
 ```swift
 ZStack(alignment: .bottom) {
-    Image("onboardingHeroArtwork")           // flattened illustration + bg
+    Image(.onboardingHeroArtwork)            // flattened illustration + bg
         .resizable()
         .scaledToFill()
         .frame(maxWidth: .infinity)
@@ -64,7 +64,7 @@ ZStack(alignment: .bottom) {
             .font(.headingLarge)
         Text("Start in less than a minute")
             .font(.bodyRegular)
-            .foregroundStyle(Color.textSecondary)
+            .foregroundStyle(Color(.textSecondary))
         Button("Get started") { ... }        // interactive
             .buttonStyle(PrimaryButtonStyle())
     }
@@ -93,6 +93,10 @@ For each candidate region, ask:
 **Quick heuristic:** would a designer describe this as "the hero illustration" (1 thing) or "a row of action icons" (N things)? The first → flatten. The second → decompose.
 
 **If the visual answer conflicts with the JSX signals, the visual answer wins.** JSX can be structured as many sub-layers for designer convenience even when the output is a single visual unit.
+
+### When FLATTEN is wrong — image + code-able gradient
+
+A common false-positive: the region is a **photo background with a gradient overlay** (hero banner, onboarding header). Naive FLATTEN exports the whole thing as one PNG and loses the ability to tint, dark-mode swap, or recompose. **Before flattening, check `.figma-cache/<nodeId>/fills.json`** — if the region's node has `fills[] = [IMAGE, GRADIENT_*]` (the canonical stack), use [`fills-handling.md` Recipe 3](fills-handling.md) instead: export the image atomically (the IMAGE fill becomes an `imageAI<Name>` asset via Phase B), emit the gradient as inline `LinearGradient(stops:...)` in SwiftUI. FLATTEN remains correct when the region has hand-drawn illustration baked in (characters, particles, custom artwork) — those layers don't survive a clean image+gradient split. The decision shifts only when the upper layers are pure `LinearGradient` / `RadialGradient` paint that `fills.json` describes structurally.
 
 ### Supporting signals in design-context.md
 
@@ -135,7 +139,7 @@ Once you've decided what to flatten, for every remaining atomic element decide: 
 
 **Rule of thumb:** if it's vector/geometric and trivial to reproduce in SwiftUI (1-2 shapes), code it. If it's raster, has multiple paths, uses effects Figma can't trivially describe, or is a brand asset — download.
 
-**Never substitute with SF Symbols.** If Figma has a chevron icon, download that chevron — don't swap in `Image(systemName: "chevron.right")` unless the user explicitly asks.
+**Never substitute with SF Symbols.** If Figma has a chevron icon, download that chevron — don't swap in `Image(systemName: "chevron.right")` unless the user explicitly asks. Always reference the downloaded asset via the iOS 17+ auto-generated symbol — `Image(.icChevronRight)` — never the string form `Image("icChevronRight")`.
 
 ---
 
@@ -210,11 +214,11 @@ The tagged path writes `Contents.json` files **without** `template-rendering-int
 For every asset whose manifest row has `exporter: "tagged"`, decide rendering at the **call site**:
 
 ```swift
-Image("icAIClose")
+Image(.icAIClose)
     .resizable()
     .renderingMode(.template)         // ← per-call-site choice
     .frame(width: 24, height: 24)
-    .foregroundStyle(Color.textPrimary)
+    .foregroundStyle(Color(.textPrimary))
 ```
 
 For multi-color tagged images (illustrations, brand) — no `.renderingMode` modifier; let the original colors render.
@@ -225,7 +229,7 @@ This rule applies only to tagged-path assets. The fallback-path imageset keeps t
 
 For every asset whose manifest row has `exporter: "fallback"` (and `strategy != "lottiePlaceholder"`):
 
-- Prefer **Contents.json** (`"template-rendering-intent": "template"`) for icons that are always template across the app. This lets any call site use `Image("x")` without modifiers.
+- Prefer **Contents.json** (`"template-rendering-intent": "template"`) for icons that are always template across the app. This lets any call site use `Image(.x)` without modifiers.
 - Apply **in code** (`.renderingMode(.template)`) only when the same asset is used sometimes as template, sometimes original.
 
 ---
@@ -326,10 +330,10 @@ For single-color icons, you rarely need dark variants — use template rendering
 
 When `c1-conventions.json.usesIKCoreApp == true`, colorsets in `Resources/Assets.xcassets/Colors/` follow the Ikame naming convention from `references/ikame-decision-table.md` D-1001..D-1006:
 
-- **New tokens from Figma → `color<HEX>`** (e.g. Figma `#0F0F0F` → asset `color0F0F0F`, referenced as `Color.color0F0F0F`). Hex is uppercase, no `#`.
+- **New tokens from Figma → `color<HEX>`** (e.g. Figma `#0F0F0F` → asset `color0F0F0F`, referenced as `Color(.color0F0F0F)`). Hex is uppercase, no `#`.
 - **Semantic alias allowed when project already uses one** (`bg`, `accentRed`, `colorDelete`, `colorSelected`). Reuse — do NOT create a duplicate hex-named alias.
 - **Dedup before adding:** look up the hex in `xcassets/Colors/` first. If `color0F0F0F` exists → reuse, never duplicate.
-- **In code:** `Color.color0F0F0F` (extension symbol generated by the project's color extension file) — NOT `Color(red:green:blue:)` or `Color(hex:"#0F0F0F")` when an asset exists.
+- **In code:** `Color(.color0F0F0F)` (iOS 17+ auto-generated `ColorResource` symbol from Asset Catalog) — NOT `Color(red:green:blue:)`, NOT `Color(hex:"#0F0F0F")`, and NOT the legacy string form `Color("color0F0F0F")` when an asset exists.
 
 For non-Ikame projects, fall back to `references/swiftui-pro-bridge.md` §1c (asset catalog symbol or `Color(hex:)` extension).
 
@@ -346,17 +350,17 @@ If the same source nodeId is referenced by two paths (very rare — auto-promoti
 ### Tagged-path icon (template at call site)
 
 ```swift
-Image("icAIClose")
+Image(.icAIClose)
     .resizable()
     .renderingMode(.template)
     .frame(width: 24, height: 24)
-    .foregroundStyle(Color.textPrimary)
+    .foregroundStyle(Color(.textPrimary))
 ```
 
 ### Tagged-path image (original, no rendering mode)
 
 ```swift
-Image("imageAIOnboardingHero")
+Image(.imageAIOnboardingHero)
     .resizable()
     .scaledToFit()
     .frame(maxWidth: .infinity)
@@ -365,18 +369,18 @@ Image("imageAIOnboardingHero")
 ### Template icon with tint
 
 ```swift
-Image("close")
+Image(.close)
     .resizable()
     .renderingMode(.template)              // omit if set in Contents.json
     .aspectRatio(contentMode: .fit)
     .frame(width: 24, height: 24)
-    .foregroundStyle(Color.textPrimary)
+    .foregroundStyle(Color(.textPrimary))
 ```
 
 ### Original icon or small logo
 
 ```swift
-Image("brandMark")
+Image(.brandMark)
     .resizable()
     .scaledToFit()
     .frame(width: 120, height: 32)
@@ -385,7 +389,7 @@ Image("brandMark")
 ### Hero / illustration (full-width)
 
 ```swift
-Image("onboardingHero")
+Image(.onboardingHero)
     .resizable()
     .aspectRatio(contentMode: .fill)
     .frame(maxWidth: .infinity, maxHeight: 240)
@@ -395,7 +399,7 @@ Image("onboardingHero")
 ### Avatar (square, clipped to circle)
 
 ```swift
-Image("userAvatar")
+Image(.userAvatar)
     .resizable()
     .scaledToFill()
     .frame(width: 48, height: 48)

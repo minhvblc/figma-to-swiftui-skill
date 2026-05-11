@@ -116,7 +116,7 @@ Where `.frame(maxWidth: .infinity)` lives matters as much as whether it's emitte
 Button(action: tapped) { Text("Continue") }
   .frame(maxWidth: .infinity)         // Button outer fills caller's slot
   .padding(.vertical, 12)
-  .background(Color.accent, in: .rect(cornerRadius: 8))
+  .background(Color(.accent), in: .rect(cornerRadius: 8))
   .padding(.horizontal, 16)           // caller margin — works because Button is the fill-width view
 ```
 

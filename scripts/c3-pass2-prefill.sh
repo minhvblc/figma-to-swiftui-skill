@@ -224,8 +224,9 @@ ss_verdict() {
 
 # IF (image fill mode) — TODO: prefill cannot decide PASS/FAIL because the script
 # lacks Figma scaleMode context. But it CAN flag the most common bug: any
-# Image("...").frame(maxWidth: .infinity, ...) chain that lacks .resizable()
+# Image(...).frame(maxWidth: .infinity, ...) chain that lacks .resizable()
 # AND a content-mode modifier (.scaledToFill / .scaledToFit / .aspectRatio).
+# Matches BOTH iOS 17+ ImageResource form Image(.name) AND legacy Image("name").
 # Emit FAIL high when the bug is detectable; otherwise emit TODO for the agent.
 # See references/visual-fidelity.md §7 #11 + references/layout-translation.md §"Image content-mode → SwiftUI".
 if_verdict() {
@@ -238,6 +239,9 @@ if_verdict() {
     function reset() { img_at=0; has_resizable=0; has_mode=0; img_file=""; img_line="" }
     BEGIN { reset() }
     /Image\([[:space:]]*"[^"]+"[[:space:]]*\)/ {
+      reset(); img_at=NR; img_file=FILENAME; img_line=$0
+    }
+    /Image\([[:space:]]*\.[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\)/ {
       reset(); img_at=NR; img_file=FILENAME; img_line=$0
     }
     img_at && NR - img_at <= 8 {

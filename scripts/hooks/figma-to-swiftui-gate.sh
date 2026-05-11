@@ -10,6 +10,8 @@
 #   - screenshot.png valid PNG
 #   - screenshot-cmp.png valid PNG, long-side ≤2000px (sips -Z 2000 sibling for many-image C5 compare)
 #   - registry.json present with rootNode (proves figma_build_registry ran)
+#   - fills.json present with "nodes" key (proves figma_extract_fills ran — required
+#     for background image + gradient overlay fidelity per references/fills-handling.md)
 #
 # Phase B artifacts required per <screen-cache>/:
 #   - manifest.phaseB: "done"
@@ -137,6 +139,11 @@ for DIR in "${SCREEN_DIRS[@]}"; do
   REG="$DIR/registry.json"
   if [ ! -s "$REG" ] || ! grep -q '"rootNode"' "$REG" 2>/dev/null; then
     PROBLEMS+="    - registry.json missing or invalid (run figma_build_registry — mandatory)\n"
+  fi
+
+  FILLS="$DIR/fills.json"
+  if [ ! -f "$FILLS" ] || ! grep -q '"nodes"' "$FILLS" 2>/dev/null; then
+    PROBLEMS+="    - fills.json missing or invalid (run figma_extract_fills — needed for background image + gradient overlay fidelity, see references/fills-handling.md)\n"
   fi
 
   # ─── Phase B artifacts (only check when manifest exists) ──────────────────────

@@ -63,13 +63,14 @@ After editing config: **restart Claude (Cmd+Q, reopen)** to load the server.
 
 ## Tools advertised
 
-After restart, `tools/list` advertises five tools. The skill uses three of them as the primary surface; the other two stay for backward compat / debugging:
+After restart, `tools/list` advertises six tools. The skill uses four of them as the primary surface; the other two stay for backward compat / debugging:
 
 | Tool | Purpose | Skill phase |
 |---|---|---|
 | `figma_build_registry` | One walk → `screens`, `taggedAssets`, `lottiePlaceholders`, `warnings` | A2 |
 | `figma_export_assets_unified` | One call → tagged + fallback pipeline, returns full manifest | B3 |
-| `figma_extract_tokens` | Local variables → SwiftUI tokens with naming + light/dark | A3 |
+| `figma_extract_tokens` | Local variables + shared text styles → SwiftUI tokens with naming + light/dark + typography | A3 |
+| `figma_extract_fills` | Per-screen subtree → background image / gradient overlay / stacked fills with stops + handle positions + imageRef→URL resolution | A3 |
 | `figma_list_assets` | Preview tagged matches without exporting | rarely; `figma_build_registry` covers this |
 | `figma_export_assets` | Lower-level tagged-only export (no fallback) | rarely; `figma_export_assets_unified` covers this |
 
@@ -202,7 +203,7 @@ Use this for Phase B unless you have a specific reason to lock the row set manua
 
 ### Internal pipeline behavior
 
-1. Tagged rows → batch render @2x/@3x via `/v1/images` → write PNG to `outputDir/_mcpfigma/` → import into `assetCatalogPath` as `Assets.xcassets/<RootName>/<exportName>.imageset/`. SwiftUI's `Image("<exportName>")` resolves by name across the whole catalog regardless of folder.
+1. Tagged rows → batch render @2x/@3x via `/v1/images` → write PNG to `outputDir/_mcpfigma/` → import into `assetCatalogPath` as `Assets.xcassets/<RootName>/<exportName>.imageset/`. SwiftUI's `Image(.<exportName>)` (iOS 17+ auto-generated `ImageResource`) resolves by name across the whole catalog regardless of folder.
 2. Fallback rows → check `sharedAssetsDir/<nodeId-with-:_>.png` for a cached PNG (skip if found and `overwrite=false`) → batch render at `fallbackScale` via `/v1/images` → download → validate first 8 bytes match PNG signature (`89 50 4E 47 0D 0A 1A 0A`) → save to shared cache. Non-PNG (SVG/XML) → row marked `failed` with reason. Tool **never** converts SVG locally.
 3. Tagged row whose render fails → automatically promoted to fallback path; final row reports `exporter: "fallback"` with both reasons concatenated.
 4. Lottie rows → no network call, returned with `status: "done"` for codegen.
@@ -241,6 +242,58 @@ Naming style:
 - Color aliases (variable references) are resolved up to 4 hops; longer chains land in `warnings`.
 
 `warnings` non-empty + all tokens empty + HTTP 200 → file does not have Variables API access (Figma plan limit). Skill falls back to reading inline tokens from `design-context.md`. **A second fallback case** — `forbidden` (HTTP 403) with `message` containing `"requires the file_variables:read scope"` — is the plan-gated Variables scope case (Free / Professional / Organization without Enterprise) and is also allowed to fall back, but **only with the disclosure protocol** in [`figma-to-swiftui/SKILL.md` §"MCPFigma edge cases"](../SKILL.md). Every OTHER `forbidden` (403) or `unauthorized` (401) is a token-scope / file-access problem and is **NOT** a fallback trigger — STOP and ask the user to fix the token (see Troubleshooting below).
+
+### `figma_extract_fills`
+
+**Input:**
+```json
+{ "fileKey": "ABC123", "nodeId": "3:24644", "depth": 10, "resolveImageUrls": true }
+```
+
+**Output:**
+```json
+{
+  "fileKey": "ABC123",
+  "rootNodeId": "3:24644",
+  "nodes": [
+    {
+      "nodeId": "4:1", "nodeName": "HeroBanner", "nodeType": "FRAME",
+      "width": 375, "height": 422,
+      "fills": [
+        { "type": "image", "imageRef": "5f8e...", "scaleMode": "FILL",
+          "opacity": 1.0, "visible": true,
+          "imageUrl": "https://s3-alpha-sig.figma.com/img/..." },
+        { "type": "gradient", "kind": "linear",
+          "stops": [
+            { "position": 0.0, "hex": "#00000000" },
+            { "position": 1.0, "hex": "#000000" }
+          ],
+          "startPoint": { "x": 0.5, "y": 0.0 },
+          "endPoint":   { "x": 0.5, "y": 1.0 },
+          "opacity": 0.65, "visible": true }
+      ]
+    }
+  ],
+  "warnings": []
+}
+```
+
+Walks the subtree from `nodeId` (default depth 10) and returns **only nodes whose fills are non-trivial**:
+- Any GRADIENT (linear / radial / angular / diamond)
+- Any IMAGE (with `imageRef`)
+- Multiple visible fills stacked on one node (e.g. `[IMAGE, GRADIENT]`)
+- SOLID with paint-level opacity < 1.0, or non-NORMAL `blendMode`
+
+Single 100%-opacity SOLID fills are **filtered out** — those are already covered by `tokens.json` + `design-context.md`. The skill consumes the output via [`fills-handling.md`](fills-handling.md): IMAGE fills compose with assets from `manifest.rows[]`, gradients emit as inline `LinearGradient(stops:[...])`, stacked fills become `ZStack { Image; LinearGradient }` in the bottom-to-top order Figma stores.
+
+When `resolveImageUrls: true` (default), the tool also calls `/v1/files/<key>/images` once and populates `imageUrl` on every IMAGE fill. If that secondary call fails, the IMAGE fills still come back (with `imageUrl: null`) and a warning is appended; the skill can still resolve the asset locally via `manifest.rows[]`.
+
+Variants `GRADIENT_ANGULAR` / `GRADIENT_DIAMOND` are emitted as `kind: "angular" | "diamond"` for completeness, but SwiftUI emit guidance (`AngularGradient`) is best-effort — verify against `screenshot.png` in C5 Pass 2. Truly unknown paint types (`EMOJI`, `VIDEO`, future Figma additions) emit `type: "unsupported"` with `rawType` preserved so the agent can surface them in the run summary.
+
+**Failure modes:**
+- `/v1/files/<key>/nodes` 401/403/404 → throw (same as other tools). STOP and fix token / nodeId.
+- `/v1/files/<key>/images` failure → degraded run: fills returned without `imageUrl`, warning logged. Continue.
+- Empty `nodes[]` with no warnings → screen has no interesting fills (plain solid backgrounds throughout). Continue normally; `Gate A` accepts an empty `nodes` array.
 
 ---
 

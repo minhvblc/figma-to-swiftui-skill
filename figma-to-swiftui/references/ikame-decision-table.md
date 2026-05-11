@@ -356,7 +356,7 @@ Image(.icAIClose)                                 // tagged-path
     .resizable()
     .renderingMode(.template)
     .frame(width: 24, height: 24)
-    .foregroundStyle(Color.text900)
+    .foregroundStyle(Color(.text900))
 ```
 
 ---
@@ -365,8 +365,8 @@ Image(.icAIClose)                                 // tagged-path
 
 | ID | Decision | Locked value |
 |---|---|---|
-| **D-1001** | Color reference in code | `Color.<name>` — generated symbol from xcassets colorset (project's existing extension, e.g. `Color.bg`, `Color.text900`, `Color.colorE6E6E6`) |
-| **D-1002** | New color from Figma | Add a colorset to `Resources/Assets.xcassets/Colors/` named `color<HEX>` (e.g. Figma `#0F0F0F` → asset `color0F0F0F`). Reference as `Color.color0F0F0F`. |
+| **D-1001** | Color reference in code | `Color(.<name>)` — iOS 17+ auto-generated `ColorResource` symbol from xcassets colorset (e.g. `Color(.bg)`, `Color(.text900)`, `Color(.colorE6E6E6)`). The legacy `Color.<name>` static-var extension form is also accepted when the project already ships such an extension, but new code MUST emit `Color(.<name>)`. |
+| **D-1002** | New color from Figma | Add a colorset to `Resources/Assets.xcassets/Colors/` named `color<HEX>` (e.g. Figma `#0F0F0F` → asset `color0F0F0F`). Reference as `Color(.color0F0F0F)`. |
 | **D-1003** | Semantic color name (when Figma provides) | Allowed: `accentRed`, `colorDelete`, `colorSearchBar`, `colorSelected`, `bg`. Use the existing semantic name when the project already has it; only add hex-named when no semantic matches. |
 | **D-1004** | Dedup before adding | Search `xcassets/Colors/` for the hex first. If `color0F0F0F` exists → reuse, do NOT create a duplicate semantic alias. |
 | **D-1005** | Banned color patterns | Inline `Color(red:green:blue:)`, `Color(hex:"#...")` extension call when an asset exists, `Color(.sRGB, ...)` |
@@ -389,11 +389,11 @@ Image(.icAIClose)                                 // tagged-path
 Text(CodesHomeScreenConstants.title)
     .appFontHeading3()
     .fontWeight(.semibold)         // weight after the heading shortcut is OK
-    .foregroundStyle(Color.black)
+    .foregroundStyle(Color.black)         // SwiftUI built-in — system literal, not asset catalog
 
 Text("Selected: \(count)")
     .appFont(20, weight: .semibold)
-    .foregroundStyle(Color.text900)
+    .foregroundStyle(Color(.text900))     // asset catalog colorset via ColorResource
 ```
 
 ---

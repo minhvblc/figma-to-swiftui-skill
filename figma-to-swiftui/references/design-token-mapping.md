@@ -29,7 +29,9 @@ Each section (colors / numeric / typography) fails independently. `warnings` non
 
 The tool doesn't know the project. At C2 the skill chooses, per token:
 1. Use existing project enum case if name matches (`Spacing.md`, `IKFont.headingLarge`, `IKCoreApp.colors.primary500`).
-2. Else fall back to the extracted token (`Color.primary500` from a generated extension).
+2. Else fall back to the extracted token:
+   - **Dual-mode token** (light + dark) → Asset Catalog colorset, referenced as `Color(.primary500)` (iOS 17+ auto-generated `ColorResource` symbol).
+   - **Light-only token** → `Color+Tokens.swift` static extension, referenced as `Color.primary500` (the extension is a flat static var on `Color`, callable Apple-style without parentheses).
 3. Else inline literal as last resort.
 
 Never invent new project enum cases — surface mismatches in the run summary.
@@ -47,10 +49,15 @@ Figma color variables map to SwiftUI Color extensions or Asset Catalog named col
 
 ### Mapping Rules
 
-Figma variable "primary/500" -> Color.primary500 or Color("primary500")
-Figma variable "text/primary" -> Color.textPrimary
-Figma variable "surface/default" -> Color.surfaceDefault
-Figma variable "border/subtle" -> Color.borderSubtle
+```
+Figma variable "primary/500"   -> Color(.primary500)         (dual-mode → asset catalog)
+Figma variable "text/primary"  -> Color(.textPrimary)        (dual-mode → asset catalog)
+Figma variable "surface/default" -> Color(.surfaceDefault)   (dual-mode → asset catalog)
+Figma variable "border/subtle" -> Color(.borderSubtle)       (dual-mode → asset catalog)
+Figma variable "brand/accent"  -> Color.brandAccent           (light-only → Color+Tokens.swift extension)
+```
+
+The form is determined by whether `tokens.json.colors[i]` has `darkHex` (dual-mode → `Color(.X)`) or not (light-only → `Color.X`). String form `Color("X")` is BANNED — iOS 17+ projects (Xcode 15+, baseline) auto-generate `ColorResource` symbols so the type-safe `Color(.X)` is always available.
 
 ### Adaptive Colors (Light/Dark) — automated path
 
@@ -60,12 +67,12 @@ For every entry in `tokens.json.colors[]` where **both** `lightHex` and `darkHex
 scripts/colorset-codegen.sh .figma-cache/_shared/tokens.json <Assets.xcassets> Colors
 ```
 
-Use `Color("Colors/<swiftName>")` in views; Xcode handles the appearance switch. The colorset path is preferred over `@Environment(\.colorScheme)` branching because:
+Use `Color(.<swiftName>)` in views (iOS 17+ auto-generated `ColorResource` symbol); Xcode handles the appearance switch. The colorset path is preferred over `@Environment(\.colorScheme)` branching because:
 1. iOS sets the appearance per-window (Liquid Glass, popovers, etc.) — environment branching can desync.
 2. Snapshot tests can override `.preferredColorScheme(.dark)` and the colorset still resolves.
 3. Designer dark-mode hex is preserved 1:1 from `tokens.json`; no agent typing.
 
-Light-only tokens (`darkHex == null`) stay as Color extensions in `DesignSystem/Color+Tokens.swift` (the script skips them). Mixing both is fine — the namespaced `Colors/` group keeps the asset-catalog references distinct from extension references.
+Light-only tokens (`darkHex == null`) stay as `Color` static-var extensions in `DesignSystem/Color+Tokens.swift` (the script skips them — they have no dark variant to encode). Mixing both is fine: dual-mode tokens reach the call site as `Color(.X)` (asset-catalog `ColorResource`), light-only tokens reach it as `Color.X` (static extension). Both are flat Apple-style access — never the string form `Color("X")`.
 
 ## Spacing Tokens
 
@@ -131,7 +138,7 @@ Text("Title")
     .fontWidth(.expanded)           // if Figma style is "Expanded"
     .tracking(-0.56)                 // Figma letter-spacing
     .lineSpacing(34 - 28)            // Figma line-height 34
-    .foregroundStyle(Color.textPrimary)
+    .foregroundStyle(Color(.textPrimary))
     .multilineTextAlignment(.leading)
 ```
 
@@ -174,7 +181,7 @@ For every `tokens.json.radius[i]` (and `tokens.json.spacing[i]` / `opacity[i]`, 
 // ✓ correct — pill button
 Button { ... } label: { Text(Strings.cta) }
     .frame(maxWidth: .infinity, minHeight: 48)
-    .background(Color("Colors/primary500"))
+    .background(Color(.primary500))
     .clipShape(Capsule())
 
 // ✗ wrong — 9999 magic number renders identically on iPhone but breaks
@@ -207,6 +214,8 @@ extension View {
 ```
 
 ## Gradients
+
+**Canonical source:** `.figma-cache/<nodeId>/fills.json` (from `figma_extract_fills` in Phase A Step 5). For every node with a gradient paint, that file carries the normalized stops, `startPoint`/`endPoint` in 0..1 unit space, paint opacity, and (for stacked image+gradient) the IMAGE fill underneath. **Read fills.json first** — see [`fills-handling.md`](fills-handling.md). The mapping below is a reference for the SwiftUI primitive; the *values* come from fills.json, not from eyeballing the screenshot.
 
 Figma linear gradient → SwiftUI `LinearGradient`. Match stops and direction exactly.
 

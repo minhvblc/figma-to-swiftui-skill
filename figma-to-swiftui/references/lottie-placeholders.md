@@ -14,7 +14,7 @@ This doc covers the contract end-to-end. Phase B detects `eAnim*` from `metadata
 | Phase B path | Tagged path → `.imageset` | **None — no download, no xcassets entry** |
 | Registry surface | `taggedAssets[]` | `lottiePlaceholders[]` |
 | Phase B inventory row | `exporter: "tagged"` (or fallback) | `exporter: "fallback"`, `strategy: "lottiePlaceholder"` |
-| Phase C2 SwiftUI | `Image("icAI<Name>")` | `LottieView(animation: .named("placeholder_animation"))` |
+| Phase C2 SwiftUI | `Image(.icAI<Name>)` | `LottieView(animation: .named("placeholder_animation"))` |
 | Frame size | From parent frame | From parent frame (animation slot) |
 | Asset on disk after Phase C | `Assets.xcassets/.../*.imageset/*.png` | None — Lottie JSON added by developer post-skill |
 
@@ -124,7 +124,7 @@ Rules:
 
 ## 7. Phase C4 verification
 
-Lottie placeholders are not assets, so C4 has nothing to copy. Add a verification bash check alongside the existing `Image("...")` orphan scan:
+Lottie placeholders are not assets, so C4 has nothing to copy. Add a verification bash check alongside the existing `Image(.X)` orphan scan:
 
 ```bash
 PLACEHOLDERS=$(python3 -c "

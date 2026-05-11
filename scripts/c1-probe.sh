@@ -331,15 +331,18 @@ if not color_hex_ext:
             break
 
 # ── 11. useGeneratedSymbols + useStringCatalogSymbols ────────────────────
-generate_asset_symbols = False
+# GENERATE_ASSET_SYMBOLS is YES by default on Xcode 15+. The skill's baseline
+# is Xcode 15+ (most users on Xcode 26+), so treat the flag's absence as YES.
+# Only flip to False when the project explicitly opts out with NO.
+generate_asset_symbols = True
 string_catalog_symbols = False
 for src in PBXPROJ + XCCONFIG:
     try:
         text = open(src, errors="replace").read()
     except OSError:
         continue
-    if re.search(r"GENERATE_ASSET_SYMBOLS\s*=\s*YES", text):
-        generate_asset_symbols = True
+    if re.search(r"GENERATE_ASSET_SYMBOLS\s*=\s*NO", text):
+        generate_asset_symbols = False
     if re.search(r"STRING_CATALOG_GENERATE_SYMBOLS\s*=\s*YES", text):
         string_catalog_symbols = True
 

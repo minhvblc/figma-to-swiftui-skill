@@ -113,7 +113,8 @@ deviceClass:    iPhone X/11 Pro/12 mini/13 mini (812) | 12/13/14 (844) | 14 Pro/
 safeAreaInsets: top=N, bottom=M     [iOS-rendered chrome; subtract from raw Figma Y before mapping to SwiftUI padding]
 mockupChrome:   true | false        [true if frame H matches deviceClass list AND screenshot top region shows status-bar mockup (time "9:41", wifi/battery icons)]
 deviceBezel:    true | false        [true if mockupChrome=true AND the frame outline shows ~47–55pt rounded corners on all 4 corners. That curve is the iPhone hardware bezel — NOT a UI corner radius. When true, screen-root MUST set cornerRadius=0 and emit NO `.cornerRadius`/`.clipShape(.rect(cornerRadius:))` on the root view.]
-background:     <hex or token>   [source: tokens | inline | class]
+background:     <hex or token>   [source: tokens | inline | class | fills.json]
+layeredFills:   <none> | <bottom-to-top list>   [source: fills.json — populate when this container's nodeId appears in fills.json.nodes[]. Format example: "[0] image asset=imageAIHeroBg scaleMode=FILL opacity=1.0; [1] gradient linear stops=[#00000000@0,#000000@1] start=(0.5,0) end=(0.5,1) opacity=0.65". Emit ZStack per `fills-handling.md` Recipe 3.]
 cornerRadius:   Xpt              [source — but if `deviceBezel=true` and the value comes from the FRAME outline (not an inner card/sheet), set `0` and add note "device bezel, not UI"]
 border:         Xpt, <hex>       [source]
 shadow:         color=<rgba>, radius=X, offsetX=X, offsetY=X   [source]
@@ -184,11 +185,11 @@ Each source tag implies a different routing decision in C2 codegen. Refer to `sw
 
 | Tag | Source | Example value | swiftui-pro route (project baseline: `Spacing` / `IKFont` / `IKCoreApp` enums + iOS 16) |
 |---|---|---|---|
-| `tokens` | Figma variable in `tokens.json` | `--text-primary` | `IKCoreApp.colors.textPrimary` (preferred); else `Color(.textPrimary)` if `useGeneratedSymbols`; else `Color("textPrimary")` |
+| `tokens` | Figma variable in `tokens.json` | `--text-primary` | `IKCoreApp.colors.textPrimary` (preferred); else `Color(.textPrimary)` (iOS 17+ auto-generated `ColorResource` symbol — always available on Xcode 15+ baseline). The legacy string form `Color("textPrimary")` is BANNED. |
 | `inline` | Figma node style in design-context | `font-weight: 700` | swiftui-pro transform — `.bold()` (api.md L3, design.md L27). Never `.fontWeight(.bold)`. |
 | `inline` | spacing literal `padding: 24` | `24pt` | `Spacing.l24` if a matching token exists; else inline `.padding(24)` (compliant — value is specifically requested). |
 | `inline` | typography literal `font-size: 16` | `16pt body` | If matches Dynamic Type role → `.font(.body)`. Else if `IKFont.<token>` matches → use it. Else `@ScaledMetric var fontSize: CGFloat = 16` + `.font(.system(size: fontSize, weight: .regular))`. Never inline `.font(.system(size: 16))` without `@ScaledMetric`. |
-| `inline` | color literal `#FF6600` | hex | `IKCoreApp.colors.<token>` if matches; else `Color(.brandOrange)` if `useGeneratedSymbols` and asset exists; else `Color(hex: "#FF6600")` if `Color(hex:)` extension; else `Color(red:green:blue:)` with `// TODO` comment. |
+| `inline` | color literal `#FF6600` | hex | `IKCoreApp.colors.<token>` if matches; else `Color(.brandOrange)` (auto-generated `ColorResource`) if a matching asset exists; else `Color(hex: "#FF6600")` if `Color(hex:)` extension is in the project; else `Color(red:green:blue:)` with `// TODO` comment. Never the string form `Color("brandOrange")`. |
 | `class` | Tailwind class on Figma component | shared button class | Reuse via project's existing `ButtonStyle` (audit C1). Never re-implement. |
 | `screenshot` | Visual measurement (estimate) | spacing ~24pt | Same routing as `inline` literal (token first, then inline). Mark `[estimate]` in inventory; ask user to verify if the design-system enum value differs by > 4pt. |
 
@@ -267,12 +268,12 @@ Button(action: tapped) {
   HStack(spacing: 0) {
     Text("Continue")
     Spacer()                  // pushes Image to trailing edge
-    Image("icAIArrowRight")
+    Image(.icAIArrowRight)
   }
 }
 .frame(maxWidth: .infinity)   // Button outer fills caller slot
 .padding(.vertical, 12)
-.background(Color.accent, in: .rect(cornerRadius: 8))
+.background(Color(.accent), in: .rect(cornerRadius: 8))
 .padding(.horizontal, 16)     // caller margin — works because Button is the fill-width view
 ```
 
@@ -281,7 +282,7 @@ Button(action: tapped) {
 Button(action: tapped) {
   HStack(spacing: 0) {
     Text("Continue").frame(maxWidth: .infinity)  // BANNED: cascades to Button
-    Image("icAIArrowRight")
+    Image(.icAIArrowRight)
   }
 }
 .padding(.horizontal, 16)     // bypassed — Button already filled the screen
@@ -298,13 +299,13 @@ Button(action: tapped) {
     Text("Continue")                           // anchor — auto-centers in ZStack
     HStack {
       Spacer()
-      Image("icAIArrowRight")
+      Image(.icAIArrowRight)
     }
     .padding(.trailing, 24)                    // distance from Figma right edge
   }
   .frame(maxWidth: .infinity, minHeight: 56)   // button intrinsic height from Figma
 }
-.background(Color.accent, in: .rect(cornerRadius: 12))
+.background(Color(.accent), in: .rect(cornerRadius: 12))
 .padding(.horizontal, 16)                      // caller margin — Button still owns fill-width
 ```
 
@@ -316,7 +317,7 @@ Button(action: tapped) {
   HStack {
     Text("Continue")     // ends up leading, NOT centered
     Spacer()
-    Image("icAIArrowRight")
+    Image(.icAIArrowRight)
   }
 }
 .frame(maxWidth: .infinity)
@@ -329,7 +330,7 @@ Button(action: tapped) {
 Button(action: tapped) {
   HStack {
     Spacer(); Text("Continue"); Spacer()
-    Image("icAIArrowRight")
+    Image(.icAIArrowRight)
   }
 }
 // Visual: text appears centered relative to its OWN slot, but the icon eats
@@ -526,7 +527,7 @@ SwiftUI has no `Color(hex: "FF0080")` initializer. Every project that uses one h
 1. Grep the project for `extension Color` or `Color(hex:` — confirm an extension exists.
 2. If it exists, use it verbatim (match the signature — some take `String`, some take `UInt`, some support alpha as a separate param).
 3. If it doesn't exist, use one of:
-   - Asset Catalog named color: `Color("accentPrimary")` — preferred, supports dark mode
+   - Asset Catalog named color (iOS 17+ auto-generated `ColorResource`): `Color(.accentPrimary)` — preferred, supports dark mode. Never the legacy string form `Color("accentPrimary")`.
    - RGB initializer: `Color(red: 1.0, green: 0.0, blue: 0.5)` — decimal 0-1 values
    - System color: `.accentColor`, `.primary`, `.secondary` when semantic
 
@@ -560,7 +561,7 @@ Figma strings → `Text("localizable_key")` using `LocalizedStringKey`, not hard
 - **If Figma provides both light + dark variants** for a frame: fetch both (call `get_screenshot` on each variant node), add both to the cache, and use Asset Catalog "Any / Dark" appearances for colors and images.
 - **If Figma provides light only:** ask the user whether dark mode is in scope. If yes, use Asset Catalog semantic colors that auto-adapt (iOS system grays, or named colors with both appearances) — don't hardcode hex that looks wrong in dark. If dark is out of scope, still use Asset Catalog colors so dark mode doesn't render completely broken.
 - For images with a dark variant: Contents.json `appearances` entry (see references/asset-handling.md §5).
-- For template icons: tint with a semantic color (`.foregroundStyle(Color.textPrimary)`) — it adapts for free.
+- For template icons: tint with a semantic color (`.foregroundStyle(Color(.textPrimary))`) — it adapts for free.
 
 ### Placeholder / mockup text
 

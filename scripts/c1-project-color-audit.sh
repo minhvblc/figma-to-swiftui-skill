@@ -4,9 +4,9 @@
 #
 # Goal: when a Figma color hex matches an existing project color, C2 should
 # route through the existing token (e.g. IKCoreApp.colors.brandPrimary or
-# Color("Colors/textPrimary")) instead of inventing a new one. Without this
-# audit the agent eyeballs the project, misses matches, and emits parallel
-# tokens that drift over time.
+# Color(.textPrimary)) instead of inventing a new one. Without this audit
+# the agent eyeballs the project, misses matches, and emits parallel tokens
+# that drift over time.
 #
 # Sources scanned:
 #   1. Asset Catalog colorsets (*.colorset/Contents.json) — most reliable
@@ -21,7 +21,7 @@
 #     "colors": [
 #       {
 #         "hex": "#FF0080",
-#         "swiftPath": "Color(\"Colors/primary500\")",
+#         "swiftPath": "Color(.primary500)",
 #         "source": "MyApp/Assets.xcassets/Colors/primary500.colorset",
 #         "lightHex": "#FF0080",
 #         "darkHex": "#E60074"      // null if light-only
@@ -29,6 +29,14 @@
 #       ...
 #     ]
 #   }
+#
+# swiftPath form:
+#   - Flat colorset (no folder namespace)        → Color(.<name>)
+#   - Namespaced colorset (folder Provides Namespace = YES)
+#     → Color("<path/name>") string fallback. The legacy project hasn't
+#       migrated; the audit reports the working form. New colorsets
+#       emitted by scripts/colorset-codegen.sh always go flat.
+#   - Swift `static let X = Color(...)` extension → Color.<name>
 #
 # Usage:
 #   c1-project-color-audit.sh <project-root> [<output-path>]
@@ -128,6 +136,15 @@ def colorset_swift_name(catalog_path):
             break
     return "/".join(parts)
 
+def colorset_swift_path(name):
+    # Flat name (no `/` from a namespaced folder) → iOS 17+ auto-generated
+    # ColorResource: Color(.name). Namespaced legacy form → string fallback
+    # Color("path/name") (Xcode still resolves it; new colorsets shouldn't
+    # land in this branch — colorset-codegen.sh writes provides-namespace=false).
+    if "/" in name:
+        return f'Color("{name}")'
+    return f"Color(.{name})"
+
 for dirpath, dirnames, filenames in os.walk(project_root):
     dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
     if dirpath.endswith(".colorset"):
@@ -138,20 +155,21 @@ for dirpath, dirnames, filenames in os.walk(project_root):
         if not light:
             continue
         name = colorset_swift_name(dirpath)
+        swift_path = colorset_swift_path(name)
         rel = os.path.relpath(dirpath, project_root)
         results.append({
             "hex":       light,
-            "swiftPath": f'Color("{name}")',
+            "swiftPath": swift_path,
             "source":    rel,
             "lightHex":  light,
             "darkHex":   dark,
         })
         # For dual-mode entries, also index by darkHex so a Figma dark hex
-        # match still maps to the same Color("name") (Xcode auto-adapts).
+        # match still maps to the same swiftPath (Xcode auto-adapts).
         if dark and dark != light:
             results.append({
                 "hex":       dark,
-                "swiftPath": f'Color("{name}")',
+                "swiftPath": swift_path,
                 "source":    rel + " (dark appearance)",
                 "lightHex":  light,
                 "darkHex":   dark,

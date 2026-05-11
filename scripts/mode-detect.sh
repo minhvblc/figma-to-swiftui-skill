@@ -1,85 +1,167 @@
 #!/usr/bin/env bash
-# mode-detect.sh — emit one of greenfield | brownfield-ikame |
-# brownfield-vanilla | ambiguous to stdout, given a target folder.
+# mode-detect.sh — Classify a project folder into one of four modes that
+# downstream skill logic + hooks branch on. Mode is persisted to
+# .figma-cache/_shared/mode.json so subsequent hook invocations can read it
+# without re-probing.
 #
-# Used by Phase 0 of figma-to-swiftui to decide whether to invoke
-# `ikxcodegen` (greenfield Ikame project) or proceed with C1 probe on
-# an existing project (brownfield-*). Spec lives in
-# `figma-to-swiftui/references/ikxcodegen-bridge.md` §1.
+# Modes:
+#   greenfield                Empty/non-existent project. Skill must scaffold.
+#                             Sub-types:
+#                               greenfield-ikame    when ikxcodegen is on PATH
+#                                                   AND the user explicitly opts
+#                                                   in (mode.json.userChose).
+#                               greenfield-vanilla  default for empty greenfield
+#                                                   when ikxcodegen unavailable
+#                                                   OR user opts out.
 #
-# Detection rules:
-#   greenfield        — folder does not exist OR exists empty
-#                       (also accepts: no .xcodeproj AND no Podfile in folder)
-#   brownfield-ikame  — .xcodeproj + Podfile present AND Podfile contains
-#                       `pod 'IKCoreApp'`
-#   brownfield-vanilla — .xcodeproj + Podfile present, no IKCoreApp
-#   ambiguous         — folder has files but neither .xcodeproj nor Podfile,
-#                       OR exactly one of (.xcodeproj, Podfile) present
+#   brownfield-ikame          Existing project with Podfile that lists IKCoreApp
+#                             OR any *.swift imports IKCoreApp. The Ikame
+#                             umbrella conventions (IKNavigation/IKMacros/etc.)
+#                             apply.
+#
+#   brownfield-vanilla        Existing project with NO Ikame umbrella. Vanilla
+#                             SwiftUI patterns (NavigationStack, @Observable,
+#                             explicit color/font enums) apply.
+#
+#   ambiguous                 Existing project but classification unclear (e.g.
+#                             half-Ikame, partial scaffolds, mixed sources).
+#                             Skill MUST stop and ask the user before scaffolding.
 #
 # Usage:
-#   mode-detect.sh [<target-folder>]
+#   scripts/mode-detect.sh <project-folder> [--explain] [--write-cache]
 #
-# Default target: $PWD.
+# Output (stdout):
+#   {"mode": "<one of above>", "confidence": 0.0..1.0, "signals": [...]}
 #
 # Exit codes:
-#   0 — emitted one of the four mode strings
-#  64 — bad usage
+#   0 — classification produced (incl. ambiguous)
+#   1 — bad usage
 
-set -euo pipefail
+set -uo pipefail
 
-TARGET="${1:-$PWD}"
+PROJECT=""
+EXPLAIN=0
+WRITE_CACHE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --explain) EXPLAIN=1; shift ;;
+    --write-cache) WRITE_CACHE=1; shift ;;
+    -h|--help)
+      sed -n '2,30p' "$0" >&2
+      exit 0
+      ;;
+    *) [ -z "$PROJECT" ] && PROJECT="$1" && shift || { shift; } ;;
+  esac
+done
 
-# Non-existing folder = greenfield (caller will create it via ikxcodegen).
-# This matches ikxcodegen's "create new folder, refuse existing" semantics —
-# the canonical greenfield workflow is `cd <parent> && ikxcodegen <ProjectName>`
-# where <parent>/<ProjectName>/ does NOT yet exist.
-if [ ! -e "$TARGET" ]; then
-  echo "greenfield"
-  exit 0
+if [ -z "$PROJECT" ]; then
+  echo "usage: mode-detect.sh <project-folder> [--explain] [--write-cache]" >&2
+  exit 1
 fi
 
-if [ ! -d "$TARGET" ]; then
-  echo "FAIL: target exists but is not a directory: $TARGET" >&2
-  exit 65
-fi
+SIGNALS=()
+add_signal() { SIGNALS+=("$1"); }
 
-cd "$TARGET"
-
-has_xcodeproj=""
-if find . -maxdepth 2 -name '*.xcodeproj' -type d 2>/dev/null | head -1 | grep -q . ; then
-  has_xcodeproj="yes"
-fi
-
-has_podfile="no"
-[ -f "Podfile" ] && has_podfile="yes"
-
-# Anything in folder besides .DS_Store / .git?
-has_files="no"
-if find . -maxdepth 2 -type f ! -name '.DS_Store' ! -path './.git/*' 2>/dev/null | head -1 | grep -q . ; then
-  has_files="yes"
-fi
-
-# Decision tree.
-if [ -z "$has_xcodeproj" ] && [ "$has_podfile" = "no" ]; then
-  if [ "$has_files" = "no" ]; then
-    echo "greenfield"
-  else
-    # Folder has random files (README, docs, asset, ...). Skill must STOP
-    # and ask the user — do NOT scaffold over existing content.
-    echo "ambiguous"
+# Greenfield = no Xcode project AND no Podfile AND no Swift sources OR project
+# folder doesn't exist.
+GREENFIELD=0
+if [ ! -d "$PROJECT" ]; then
+  GREENFIELD=1
+  add_signal "project_folder_missing"
+else
+  if [ -z "$(find "$PROJECT" -maxdepth 3 -name '*.xcodeproj' -o -name '*.xcworkspace' 2>/dev/null | head -1)" ] \
+     && [ -z "$(find "$PROJECT" -maxdepth 3 -name 'Podfile' 2>/dev/null | head -1)" ] \
+     && [ -z "$(find "$PROJECT" -maxdepth 5 -name '*.swift' 2>/dev/null | head -1)" ]; then
+    GREENFIELD=1
+    add_signal "no_xcodeproj_no_podfile_no_swift"
   fi
-  exit 0
 fi
 
-if [ -n "$has_xcodeproj" ] && [ "$has_podfile" = "yes" ]; then
-  if grep -qE "^\s*pod\s+'IKCoreApp'" Podfile 2>/dev/null; then
-    echo "brownfield-ikame"
-  else
-    echo "brownfield-vanilla"
+# Ikame umbrella probe.
+IKAME=0
+if [ -d "$PROJECT" ]; then
+  if find "$PROJECT" -maxdepth 5 -name 'Podfile' -print 2>/dev/null | xargs grep -l "pod ['\"]IKCoreApp['\"]" 2>/dev/null | head -1 | grep -q . ; then
+    IKAME=1
+    add_signal "podfile_lists_IKCoreApp"
   fi
-  exit 0
+  if find "$PROJECT" -maxdepth 8 -name '*.swift' 2>/dev/null | xargs grep -l '^import IKCoreApp\b' 2>/dev/null | head -1 | grep -q . ; then
+    IKAME=1
+    add_signal "swift_imports_IKCoreApp"
+  fi
 fi
 
-# Exactly one of (.xcodeproj, Podfile) — anomalous.
-echo "ambiguous"
-exit 0
+IKXCODEGEN_AVAILABLE=0
+command -v ikxcodegen >/dev/null 2>&1 && IKXCODEGEN_AVAILABLE=1
+[ $IKXCODEGEN_AVAILABLE -eq 1 ] && add_signal "ikxcodegen_on_PATH"
+
+# Classification.
+MODE=""
+CONFIDENCE="0.5"
+if [ $GREENFIELD -eq 1 ]; then
+  if [ $IKXCODEGEN_AVAILABLE -eq 1 ]; then
+    # Greenfield + ikxcodegen → Ikame is the recommended path, but the user
+    # should be asked. Output a tentative classification with confidence 0.65.
+    MODE="greenfield-ikame"
+    CONFIDENCE="0.65"
+    add_signal "tentative: greenfield+ikxcodegen — confirm user wants Ikame scaffold or fall back to vanilla"
+  else
+    MODE="greenfield-vanilla"
+    CONFIDENCE="0.90"
+  fi
+elif [ $IKAME -eq 1 ]; then
+  MODE="brownfield-ikame"
+  CONFIDENCE="0.95"
+else
+  # Existing project but no Ikame signals — usually vanilla, but possible
+  # partial scaffold. Confidence lower.
+  if [ -d "$PROJECT" ] && [ -n "$(find "$PROJECT" -maxdepth 5 -name '*.xcodeproj' 2>/dev/null | head -1)" ]; then
+    MODE="brownfield-vanilla"
+    CONFIDENCE="0.85"
+  else
+    MODE="ambiguous"
+    CONFIDENCE="0.40"
+    add_signal "no_clear_signals — skill should stop and ask before scaffolding"
+  fi
+fi
+
+# Format signals as JSON array.
+SIGNALS_JSON=""
+for s in "${SIGNALS[@]:-}"; do
+  if [ -n "$SIGNALS_JSON" ]; then SIGNALS_JSON+=","; fi
+  SIGNALS_JSON+="\"$(printf '%s' "$s" | sed 's/"/\\"/g')\""
+done
+OUT="{\"mode\":\"$MODE\",\"confidence\":$CONFIDENCE,\"signals\":[${SIGNALS_JSON}]}"
+
+if [ $EXPLAIN -eq 1 ]; then
+  echo "mode-detect.sh report"
+  echo "  project: $PROJECT"
+  echo "  mode: $MODE (confidence $CONFIDENCE)"
+  echo "  signals:"
+  for s in "${SIGNALS[@]:-}"; do echo "    - $s"; done
+  echo ""
+  case "$MODE" in
+    greenfield-ikame)
+      echo "next: confirm with user → if Ikame, run scripts/ikxcodegen-scaffold.sh <ProjectName>"
+      echo "      else override to greenfield-vanilla and run scripts/vanilla-scaffold.sh <ProjectName>"
+      ;;
+    greenfield-vanilla)
+      echo "next: run scripts/vanilla-scaffold.sh <ProjectName>"
+      ;;
+    brownfield-ikame)
+      echo "next: load conventions per references/ikame-decision-table.md"
+      ;;
+    brownfield-vanilla)
+      echo "next: run convention-probe and load conventions per references/swiftui-pro-bridge.md"
+      ;;
+    ambiguous)
+      echo "next: STOP and ask user. Do not scaffold over an existing project of unknown topology."
+      ;;
+  esac
+else
+  echo "$OUT"
+fi
+
+if [ $WRITE_CACHE -eq 1 ] && [ -d "$PROJECT" ]; then
+  mkdir -p "$PROJECT/.figma-cache/_shared"
+  printf '%s\n' "$OUT" > "$PROJECT/.figma-cache/_shared/mode.json"
+fi
