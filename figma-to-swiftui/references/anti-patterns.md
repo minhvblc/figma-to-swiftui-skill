@@ -25,7 +25,7 @@ Read this when you reach Phase B or Phase C. Read it again at the end of every r
 
 ## 2. "Build → screenshot → declare PASS without C5.6"
 
-**The thought:** *"I ran `xcodebuild build` and it succeeded. I booted a simulator, took a screenshot of each screen, and the screens look great. C5 done."*
+**The thought:** *"The build succeeded (either via `mcp__xcode__BuildProject` on Engine A or `xcodebuild build` on Engine B). I captured a screenshot of each screen (via `RenderPreview` on Engine A or `simctl io screenshot` on Engine B), and the screens look great. C5 done."*
 
 **The actual outcome:** there is no `c5-sections.md`, no `c5-census.md`, no `c5-visual-diff.md`, no per-section crop pairs, no 4-anchor proportional check, no attestation. The agent's vision read the simulator screenshot once, glanced at the Figma render, and called it good. Confirmation bias kicked in — every section read PASS.
 
@@ -65,15 +65,17 @@ If you genuinely need to set the initial state of the real flow (not a verificat
 
 ## 4. "LSP errors are stale — actual compilation is clean"
 
-**The thought:** *"The LSP keeps complaining about `Cannot find AppColor in scope`, but I know that's just LSP indexing lag. `xcodebuild` will work."*
+**The thought:** *"The LSP keeps complaining about `Cannot find AppColor in scope`, but I know that's just LSP indexing lag. The real build will work."*
 
-**The actual outcome:** sometimes LSP IS stale — but sometimes the agent moved a file, renamed a type, or forgot to add a target membership and the LSP is correctly reporting a real error. Asserting "stale" without verifying with `xcodebuild` is a guess that ships broken code half the time.
+**The actual outcome:** sometimes LSP IS stale — but sometimes the agent moved a file, renamed a type, or forgot to add a target membership and the LSP is correctly reporting a real error. Asserting "stale" without verifying against the compiler is a guess that ships broken code half the time.
 
-**The rule:** [Key Principle #4](../SKILL.md). MCP output is a spec, not code. Same applies to tooling output: don't assume — verify. If LSP says missing, run `xcodebuild build` and read the result.
+**The rule:** [Key Principle #4](../SKILL.md). MCP output is a spec, not code. Same applies to tooling output: don't assume — verify. If LSP says missing, ask the compiler:
+- **Engine A (default on Xcode 26+):** call `mcp__xcode__XcodeRefreshCodeIssuesInFile` on the file — returns structured Swift diagnostics from the live Xcode index in sub-second. If a full project build is warranted, `mcp__xcode__BuildProject`.
+- **Engine B (fallback):** `xcodebuild -scheme <scheme> -destination ... build` and read the result.
 
-**The gate that should catch it:** none directly — this is a discipline failure. But Gate C5 will catch a real build failure, which is the right place: the agent doesn't get to call C5 PASS until `xcodebuild build` actually passes.
+**The gate that should catch it:** none directly — this is a discipline failure. But Gate C5 will catch a real build failure, which is the right place: the agent doesn't get to call C5 PASS until the build (on whichever engine) actually passes.
 
-**The fix:** when LSP complains, run `xcodebuild -scheme <scheme> -destination ... build` once before declaring "stale". If the build passes, LSP was stale. If it fails, the LSP was right.
+**The fix:** when LSP complains, verify against the compiler before declaring "stale". On Engine A, the verification is sub-second (XcodeRefreshCodeIssuesInFile) so the cost is negligible.
 
 ---
 
@@ -235,7 +237,7 @@ Button(action: tapped) {
 
 **The actual outcome:** the app compiles, the screens render, the doc questions appear — but the screens **do not match Figma**. Each Figma screen has its own wording (sometimes different from the doc), its own option count, its own illustration on break screens, its own special states (some have Skip, some don't, some have a "What does this mean?" link, some don't), its own colors per topic, its own animations. The agent built 30 fake screens off a doc summary instead of 30 real screens off the actual frames.
 
-This is **§1 of multi-screen flows**: doc-as-spec, Figma-as-decoration. The single most common failure mode the flow skill exists to prevent — and the most insidious, because the agent's `xcodebuild build` will succeed and a single screenshot of one screen will look correct. The damage is only visible when the user side-by-sides 30 screenshots against 30 Figma frames.
+This is **§1 of multi-screen flows**: doc-as-spec, Figma-as-decoration. The single most common failure mode the flow skill exists to prevent — and the most insidious, because the build (Engine A `BuildProject` or Engine B `xcodebuild`) will succeed and a single screenshot of one screen will look correct. The damage is only visible when the user side-by-sides 30 screenshots against 30 Figma frames.
 
 **The rule:** [SKILL.md §"BANNED shortcuts"](../SKILL.md). Doc describes BEHAVIOR. Figma defines STRUCTURE. They are not interchangeable. Every screen in `registry.screens[]` or `registry.candidateScreens[]` needs its own Phase A artifact: `design-context.md` + `screenshot.png`. Treating 30 frames as instances of 1 template assumes facts not in evidence.
 
@@ -296,7 +298,7 @@ Before you write the Verification summary, scan your draft for these phrases. If
 - "the user won't notice" / "close enough" / "good enough for now"
 - "approximately" / "roughly" / "near match" / "minor difference"
 - "non-negotiables flexed" / "had to compromise"
-- "LSP is stale, actual compile is fine" — without running `xcodebuild build`
+- "LSP is stale, actual compile is fine" — without running `mcp__xcode__XcodeRefreshCodeIssuesInFile` (Engine A) or `xcodebuild build` (Engine B)
 - "bypassed C5 entry path by editing X" / "added an init override for verification"
 - "used SwiftUI shapes for ... " — for icons / logos / illustrations
 - "skipped Phase B for these icons because they're simple"

@@ -108,7 +108,7 @@ Refuses to overwrite an existing `project.yml` or `.xcodeproj`. Delete the folde
 
 5. **DesignSystem tokens.** Run `b0a-extract-copy.sh` (per screen, accumulating in `Strings.swift`) and `b0b-tokens-codegen.sh` (once per flow, appending to `AppColor.swift` + `AppFont.swift`).
 
-6. **Switch to production mode.** Once Phase A is complete for ALL screens AND `xcodebuild build` succeeds AND C5 PASS per screen, edit `c1-conventions.json` → `mode: "production"`. Re-run the full session-end sweep. Fix any blocker that surfaced.
+6. **Switch to production mode.** Once Phase A is complete for ALL screens AND the build succeeds on the chosen engine (Engine A `mcp__xcode__BuildProject` returns no errors, OR Engine B `xcodebuild build` exits 0) AND C5 PASS per screen, edit `c1-conventions.json` → `mode: "production"`. Re-run the full session-end sweep. Fix any blocker that surfaced.
 
 ---
 

@@ -13,26 +13,23 @@ This document splits C5 into three tiers. Each has explicit minimum artifacts. T
 
 ---
 
-## Tier 1 (mandatory) — build + launch + first-screen snapshot
+## Tier 1 (mandatory) — build + first-screen snapshot
 
-The non-negotiable baseline. Every C5 run, regardless of UI-driver availability, MUST produce these artifacts:
+The non-negotiable baseline. Every C5 run, regardless of UI-driver availability, MUST produce a build proof + a first-screen proof. The exact artifacts depend on which engine `scripts/c5-engine-select.sh` picked at C5.0 (see `figma-to-swiftui/SKILL.md` §C5.0):
 
-| Artifact | Path | Source |
+| Engine | Build artifact | First-screen artifact |
 |---|---|---|
-| Build log | `.figma-cache/_shared/c5-build.log` | `xcodebuild build` stdout/stderr |
-| Boot log | `.figma-cache/_shared/c5-boot.log` | `xcrun simctl boot` exit + state |
-| Install log | `.figma-cache/_shared/c5-install.log` | `xcrun simctl install` exit |
-| Launch log | `.figma-cache/_shared/c5-launch.log` | `xcrun simctl launch` exit + pid |
-| First-screen screenshot | `.figma-cache/_shared/c5-first-screen.png` | `xcrun simctl io screenshot` after launch |
+| **Engine A** (xcode MCP, Xcode 26+) | `mcp__xcode__GetBuildLog` payload saved to `.figma-cache/_shared/c5-build.log` (after `BuildProject`) | `mcp__xcode__RenderPreview` PNG saved to `.figma-cache/<nodeId>/c5-render.png` |
+| **Engine B** (xcodebuild + simctl) | `xcodebuild build` stdout/stderr → `.figma-cache/_shared/c5-build.log` | `xcrun simctl io screenshot` after `boot`/`install`/`launch` → `.figma-cache/_shared/c5-first-screen.png`. Engine B also writes `c5-boot.log` / `c5-install.log` / `c5-launch.log` siblings (simctl state proofs not needed on Engine A). |
 
-Tier 1 PASS criteria:
-- `xcodebuild build` exit 0.
-- Simulator booted (state == "Booted").
-- App installed (exit 0).
-- App launched (exit 0).
-- Screenshot file exists AND is a valid PNG AND > 1 KB (proves SwiftUI rendered something, not just black).
+Tier 1 PASS criteria (engine-aware):
 
-Tier 1 cannot be skipped except for system reasons (`no_project`, `simctl_error`, `ci_environment`). Even in those cases, the build log MUST exist — `xcodebuild build` is platform-independent.
+| Engine | Pass criteria |
+|---|---|
+| Engine A | `BuildProject` returns no errors (XcodeListNavigatorIssues empty for that scheme). `RenderPreview` returns a valid PNG > 1 KB. |
+| Engine B | `xcodebuild build` exit 0. Simulator booted (state == "Booted"). App installed (exit 0). App launched (exit 0). Screenshot file exists AND is a valid PNG AND > 1 KB (proves SwiftUI rendered something, not just black). |
+
+Tier 1 cannot be skipped except for system reasons (`no_project`, `simctl_error`, `ci_environment`). Even in those cases, the build log MUST exist — both engines produce one.
 
 When Tier 1 succeeds and Tier 2/3 are blocked, that's fine — the agent has proof the app at least compiles and renders the entry screen.
 
@@ -45,7 +42,9 @@ Drives the simulator through the planned user journey. Each screen reachable fro
 **Required driver:**
 - `ios-simulator-verify` skill (preferred — accessibility-id based, deterministic), OR
 - `computer-use` MCP with `request_access` for Simulator (pixel-coordinate clicks, requires user approval), OR
-- Pre-existing XCUITest target in the project that walks the flow (run via `xcodebuild test`).
+- Pre-existing XCUITest target in the project that walks the flow (run via `mcp__xcode__RunAllTests` on Engine A, else `xcodebuild test` on Engine B).
+
+Note: Engine A's `RenderPreview` is screen-by-screen, not a live walkthrough — it can't replace Tier 2's narrative-style flow drive. If you need to verify navigation transitions, run the simulator (Engine B path) or use one of the three drivers above on top of Engine A's BuildProject output.
 
 **Artifacts (in addition to Tier 1):**
 
@@ -91,16 +90,18 @@ Tier 3 is the gold standard. Skip ONLY when the user explicitly waives it OR whe
 ```
 Start C5
   │
-  ├── Can run xcodebuild + simctl?
-  │     No  → skip C5 entirely, manifest.skipped = "no_project"|"simctl_error"|"ci_environment"
-  │           (Tier 1 unreachable — STOP)
-  │     Yes → run Tier 1
+  ├── scripts/c5-engine-select.sh → which engine?
+  │     Engine A (xcode MCP) → mcp__xcode__BuildProject + RenderPreview
+  │     Engine B (xcodebuild + simctl) → traditional flow
+  │     Neither viable (no xcrun, no project) → manifest.skipped =
+  │       "no_project" | "simctl_error" | "ci_environment"
+  │       (Tier 1 unreachable — STOP)
   │
-Tier 1 passed?
-  │     No  → fix build/launch first, retry
+Tier 1 passed (build OK + first-screen PNG > 1KB)?
+  │     No  → fix build errors first, retry
   │     Yes → proceed
   │
-Have a UI driver?
+Have a UI driver for Tier 2?
   │     ios-simulator-verify? → Tier 2 attainable
   │     computer-use w/ access? → Tier 2 attainable
   │     XCUITest already in project? → Tier 2 attainable
@@ -149,7 +150,7 @@ C5 verification summary
   SKIPPED:      2  (simctl_error)
 ```
 
-Compile-pass-only ("xcodebuild succeeded so C5 done") fails this gate — that's at most Tier 0, which doesn't exist.
+Compile-pass-only ("build succeeded so C5 done" — whether via Engine A `BuildProject` or Engine B `xcodebuild build`) fails this gate. That's at most Tier 0, which doesn't exist.
 
 ---
 

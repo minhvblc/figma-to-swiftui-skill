@@ -77,7 +77,7 @@ Before final review / merge:
 
 4. Re-run the C5 verification gate per screen (`c5-coverage-check.sh`).
 
-5. Re-run `xcodebuild build` + simulator install + visual diff.
+5. Re-run C5 per the engine `scripts/c5-engine-select.sh` picks (Engine A: `mcp__xcode__BuildProject` + `RenderPreview`; Engine B: `xcodebuild build` + simulator install + visual diff).
 
 If any of these fail and you can't fix in one session, **revert mode to scaffold** for the next session — don't ship a half-converted project. The mode field is your audit trail.
 

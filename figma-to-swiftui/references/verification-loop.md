@@ -440,7 +440,9 @@ fi
 
 User phrases like `skip C5` / `bỏ qua C5` / `không cần build` are NOT honored. Reply with the Done-Gate (`SKILL.md` Key Principle #12) and proceed.
 
-### C5.1 — Detect build target
+> **Scope of this section.** What follows (§C5.1–§C5.6) is the **Engine B** procedure (`xcodebuild` + `xcrun simctl`). On the Xcode 26+ baseline, `scripts/c5-engine-select.sh` defaults to **Engine A** (xcode MCP — `mcp__xcode__BuildProject` / `RenderPreview` / `XcodeListNavigatorIssues` / `GetBuildLog`) which bypasses the SPM resolve hang + simctl cold-start documented below. See `figma-to-swiftui/SKILL.md` §C5.0 for the Engine A path. Drop into Engine B only when the selector script picks `xcodebuild` (Xcode < 26, Xcode not running, or screen lacks `#Preview`).
+
+### C5.1 — Detect build target (Engine B)
 
 ```bash
 xcodebuild -list 2>/dev/null
@@ -528,7 +530,7 @@ C5 must screenshot the app **as it will ship**. The following shortcuts are bann
 
 2. **Adding `#Preview` macros purely to satisfy C5.** Previews skip real navigation, real state initialization, and real lifecycle events. They are a design tool, not a verification tool. Existing `#Preview`s the project already shipped are fine to use; new ones added solely to make C5 reachable are not.
 
-3. **Stating C5 PASS without `simctl launch` + `simctl io screenshot` + visual compare.** A clean `xcodebuild build` is not C5. Compile-passed alone fails C5 by definition.
+3. **Stating C5 PASS without a real screen render + visual compare.** A clean build is not C5 — on Engine A you need `mcp__xcode__RenderPreview` to produce `c5-render.png`; on Engine B you need `simctl launch` + `simctl io screenshot` to produce `c5-simulator.png`. Compile-passed alone fails C5 by definition.
 
 4. **Reading code and asserting "the transition works because `OnboardingState.handlePINComplete` pushes Face ID".** Code-reading is C3 Pass 1 / Pass 4. C5 requires the simulator to actually transition.
 
