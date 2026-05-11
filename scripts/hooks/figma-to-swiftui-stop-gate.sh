@@ -55,8 +55,11 @@ done
 #   IS_FIGMA == "no"  AND no cache → not a figma task, allow stop
 PROBE="$(dirname "$0")/_figma-task-probe.sh"
 IS_FIGMA="no"
+# Stop is session-wide — a wrong block here is high-cost (user can't end
+# the session). Use --strict so we only enforce when transcript shows an
+# actual figma tool/skill/URL signal, not just the bare word "figma".
 if [ -x "$PROBE" ]; then
-  IS_FIGMA=$(printf '%s' "$PAYLOAD" | "$PROBE" 2>/dev/null || echo "no")
+  IS_FIGMA=$(printf '%s' "$PAYLOAD" | "$PROBE" --strict 2>/dev/null || echo "no")
 fi
 
 if [ -z "$CACHE_ROOT" ]; then
