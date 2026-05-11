@@ -34,7 +34,18 @@ case "$BASE" in
 esac
 case "$FILE_PATH" in *_NoFigma_*) exit 0 ;; esac
 
-# Walk up looking for .figma-cache.
+# Probe FIRST — current session must show a figma signal in transcript.
+# Stale .figma-cache/ from a prior unrelated session is intentionally
+# NOT a signal — would false-positive a legit ContentView edit today.
+PROBE="$(dirname "$0")/_figma-task-probe.sh"
+IS_FIGMA="no"
+if [ -x "$PROBE" ]; then
+  IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
+fi
+[ "$IS_FIGMA" != "yes" ] && exit 0
+
+# Walk up looking for .figma-cache (PROJECT_ROOT used for c1-conventions.json
+# lookup below). If no cache, this is a fresh figma task — synthesize $PWD.
 DIR=$(dirname "$FILE_PATH" 2>/dev/null || echo "")
 PROJECT_ROOT=""
 while [ -n "$DIR" ] && [ "$DIR" != "/" ]; do
@@ -42,7 +53,7 @@ while [ -n "$DIR" ] && [ "$DIR" != "/" ]; do
   DIR=$(dirname "$DIR")
 done
 if [ -z "$PROJECT_ROOT" ] && [ -d "$PWD/.figma-cache" ]; then PROJECT_ROOT="$PWD"; fi
-[ -z "$PROJECT_ROOT" ] && exit 0
+[ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="$PWD"
 
 [ -z "$CONTENT" ] && exit 0
 

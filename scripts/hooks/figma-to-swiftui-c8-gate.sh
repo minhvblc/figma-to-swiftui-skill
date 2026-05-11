@@ -38,7 +38,18 @@ case "$TOOL" in Write|Edit) ;; *) exit 0 ;; esac
 [[ "$FILE_PATH" == *.swift ]] || exit 0
 [ -f "$FILE_PATH" ] || exit 0
 
-# Walk up from the file to find .figma-cache/.
+# Probe FIRST — only enforce coding-conventions inside the current figma
+# session. Stale .figma-cache/ from a prior run is intentionally NOT a
+# signal (would false-positive today's unrelated Swift refactor).
+PROBE="$(dirname "$0")/_figma-task-probe.sh"
+IS_FIGMA="no"
+if [ -x "$PROBE" ]; then
+  IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
+fi
+[ "$IS_FIGMA" != "yes" ] && exit 0
+
+# Walk up from the file to find .figma-cache/ (used as PROJECT_ROOT for the
+# c1-conventions.json lookup + session-files.json tracking below).
 PROJECT_ROOT=""
 D=$(dirname "$FILE_PATH")
 for _ in 1 2 3 4 5 6 7 8; do

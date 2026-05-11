@@ -51,6 +51,16 @@ case "$FILE_PATH" in
   *_NoFigma_*) exit 0 ;;
 esac
 
+# Probe FIRST — is the CURRENT session a figma task? (Transcript-derived
+# only. A stale .figma-cache/ from a prior unrelated session must not
+# trigger enforcement on today's unrelated Swift writes.)
+PROBE="$(dirname "$0")/_figma-task-probe.sh"
+IS_FIGMA="no"
+if [ -x "$PROBE" ]; then
+  IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
+fi
+[ "$IS_FIGMA" != "yes" ] && exit 0
+
 # Walk up looking for .figma-cache.
 DIR=$(dirname "$FILE_PATH" 2>/dev/null || echo "")
 CACHE_ROOT=""
@@ -66,25 +76,11 @@ if [ -z "$CACHE_ROOT" ] && [ -d "$PWD/.figma-cache" ]; then
   CACHE_ROOT="$PWD/.figma-cache"
 fi
 
-# Cache missing → before allowing, ask the shared probe whether this is a
-# figma task by any other signal (transcript skill invocation / Figma MCP
-# tool call / user message mentioning "figma"). If yes, BLOCK — the agent
-# is about to write Swift in a figma task without running Phase A.
+# Figma task confirmed by probe + no cache on disk → agent skipped Phase A.
+# Block with the Phase 0 + Phase A + Phase B checklist verbatim.
 if [ -z "$CACHE_ROOT" ]; then
-  PROBE="$(dirname "$0")/_figma-task-probe.sh"
-  IS_FIGMA="no"
-  if [ -x "$PROBE" ]; then
-    IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
-  fi
-  if [ "$IS_FIGMA" != "yes" ]; then
-    exit 0
-  fi
-  # Figma task detected (transcript/user-message signal) but no Phase A
-  # artifacts on disk yet. Block with the Phase 0 + Phase A + Phase B
-  # checklist verbatim — this is the chicken-and-egg failure mode the
-  # probe exists to close.
   {
-    echo "BLOCKED: figma task detected (transcript / user message mentions Figma) but no Phase A artifacts on disk."
+    echo "BLOCKED: figma task detected (transcript shows a Figma URL or figma-MCP tool/skill use) but no Phase A artifacts on disk."
     echo ""
     echo "You're about to Write a .swift file BEFORE running the figma-to-swiftui workflow. Do Phase 0 → Phase A → Phase B FIRST."
     echo ""
@@ -147,18 +143,9 @@ for D in "${SCREEN_DIRS[@]}"; do
 done
 
 # No screen subdirs → cache only contains _shared (mode-detect ran but
-# Phase A never started). Previously this was "treat as not-a-figma-task,
-# allow" — but that's the failure mode the probe exists to close. When
-# the probe sees a figma session, block with the Phase A checklist.
+# Phase A never started). Block with the Phase A checklist — probe at
+# top of script already confirmed this is a figma task.
 if [ "$SCREEN_COUNT" = "0" ]; then
-  PROBE="$(dirname "$0")/_figma-task-probe.sh"
-  IS_FIGMA="no"
-  if [ -x "$PROBE" ]; then
-    IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
-  fi
-  if [ "$IS_FIGMA" != "yes" ]; then
-    exit 0
-  fi
   {
     echo "BLOCKED: figma task with .figma-cache/ but no screen-level Phase A artifacts."
     echo ""

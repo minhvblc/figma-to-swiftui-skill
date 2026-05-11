@@ -67,9 +67,9 @@ if [ -z "$CACHE_ROOT" ]; then
   # the run without Phase A at all. This is the failure mode the user
   # reported ("skill không tôn trọng Figma, MCP không chạy"). Block.
   {
-    echo "Done-Gate violated: figma task detected (transcript/user message"
-    echo "mentions Figma) but no .figma-cache/ on disk — Phase A was never"
-    echo "run. The skill does not respect Figma when this happens."
+    echo "Done-Gate violated: figma task detected (transcript shows a Figma"
+    echo "URL or figma-MCP tool/skill use) but no .figma-cache/ on disk — Phase"
+    echo "A was never run. The skill does not respect Figma when this happens."
     echo ""
     echo "Required to declare done (minimum):"
     echo "  Phase 0  scripts/mode-detect.sh <projectFolder> --write-cache"

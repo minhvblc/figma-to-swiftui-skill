@@ -6,26 +6,26 @@
 # never created the cache → every gate slept → user got a "from Figma" run
 # with no Figma artifacts, no asset export, no visual diff.
 #
-# Detection signals (any one → "yes"). All are precise — no broad-word
-# match because that produced false positives in skill development and in
-# generic iOS work where "figma" was mentioned in passing.
+# Detection signals — both must be transcript-derived to scope strictly to
+# the CURRENT session. Cache-existence is intentionally NOT a signal: a
+# stale .figma-cache/ from a prior session would otherwise false-positive
+# unrelated iOS work (the Gap C scenario — user runs the skill once, then
+# weeks later opens the same project for a networking refactor and hits
+# enforcement against work that has nothing to do with Figma).
 #
-#   (1) FIGMA URL — transcript contains the substring "figma.com/".
-#       This is the user's most common entry point: paste a Figma link
-#       (e.g. https://www.figma.com/design/<fileKey>/...?node-id=...).
-#       Once seen, the session is conclusively a figma task.
+#   (1) FIGMA URL — transcript contains a Figma app URL with one of the
+#       canonical paths (design/file/board/slides/make). The user pasting
+#       `https://www.figma.com/design/<fileKey>/...?node-id=...` is the
+#       primary entry to a figma-to-swiftui run.
 #
 #   (2) FIGMA TOOL / SKILL — transcript shows a tool_use of any
 #       mcp__figma* tool (figma-desktop, figma-assets) OR a direct
 #       figma_* tool call OR a Skill invocation of figma-to-swiftui /
-#       figma-flow-to-swiftui-feature. These prove the agent already
-#       opened the workflow even without a URL (e.g. agent used the
-#       figma-desktop MCP's current-selection mode, or the user invoked
-#       /figma-to-swiftui as a slash command).
-#
-#   (3) CACHE — PWD or any ancestor (up to 6 levels) contains a
-#       .figma-cache/ directory. Once the cache exists, the project is
-#       unambiguously in a figma task.
+#       figma-flow-to-swiftui-feature. Covers the figma-desktop "current
+#       selection" path (no URL needed) AND the slash-command entry.
+#       Also covers any later turn in a multi-turn session — once the
+#       agent has called a figma tool, every subsequent hook fire still
+#       sees the signal in transcript.
 #
 # Skill-repo bypass: when both `figma-to-swiftui/SKILL.md` AND
 # `figma-flow-to-swiftui-feature/SKILL.md` exist together up the tree, we
@@ -72,18 +72,6 @@ if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
     exit 0
   fi
 fi
-
-# Signal (3) — cache exists up the tree
-D="$PWD"
-for _ in 1 2 3 4 5 6; do
-  if [ -d "$D/.figma-cache" ]; then
-    echo "yes"
-    exit 0
-  fi
-  PARENT=$(dirname "$D")
-  [ "$PARENT" = "$D" ] && break
-  D="$PARENT"
-done
 
 echo "no"
 exit 0

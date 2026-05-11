@@ -48,20 +48,16 @@ case "$FILE_PATH" in
   *_NoFigma_*) exit 0 ;;
 esac
 
-# Only enforce inside a figma task (walk up looking for .figma-cache).
-DIR=$(dirname "$FILE_PATH" 2>/dev/null || echo "")
-FIGMA_TASK=0
-while [ -n "$DIR" ] && [ "$DIR" != "/" ]; do
-  if [ -d "$DIR/.figma-cache" ]; then
-    FIGMA_TASK=1
-    break
-  fi
-  DIR=$(dirname "$DIR")
-done
-if [ "$FIGMA_TASK" = "0" ] && [ -d "$PWD/.figma-cache" ]; then
-  FIGMA_TASK=1
+# Only enforce inside a figma task — probe transcript for URL / figma tool /
+# skill invocation. Stale .figma-cache/ on disk from a prior unrelated
+# session is intentionally NOT a signal (would false-positive today's
+# unrelated Swift writes when the cache is leftover).
+PROBE="$(dirname "$0")/_figma-task-probe.sh"
+IS_FIGMA="no"
+if [ -x "$PROBE" ]; then
+  IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
 fi
-[ "$FIGMA_TASK" = "0" ] && exit 0
+[ "$IS_FIGMA" != "yes" ] && exit 0
 
 # ─── P0-4: Build the content to check ──────────────────────────────────────────
 # Goal: produce a TMP file that represents what the file WILL look like after
