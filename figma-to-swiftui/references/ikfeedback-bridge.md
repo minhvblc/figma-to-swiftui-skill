@@ -2,12 +2,17 @@
 
 How `figma-to-swiftui` emits user-feedback code (loading indicator, haptics, toast) when the target project uses Ikame's feedback APIs (re-exported by `IKCoreApp`). Conditional — applies only when `c1-conventions.json.usesIKFeedback == true`.
 
-This bridge covers three Ikame APIs:
-- **IKLoading** — global modal loading spinner
-- **IKHaptics** — haptic feedback wrapper (selection / impact)
-- **AppUtils.shared.showAppBottomToast** — global bottom toast
+**Canonical sources:**
+- `ikame-ios-coding/references/ui-popup-toast-loading.md` — IKLoading and IKToast.
+- `references/ikame-decision-table.md` §7 (D-601..D-607) — locked decisions including the brownfield wrapper pattern.
 
-The full set of feedback decisions is locked in `references/ikame-decision-table.md` §7 (D-601..D-607). This file expands on the patterns with full code examples.
+This file documents only the figma-specific delta and the APIs `ikame-ios-coding` does NOT yet cover (IKHaptics, project-level toast wrappers like `AppUtils.shared.showAppBottomToast`).
+
+Three feedback families:
+- **IKLoading** — global modal loading spinner (canonical, in ios-coding-skill)
+- **IKToast** — top-of-screen banner with built-in identifiers (canonical, in ios-coding-skill)
+- **IKHaptics** — haptic feedback wrapper (this bridge only)
+- **AppUtils.shared.showAppBottomToast** — project-level bottom-toast wrapper observed in authenv2 (brownfield only — this bridge only)
 
 ---
 
@@ -20,14 +25,18 @@ C1 sets `usesIKFeedback = true` when ANY of these signals are present:
 | `pod 'IKCoreApp'` in Podfile | grep |
 | `import IKCoreApp` in any Swift file | grep |
 | `IKLoading.showLoading(` call | `grep -r 'IKLoading\.\(show\|dismiss\)Loading'` |
+| `IKToast.show(` call | `grep -r 'IKToast\.\(show\|showExclusive\|dismissAll\)'` |
 | `IKHaptics.<member>` call | `grep -r 'IKHaptics\.'` |
-| `AppUtils.shared.showAppBottomToast(` call | `grep -r 'showAppBottomToast'` |
+| `AppUtils.shared.showAppBottomToast(` call (or other project-level toast wrapper) | `grep -r 'showAppBottomToast\|<projectWrapper>'` |
 
 If any signal present → `usesIKFeedback = true`. Skill emits Ikame-flavored feedback by default.
 
 If absent → skill uses native iOS APIs (`UIImpactFeedbackGenerator`, `ProgressView` overlay, custom toast). Do not introduce Ikame feedback into a project that doesn't have it.
 
-C1 also captures `toastTypeEnumName` (e.g. `ToastSceenType` in authenv2) so the skill picks an existing case rather than inventing.
+C1 also captures:
+- `toastApi` — `"ikToast"` (canonical, IKCoreApp's `IKToast.show(.<id>, message:)`) or `"appToastWrapper"` (project-level wrapper like authenv2's `AppUtils.shared.showAppBottomToast(for: .<case>)`).
+- `appToastWrapper.typeName` (e.g. `ToastSceenType` in authenv2) — when `toastApi == "appToastWrapper"`, the existing enum's case list the skill must pick from.
+- `appToastWrapper.funcSig` (e.g. `AppUtils.shared.showAppBottomToast(for:)`) — the exact call form to emit at call sites.
 
 ---
 
@@ -111,37 +120,63 @@ IKHaptics.impactOccurred(.heavy)
 
 ---
 
-## §4. Toast — AppUtils.shared.showAppBottomToast
+## §4. Toast — canonical `IKToast` (with brownfield wrapper option)
 
-**Default invocation** — fire-and-forget at the moment the event happens:
+**Canonical invocation** — `IKToast.show(.<identifier>, message:)` with built-in identifiers from IKCoreApp:
 
 ```swift
-// On copy
+IKToast.show(.success, message: "Saved!")
+IKToast.show(.error,   message: "Network failed")
+IKToast.show(.warning, message: "Storage almost full")
+IKToast.show(.info,    message: "Update available")
+IKToast.show(.network, message: "No internet connection")
+
+// Dismiss other toasts first, then show this
+IKToast.showExclusive(.error, message: "Save failed")
+
+// Clear every toast
+IKToast.dismissAll()
+```
+
+| Identifier | Use |
+|---|---|
+| `.success` | Operation succeeded, item saved/deleted, action confirmed |
+| `.error` | Failed save, validation error, generic error |
+| `.warning` | Approaching a limit, deprecation, "are you sure" hint |
+| `.info` | Neutral info, tip, status update |
+| `.network` | Connectivity issues specifically |
+
+Custom visual styles registered once at app start: `IKToast.register(for: .customId) { msg in MyToastView(msg: msg) }`. See `ikame-ios-coding/references/ui-popup-toast-loading.md` for full API.
+
+**Brownfield wrapper — `AppUtils.shared.showAppBottomToast`.** Some older Ikame projects (notably authenv2) defined an app-level toast wrapper that takes a project-specific enum case instead of a free-text message:
+
+```swift
+// authenv2 brownfield form — only when C1 captures toastApi: "appToastWrapper"
 AppUtils.shared.showAppBottomToast(for: .copiedToast)
-
-// On error
 AppUtils.shared.showAppBottomToast(for: .saveFailed)
-
-// On success
 AppUtils.shared.showAppBottomToast(for: .syncCompleted)
 ```
 
-The argument is a case from the project's `ToastSceenType` (or whatever name C1 captures as `toastTypeEnumName`). The skill picks an existing case rather than inventing.
+The argument is a case from the project's `ToastSceenType` (or whatever name C1 captures as `appToastWrapper.typeName`). The wrapper routes to `IKToast` or `IKPopup.shared.toast` internally; the skill uses the wrapper when the project has one.
 
-**Rules:**
-- Toast is **global** — appears at the bottom of the window, dismisses automatically. Do NOT manage its lifetime from view code.
-- Toast is fire-and-forget — no result, no `await`. If you need confirmation, use `IKPopup` instead.
+**When detected, follow the brownfield form:**
+- If `toastApi == "appToastWrapper"` → emit `<funcSig>(for: .<case>)` using existing enum cases.
+- If `toastApi == "ikToast"` (canonical, fresh ikxcodegen scaffold) → emit `IKToast.show(.<id>, message: "<text>")` directly.
+
+**Rules (both forms):**
+- Toast is **global** — appears in a fixed position, dismisses automatically. Do NOT manage its lifetime from view code.
+- Toast is fire-and-forget — no result, no `await`. If you need confirmation, use `IKPopup.shared.popup { ... }` instead.
 - For multiple events in quick succession (e.g. "saved 3 items"), aggregate into a single toast describing the batch — do NOT fire multiple toasts in a row.
 
-When the Figma design specifies a toast for an event that doesn't have an existing `ToastSceenType` case → STOP and emit a delta-request `{ "type": "toastType", "case": "<name>", "rationale": "..." }`. Do NOT add the case from a feature subagent — toast types are app-wide.
+When the project uses a wrapper enum AND Figma specifies a toast for an event that doesn't have an existing case → STOP and emit a delta-request `{ "type": "toastType", "case": "<name>", "rationale": "..." }`. Do NOT add the case from a feature subagent — toast types are app-wide.
 
 **Banned alternatives:**
 
 | Pattern | Replacement |
 |---|---|
-| Custom `.overlay { ToastView(...) }` with manual timer dismissal | `AppUtils.shared.showAppBottomToast` |
-| Third-party toast libraries (SwiftMessages, ToastSwiftUI) | `AppUtils.shared.showAppBottomToast` |
-| In-content banner styling that mimics a toast | If Figma shows a banner (not a toast), it's a banner — render inline, don't try to use `AppBottomToast` |
+| Custom `.overlay { ToastView(...) }` with manual timer dismissal | `IKToast.show(.<id>, message:)` or wrapper |
+| Third-party toast libraries (SwiftMessages, ToastSwiftUI) | `IKToast` |
+| In-content banner styling that mimics a toast | If Figma shows a banner (not a toast), it's a banner — render inline, don't try to use IKToast |
 
 ---
 
@@ -150,21 +185,33 @@ When the Figma design specifies a toast for an event that doesn't have an existi
 A typical "save and confirm" flow uses all three feedback APIs:
 
 ```swift
-func saveOTPs(_ otps: [GROTPModel]) {
-    Task {
-        IKLoading.showLoading()
-        defer { IKLoading.dismissLoading() }
+// ✓ Canonical — IKToast directly
+private func saveArticle(_ article: Article) async {
+    IKLoading.showLoading()
+    defer { IKLoading.dismissLoading() }
 
-        do {
-            try await DatabaseManager.saveOtps(otps: otps)
+    do {
+        try await API.articleRepository.save(article)
+        IKHaptics.impactOccurred(.medium)             // tactile confirmation
+        IKToast.show(.success, message: "Saved")      // visual confirmation
+    } catch {
+        IKHaptics.impactOccurred(.heavy)              // tactile error
+        IKToast.show(.error, message: error.localizedDescription)
+    }
+}
 
-            IKHaptics.impactOccurred(.medium)               // tactile confirmation
-            AppUtils.shared.showAppBottomToast(for: .savedToast)   // visual confirmation
+// ✓ Brownfield form — when project has an app-level wrapper
+private func saveOTPs(_ otps: [GROTPModel]) async {
+    IKLoading.showLoading()
+    defer { IKLoading.dismissLoading() }
 
-        } catch {
-            IKHaptics.impactOccurred(.heavy)                // tactile error
-            AppUtils.shared.showAppBottomToast(for: .saveFailed)
-        }
+    do {
+        try await DatabaseManager.saveOtps(otps: otps)
+        IKHaptics.impactOccurred(.medium)
+        AppUtils.shared.showAppBottomToast(for: .savedToast)
+    } catch {
+        IKHaptics.impactOccurred(.heavy)
+        AppUtils.shared.showAppBottomToast(for: .saveFailed)
     }
 }
 ```
@@ -191,8 +238,8 @@ Before emitting feedback code:
 1. **Loading.** Did I wrap in `Task` with `defer { IKLoading.dismissLoading() }`? Not raw `ProgressView` overlay?
 2. **Haptics.** Did I use `IKHaptics.<api>` — not `UIImpactFeedbackGenerator` or `.sensoryFeedback(`?
 3. **Haptics.** One haptic per event — not chained / spammed?
-4. **Toast.** Did I use `AppUtils.shared.showAppBottomToast(for: .<case>)` — not custom overlay?
-5. **Toast case.** Is `.<case>` from the existing `ToastSceenType` enum (C1 captured)? If new case needed, did I emit a delta-request instead of inventing?
+4. **Toast API.** Did I check C1's `toastApi`? If `"ikToast"` (canonical), emit `IKToast.show(.<id>, message:)`. If `"appToastWrapper"` (brownfield), emit `<funcSig>(for: .<case>)`.
+5. **Toast case.** When using a wrapper enum, is `.<case>` from the existing enum (C1 captured `appToastWrapper.typeName`)? If new case needed, did I emit a delta-request instead of inventing?
 6. **Inline vs global.** Did I correctly identify whether the Figma design wants global modal loading (use `IKLoading`) vs inline component loading (use local `ProgressView` / spinner)?
 
-If any answer is "no" / "unsure", STOP and consult `references/ikame-decision-table.md` §7.
+If any answer is "no" / "unsure", STOP and consult `references/ikame-decision-table.md` §7 + `ikame-ios-coding/references/ui-popup-toast-loading.md`.

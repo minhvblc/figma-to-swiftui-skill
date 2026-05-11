@@ -2,9 +2,9 @@
 
 How `figma-to-swiftui` emits popup / sheet / alert code when the target project uses **IKPopup** (re-exported by `IKCoreApp`). Conditional — applies only when `c1-conventions.json.usesIKPopup == true`.
 
-IKPopup replaces SwiftUI's native `.sheet(isPresented:)`, `.alert(isPresented:)`, `.fullScreenCover(isPresented:)`, and `.confirmationDialog` for Ikame projects. It is the **strong default**, not an absolute requirement — see §6 for justified deviations.
+**Canonical source: `ikame-ios-coding/references/ui-popup-toast-loading.md` and `references/ikame-decision-table.md` §6 (D-501..D-507).** This file holds only the figma-specific delta — anchored menu-popup positioning, popup view code generation patterns, project-level `IKPopupConfiguration` extension catalog.
 
-The full set of popup decisions is locked in `references/ikame-decision-table.md` §6 (D-501..D-507). This file expands on the patterns with full code examples.
+IKPopup replaces SwiftUI's native `.sheet(isPresented:)`, `.alert(isPresented:)`, `.fullScreenCover(isPresented:)`, and `.confirmationDialog` for Ikame projects. It is the **strong default**, not an absolute requirement — see §6 for justified deviations.
 
 ---
 
@@ -27,58 +27,60 @@ C1 also captures `popupConfigurations` — the list of `.popup<Name>` cases the 
 
 ---
 
-## §2. Default invocation — async/await
+## §2. Default invocation — async/await (closure form)
 
-Every popup is invoked via `await IKPopup.shared.showPopup(...)` from inside a `Task { @MainActor in ... }`:
+Every popup is invoked via the trailing-closure form. The variant depends on positioning / dismissal needs:
+
+| Variant | Call | Use |
+|---|---|---|
+| Preset center popup | `await IKPopup.shared.popup { <View> }` | Confirms, alerts, custom dialogs |
+| Preset bottom sheet | `await IKPopup.shared.sheet { <View> }` | Pickers, action lists |
+| Preset full-screen | `await IKPopup.shared.fullScreen { <View> }` | Multi-step modal, onboarding flow |
+| Preset top toast | `await IKPopup.shared.toast { <View> }` | Custom toast — prefer `IKToast.show(.<id>, message:)` for standard cases |
+| Custom configuration | `await IKPopup.shared.show(configuration: .<case>) { <View> }` | Anchored menus, project-specific layouts (see §3) |
+
+All variants return `any Sendable?` asynchronously — cast to the popup view's nested `ReturnAction` / `Action` enum at the call site:
 
 ```swift
-Task { @MainActor in
-    let result: <ReturnType>? = await IKPopup.shared.showPopup(
-        swiftUIView: <SomeView>(...),
-        configuration: .<configCase>
-    )
-    switch result {
-    case .someAction:
-        viewModel.send(.handleSomeAction)
-    case nil:
-        // dismissed
-        break
-    default:
-        break
-    }
+let result = await IKPopup.shared.popup {
+    ConfirmDeleteView(itemName: name)
+}
+if let action = result as? ConfirmDeleteView.ReturnAction, action == .confirm {
+    viewModel.send(.confirmedDelete)
 }
 ```
 
-The result is generic `T?` — `nil` means the user dismissed without choosing, `.some(value)` means the user picked an option. `T` is typically the popup view's nested `enum ReturnAction` (when the popup has multiple buttons) or `enum Action` (when the popup is for selection).
-
 **Rules:**
-- Always `Task { @MainActor in ... }` — popups need MainActor.
-- Always `await` — never call without await; IKPopup returns immediately on the wrong path.
-- Always handle `nil` (dismissed) explicitly — even if the action is "do nothing", document why with a `default: break` or `case nil: break`.
+- Always `await` — never call without await; the popup `Task` is dropped and never presents.
+- `IKPopup.shared.popup { ... }` is MainActor-safe and async. Plain `await ...` from any MainActor context works; you don't need to wrap in `Task { @MainActor in ... }` unless the caller is non-MainActor (e.g. a UIKit completion handler).
+- Always handle `nil` explicitly — `nil` = user dismissed (tapped outside or `dismiss()` with no value). Don't silently swallow.
+
+**Brownfield (`IKPopup.shared.showPopup(swiftUIView:configuration:)` legacy).** Some older Ikame projects use the named-argument form `IKPopup.shared.showPopup(swiftUIView: view, configuration: cfg)` from inside `Task { @MainActor in ... }`. C1 captures the prevailing form as `popupInvocationStyle: "closure"` (default) or `"namedArgs"`. When `namedArgs` is detected, match the legacy form in additions to that project — canonical new code uses the closure form above.
 
 ---
 
-## §3. Common configuration cases
+## §3. Project-level configuration cases
 
-The `configuration:` parameter takes a static-let enum case from the project's IKPopup config extension. Common cases observed in authenv2:
+When using `IKPopup.shared.show(configuration:) { ... }`, the `configuration:` parameter takes a value from `IKPopupConfiguration`. Built-in defaults (provided by IKCoreApp): `.defaultPopup`, `.defaultSheet`, `.defaultFullScreen`, `.defaultToast`, `.defaultLoading`.
+
+Most projects also define **per-project extension cases** on `IKPopupConfiguration` for app-specific layouts. Common cases observed in authenv2:
 
 | Case | Use for |
 |---|---|
 | `.menuPopup(<anchorPoint: CGPoint>)` | menu / dropdown anchored to a button frame |
-| `.defaultPopup` | center modal — confirm dialogs, info boxes |
 | `.passwordPopup` | password / PIN entry overlay |
 | `.authenUndoPopup` | "deleted X — undo" snack-bar style at bottom |
 | `.defaultNavigationPresentFullScreen` | full-screen sheet with internal nav (camera, scanner) |
 | `.customAppSheetFixedHeight(height: <CGFloat>)` | bottom sheet with fixed height |
 
-The skill must pick from cases the project already exposes (C1 captures `popupConfigurations`). When the Figma design implies a popup style not represented by any existing case → STOP and emit a delta-request `{ "type": "popupConfig", "case": "...", "rationale": "..." }` rather than inventing.
+C1 captures `popupConfigurations` — the list of `.popup<Name>` cases the project defines, so the skill picks an existing case rather than inventing. **When the Figma design implies a popup style not represented by any existing case → STOP and emit a delta-request** `{ "type": "popupConfig", "case": "...", "rationale": "..." }` rather than inventing.
 
 ### Anchored menu popup pattern
 
 When the popup anchors to a button (e.g. trailing menu icon), capture the button's frame first and feed the anchor point:
 
 ```swift
-@State var moreButtonRect: CGRect = .zero
+@State private var moreButtonRect: CGRect = .zero
 
 HoverButton {
     showMorePopupView()
@@ -89,26 +91,24 @@ HoverButton {
         }
 }
 
-func showMorePopupView() {
+private func showMorePopupView() {
     Task { @MainActor in
-        let popupSize: CGSize = getSizeOfView(view: MenuPopupView(configuration: .someConfig))
-        let yPosition: CGFloat = computeAnchorY(buttonRect: moreButtonRect, popupSize: popupSize)
-        let anchorPoint: CGPoint = .init(
+        let popupSize = getSizeOfView(view: MenuPopupView(configuration: .someConfig))
+        let yPosition = computeAnchorY(buttonRect: moreButtonRect, popupSize: popupSize)
+        let anchorPoint = CGPoint(
             x: moreButtonRect.origin.x - popupSize.width + 32,
             y: yPosition
         )
 
-        let type: MenuPopupType? = await IKPopup.shared.showPopup(
-            swiftUIView: MenuPopupView(configuration: .someConfig),
-            configuration: .menuPopup(anchorPoint)
-        )
-
+        let result = await IKPopup.shared.show(configuration: .menuPopup(anchorPoint)) {
+            MenuPopupView(configuration: .someConfig)
+        }
         IKHaptics.selectionChanged()
 
-        switch type {
-        case .selectMode:  viewModel.send(.changeHeaderState)
-        case .createFolder: viewModel.send(.addFolder)
-        default: break
+        switch result as? MenuPopupType {
+        case .selectMode:    viewModel.send(.changeHeaderState)
+        case .createFolder:  viewModel.send(.addFolder)
+        default:             break
         }
     }
 }
@@ -118,7 +118,7 @@ func showMorePopupView() {
 
 ## §4. Popup view body
 
-A popup is a regular `struct <Name>View: View` placed in `Components/`. It declares its own return type and dismisses via `@Environment(\.ikPopupDismiss)`:
+A popup is a regular `struct <Name>View: View` placed in `Components/` (when reused across screens) or screen-prefixed under `Screens/<X>/Subviews/` (when used by only one screen). It declares its own return type and dismisses via `@Environment(\.ikPopupDismiss)`:
 
 ```swift
 import SwiftUI
@@ -142,12 +142,12 @@ struct InputDialogView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Text(title).appFontHeading3()
-            Text(subtitle).appFont(14, weight: .regular)
+            Text(title).ikLargeTitle(weight: .bold)
+            Text(subtitle).ikBody()
             TextField(placeholder, text: $text)
 
             HStack(spacing: 12) {
-                Button(cancelTitle) { dismiss(.cancel) }
+                Button(cancelTitle)  { dismiss(.cancel) }
                 Button(confirmTitle) { dismiss(.confirm(text)) }
             }
         }
@@ -157,7 +157,7 @@ struct InputDialogView: View {
 }
 ```
 
-The `dismiss(.<case>)` call returns the chosen `ReturnAction` to the caller's `await`. The popup view never touches the parent's ViewModel directly — it returns through the `await`.
+The `dismiss(.<case>)` call returns the chosen `ReturnAction` to the caller's `await`. `dismiss()` with no argument returns `nil`. The popup view never touches the parent's ViewModel directly — it returns through the `await`.
 
 When the popup's content is itself a tracked screen (counts as analytics surface), add `.ikDialogScreenActive(AppTracking.<dialogName>)` modifier. See `references/iktracking-bridge.md` §3.
 
@@ -169,27 +169,32 @@ After `await` returns, the calling site dispatches to the ViewModel through `sen
 
 ```swift
 // ✓ Canonical
-let result: AppPopupView.ReturnAction? = await AppUtils.shared.showAnyPopup(
+let result = await IKPopup.shared.popup {
+    ConfirmDeleteView(itemName: name)
+}
+if let action = result as? ConfirmDeleteView.ReturnAction, action == .confirm {
+    viewModel.send(.confirmedDelete)
+}
+
+// ✓ Through an app-level wrapper (project-specific)
+let result = await AppUtils.shared.showAnyPopup(
     isDelete: true,
     with: .deleteOTP(objectIds: objectIds)
 )
-switch result {
-case .rightButtonAction:
+if let action = result as? AppPopupView.ReturnAction, action == .rightButtonAction {
     codesHomeViewModel.send(.confirmedDeleteOTP(objectIds: objectIds))
-default:
-    break
 }
 
 // ✗ Banned — bypasses reducer
 codesHomeViewModel.otpIdSelecteds = []
 ```
 
-When the popup leads to navigation, dispatch a route on the ViewModel which the View receives via `routePublisher`:
+When the popup result needs to drive navigation, dispatch a route on the ViewModel — the View binds `$viewModel.route` to `.navigationDestination(item:)`:
 
 ```swift
 // ✓ ViewModel
 case .confirmedExportCodes(let codes):
-    routePublisher.send(.exportCodesToQR(codes: codes))
+    route = .exportCodesToQR(codes: codes)
 ```
 
 ---
@@ -224,12 +229,14 @@ Without `// allow-vanilla-popup:` justification, the following are banned in Ika
 
 | Pattern | Why banned |
 |---|---|
-| `.sheet(isPresented:)` | Use `IKPopup.shared.showPopup` |
-| `.fullScreenCover(isPresented:)` | Use `IKPopup.shared.showPopup` with `.defaultNavigationPresentFullScreen` |
-| `.alert(isPresented:)` / `.alert(item:)` | Use `IKPopup.shared.showPopup` with `.defaultPopup` and a custom alert view |
-| `.confirmationDialog(...)` | Use `IKPopup.shared.showPopup` |
+| `.sheet(isPresented:)` / `.sheet(item:)` | Use `IKPopup.shared.popup { … }` or `IKPopup.shared.sheet { … }` |
+| `.fullScreenCover(isPresented:)` / `.fullScreenCover(item:)` | Use `IKPopup.shared.fullScreen { … }` (or `.show(configuration: .defaultNavigationPresentFullScreen) { … }`) |
+| `.alert(isPresented:)` / `.alert(item:)` | Use `IKPopup.shared.popup { … }` with a custom alert view |
+| `.confirmationDialog(...)` | Use `IKPopup.shared.sheet { … }` with action list view |
 | `UIAlertController(title:message:preferredStyle:)` | Use `IKPopup` |
 | Custom `ZStack` overlay popups built by hand | Use `IKPopup` — it handles backdrop, dismissal, animation, accessibility |
+
+Note: `.navigationDestination(item: $viewModel.route)` for push navigation is **NOT** banned — it's the canonical state-driven navigation binding (see `references/iknavigation-bridge.md` §3 Style A).
 
 ---
 
@@ -237,12 +244,12 @@ Without `// allow-vanilla-popup:` justification, the following are banned in Ika
 
 When `c1-conventions.json.usesIKPopup == true`:
 
-1. **No bare `.sheet(isPresented:`** without `// allow-vanilla-popup:` within 3 lines above.
-2. **No bare `.fullScreenCover(isPresented:`** without justification.
-3. **No bare `.alert(isPresented:`** / `.alert(item:`** without justification.
+1. **No bare `.sheet(isPresented:` / `.sheet(item:`** without `// allow-vanilla-popup:` within 3 lines above.
+2. **No bare `.fullScreenCover(isPresented:` / `.fullScreenCover(item:`** without justification.
+3. **No bare `.alert(isPresented:` / `.alert(item:`** without justification.
 4. **No `.confirmationDialog(`** without justification.
 5. **No `UIAlertController` instantiation** anywhere.
-6. **Files in `Components/` that look like popup views** (declare a nested `enum ReturnAction`) MUST import IKCoreApp and reference `@Environment(\.ikPopupDismiss)` for dismissal.
+6. **Files that declare a nested `enum ReturnAction`** (popup views) MUST import `IKCoreApp` and reference `@Environment(\.ikPopupDismiss)` for dismissal.
 
 When `usesIKPopup == false`, the gate prints `GATE: SKIP (project does not use IKPopup)` and exits 0.
 
@@ -252,11 +259,12 @@ When `usesIKPopup == false`, the gate prints `GATE: SKIP (project does not use I
 
 Before emitting a popup invocation:
 
-1. Did I use `IKPopup.shared.showPopup(...)` async/await — not `.sheet(isPresented:)`?
-2. Is the configuration case from the existing `popupConfigurations` list (C1) — not invented?
-3. Did I wrap in `Task { @MainActor in ... }` and `await` the call?
+1. Did I use `IKPopup.shared.popup { ... }` / `.sheet { ... }` / `.fullScreen { ... }` / `.show(configuration:) { ... }` async — not `.sheet(isPresented:)` or `.alert(isPresented:)`?
+2. If using `.show(configuration:)`, is the configuration case from the existing `popupConfigurations` list (C1) — not invented?
+3. Did I `await` the call from a MainActor context (or wrap in `Task { @MainActor in ... }` if calling from non-MainActor)?
 4. Did I handle `nil` (user dismissed) explicitly?
 5. After `await`, do I dispatch via `viewModel.send(.<action>)` — not mutate state directly?
 6. If using vanilla SwiftUI popup → did I add `// allow-vanilla-popup: <reason>` comment?
+7. Is the popup view body using `ikFont` typography (not `.system(...)`) and `Color(.<name>)` from the asset catalog?
 
-If any answer is "no", STOP and consult `references/ikame-decision-table.md` §6 OR escalate via delta-request §16.
+If any answer is "no", STOP and consult `references/ikame-decision-table.md` §6 + `ikame-ios-coding/references/ui-popup-toast-loading.md` OR escalate via delta-request §16.

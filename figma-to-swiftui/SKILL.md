@@ -63,6 +63,28 @@ If you're not sure which mode/tier/escape applies, read the reference. The refer
 
 ---
 
+## Convention source of truth — Ikame projects
+
+When `c1-conventions.json.usesIKCoreApp == true`, **`ikame-ios-coding` skill is the canonical source for every base Swift/SwiftUI convention.** This skill (`figma-to-swiftui`) only adds Figma-specific patterns and code-generation flow on top.
+
+| Topic | Canonical reference | What this skill adds |
+|---|---|---|
+| Folder layout, file naming, promotion rule | `ikame-ios-coding/references/project-structure.md` | mode detection (greenfield-ikame/brownfield-ikame), per-screen folder pinning from Figma frame name |
+| ViewModel pattern: `@MainActor` + `ObservableObject` + flat `@Published` + `enum Action` + `func send(_:)` + `enum Route` + `@Published var route: Route?` | `ikame-ios-coding/references/viewmodel.md` | C8-vm-pattern enforcement, Action-naming derived from Figma interactive node names |
+| SwiftUI view: body ≤ 50 lines, modifier order, `@ViewBuilder` vs nested struct | `ikame-ios-coding/references/swiftui-view.md` | function-length gate, body-section splitting per Figma layout regions |
+| IKNavigation: `<Feature>Route.swift` + `<Feature>Router.swift`, `IKRouteID` extension, `EmptyView()` else, compose with `+` | `ikame-ios-coding/references/iknavigation.md` | extending existing router with new cases derived from Figma flow, `IKNavigationIdentifier` for sheet-with-internal-nav |
+| `@APIProtocol` + `enum API` registry + `=>` operator + `@JsonSerializable` | `ikame-ios-coding/references/api-ikmacros.md` | DTO ↔ Entity mapping for Figma-driven data shapes |
+| IKToast / IKLoading / IKPopup | `ikame-ios-coding/references/ui-popup-toast-loading.md` | app-level `IKPopupConfiguration` extension cases observed per project, popup view body emission |
+| ikFont presets / `ikFont(size:weight:)` escape hatch / 4-layer additional-font helper / `Color(hex:)` | `ikame-ios-coding/references/fonts-and-styling.md` | Figma typography token → preset or escape hatch decision; codegen for Asset Catalog colorsets |
+
+**Conflicts always resolve in favor of `ikame-ios-coding`.** If a bridge file under `references/ikame-*-bridge.md` says one thing and `ikame-ios-coding` says another, follow `ikame-ios-coding` and treat the bridge as out-of-date. The bridges below are pruned to the **delta** — patterns / config cases / app-level extensions that `ikame-ios-coding` does not yet cover.
+
+For convention areas `ikame-ios-coding` does NOT cover (IKTracking, IKLocalized, IKOnboardingFlow, IKHaptics, per-project `IKPopupConfiguration` extensions, `AppUtils.shared.showAppBottomToast` app-level wrapper), the matching bridges in `references/` remain authoritative.
+
+For non-Ikame projects (`usesIKCoreApp == false`), `ikame-ios-coding` does not apply — use the vanilla conventions in `references/swiftui-pro-bridge.md`, `references/viewmodel-pattern.md` §1, etc.
+
+---
+
 ## Mandatory Output Checklist
 
 Every run MUST satisfy these five items. Cite each item by number in the verification report.
@@ -71,7 +93,7 @@ Every run MUST satisfy these five items. Cite each item by number in the verific
 2. **No iOS system chrome is redrawn in SwiftUI.** Status bar (time, signal/wifi/battery), home indicator, Dynamic Island, and notch are rendered by iOS. Enforced by `scripts/c7-no-system-chrome.sh` (see [verification-loop.md §7](references/verification-loop.md#7-c7--no-system-chrome-mandatory)).
 3. **Asset export is exhaustive.** When calling `figma_export_assets_unified`, pass `autoDiscover: true` so the server scans the subtree under `nodeId` and auto-builds rows for every `eIC*` / `eImage*` it finds — caller-supplied rows still win on duplicates. The response's `coverage` block (`discoveredCount`, `exportedCount`, `autoAddedRows`, `skippedNodeIds`) is the proof. See `references/mcpfigma-setup.md` §"figma_export_assets_unified" for the flag.
 4. **Visual diff is decisive, not weasel-worded.** C5.6 must produce `c5-sections.md`, `c5-census.md`, per-section crop pairs, free-form "what's wrong" paragraph, 3-axis diff table, negative spot-check, 4-anchor proportional check, and attestation. No "approximately", "roughly", "close enough" in PASS rows. See [verification-loop.md §C5.6](references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory). Enforced by `scripts/c5-coverage-check.sh` and `scripts/c5-weasel-detect.sh`.
-5. **Generated code follows project conventions detected at C1.** Folder layout, file naming, ViewModel pattern (`State + Action + send(_:)` reducer), function size, and (when the project uses them) IKNavigation / IKMacros / IKFont / IKPopup / IKFeedback / IKTracking / IKLocalized routing. The C1 convention probe writes `c1-conventions.json` (see [`references/adaptation-workflow.md` §0](references/adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit)) which gates the c8-* scripts: `c8-conventions-gate.sh`, `c8-vm-pattern.sh`, `c8-func-length.sh`, `c8-iknavigation.sh`, `c8-ikfont.sh`, `c8-ikpopup.sh`, `c8-ikfeedback.sh`, `c8-iktracking.sh`, `c8-iklocalized.sh`, `c8-weak-self.sh`. Reference files: [`references/project-structure.md`](references/project-structure.md), [`references/viewmodel-pattern.md`](references/viewmodel-pattern.md), [`references/swift-style.md`](references/swift-style.md), [`references/iknavigation-bridge.md`](references/iknavigation-bridge.md), [`references/ikmacro-bridge.md`](references/ikmacro-bridge.md). For Ikame projects (`usesIKCoreApp == true`): [`references/ikame-decision-table.md`](references/ikame-decision-table.md) (master locked conventions, D-IDs), [`references/ikxcodegen-bridge.md`](references/ikxcodegen-bridge.md) (greenfield/brownfield mode + scaffold CLI), [`references/ikpopup-bridge.md`](references/ikpopup-bridge.md), [`references/ikfeedback-bridge.md`](references/ikfeedback-bridge.md), [`references/iktracking-bridge.md`](references/iktracking-bridge.md), [`references/iklocalized-bridge.md`](references/iklocalized-bridge.md). Phase 0 mode detection: `scripts/mode-detect.sh`.
+5. **Generated code follows project conventions detected at C1.** Folder layout, file naming, ViewModel pattern (`State + Action + send(_:)` reducer), function size, and (when the project uses them) IKNavigation / IKMacros / IKFont / IKPopup / IKFeedback / IKTracking / IKLocalized routing. The C1 convention probe writes `c1-conventions.json` (see [`references/adaptation-workflow.md` §0](references/adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit)) which gates the c8-* scripts: `c8-conventions-gate.sh`, `c8-vm-pattern.sh`, `c8-func-length.sh`, `c8-iknavigation.sh`, `c8-ikfont.sh`, `c8-ikpopup.sh`, `c8-ikfeedback.sh`, `c8-iktracking.sh`, `c8-iklocalized.sh`, `c8-weak-self.sh`. **For Ikame projects (`usesIKCoreApp == true`), `ikame-ios-coding` skill is the canonical source for every base convention** — see the "Convention source of truth" section above. Bridge files under `references/ikame-*-bridge.md` hold only the Figma-specific delta + advanced features `ikame-ios-coding` does not yet cover (IKTracking, IKLocalized, IKOnboardingFlow, IKHaptics, app-level popup config cases). Phase 0 mode detection: `scripts/mode-detect.sh`.
 
 ---
 
@@ -357,6 +379,8 @@ Read `tokens.json` (from A3 `figma_extract_tokens`). Generate **read-only** Swif
 
 2. **`DesignSystem/AppFont.swift`** — one static method per Figma typography token. Source: `tokens.json.typography[]` (MCPFigma 0.3.0+ — emitted by `figma_extract_tokens` from Figma's `/styles` + `/nodes` text styles). Each entry carries `fontFamily / fontPostScriptName / fontWeight / fontSize / lineHeightPx / letterSpacing / textCase / textAlignHorizontal / italic` (verified against `Sources/MCPFigmaCore/Domain/TextStyleExtractor.swift`). Do NOT consolidate fonts ("close enough"); preserve every distinct token.
 
+   **Skip this step for Ikame projects** (`c1-conventions.json.usesIKFont == true`). Per `references/fonts-styling-bridge.md` §3, B0b does NOT emit `AppFont.swift` for Ikame — the `ikFont` preset family (`.ikLargeTitle()`, `.ikBody()`, etc.) is already part of IKCoreApp. Call sites use the preset directly when `(fontSize, lineHeightPx)` matches a preset row, or `ikFont(<size>, weight:)` escape hatch when off-token. The block below describes the non-Ikame codegen path.
+
    **Note on `textAlignHorizontal`.** It IS in `tokens.json` per typography style, but it is the *shared-style default* (pulled from `/v1/files/<key>/styles` — the typography style's own definition), NOT a property of the font itself. A Text node in a specific screen can override alignment locally without re-defining the style. So **do NOT bake `.multilineTextAlignment(...)` into `AppFont.<token>()`** — alignment lives at the call site. When emitting a `Text(...)`, read the **node's own** `textAlignHorizontal` from `design-context.md` JSX classes (`text-left|center|right|justify`) first; fall back to `tokens.json.typography[<token>].textAlignHorizontal` only if the node has no explicit override. (`textAlignVertical` is NOT extracted by MCPFigma 0.3.0 — if needed, parse from `design-context.md` or treat as TOP default.)
 
    ```swift
@@ -625,13 +649,11 @@ Goal: SwiftUI code that matches the screenshot pixel-for-pixel, using only asset
 3. Localization — check `.strings`/`.xcstrings`. Project baseline is **`Localizable.xcstrings`**. If `STRING_CATALOG_GENERATE_SYMBOLS = YES`, set flag `useStringCatalogSymbols = true` → C2 emits `Text(.symbolKey)` and offers to translate new keys. Else use `LocalizedStringKey` literal form.
 4. Dark mode scope — if Figma light-only, ask user
 5. **Generated symbol assets** (swiftui-pro/api.md L14) — grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = YES` (default-on for Xcode 15+; the skill's Xcode 26+ baseline is always-on, so `useGeneratedSymbols = true` is the canonical case). C2 ALWAYS emits `Image(.icAIClose)` / `Color(.brandRed)` (iOS 17+ auto-generated `ImageResource` / `ColorResource`). The legacy string form `Image("icAIClose")` / `Color("brandRed")` is BANNED — only ever surfaced when the project explicitly sets `GENERATE_ASSET_SYMBOLS = NO`, which the skill flags on the run summary as a non-modern project.
-6. **Design constants enums** (`Spacing`, `IKFont`, `IKCoreApp` — names vary by project). Grep for the canonical names AND common alternatives:
-   ```bash
-   grep -rln "enum \(Spacing\|AppSpacing\|Padding\)\b" --include="*.swift" .
-   grep -rln "enum \(IKFont\|AppFont\|Typography\)\b" --include="*.swift" .
-   grep -rln "enum \(IKCoreApp\|AppColors\|ColorPalette\)\b\|struct IKCoreApp\b" --include="*.swift" .
-   ```
-   List each enum's available cases (`case <token>` lines). Stash actual enum names in `c1-conventions.json` as `spacingEnum`, `ikFontEnum`, `colorEnum` (or `null` when absent) plus the case lists. C2 routes Figma values through whichever enum is detected per `references/swiftui-pro-bridge.md` §3.
+6. **Design constants — fonts, spacing, colors.**
+   - **Fonts**: for Ikame projects, fonts use the `ikFont` family directly from IKCoreApp (no project-level font enum). Grep for usage form: `grep -rln "\.ikFont\|\.ikBody\|\.ikLargeTitle\|\.appFont\|\.appFontHeading" --include="*.swift" .` → set `fontModifier = "ikFont"` (canonical) or `"appFont"` (brownfield wrapper). Also capture `fontFamily` from `IKFontSystem.shared.configure(familyName:)` call. Additional families: list any `<Family>+Ext.swift` files under `Utilities/Extensions/`. See `references/fonts-styling-bridge.md` §1.
+   - **Spacing**: grep for `enum \(Spacing\|AppSpacing\|Padding\)\b` — set `spacingEnum`. List cases.
+   - **Colors**: Asset Catalog colorset symbols are the canonical reference (`Color(.<name>)`). Also detect any `Color.<name>` static-var extensions in `DesignSystem/Color+Tokens.swift` or similar. Grep: `grep -rln "extension Color\b" --include="*.swift" .` and inspect for `static let <name>: Color`.
+   C2 routes Figma values through `ikFont` preset family (Ikame) or `<spacingEnum>.<token>` (when set) per `references/swiftui-pro-bridge.md` §3 and `references/fonts-styling-bridge.md` §2.
 7. **Lottie SDK** — grep `import Lottie` or `Package.resolved` for `lottie-ios`. If present → flag `hasLottieSDK = true`; eAnim* placeholders codegen `LottieView`. Else warn user before C2 starts (see `references/lottie-placeholders.md` §9).
 8. **swiftui-pro snapshot present** — confirm `references/swiftui-pro/SOURCE.md` exists. Skill MUST read at minimum `references/swiftui-pro/api.md`, `views.md`, `data.md`, `accessibility.md` before C2; full set on demand. Bridge: `references/swiftui-pro-bridge.md`.
 9. **Project color audit (mandatory).** Run:
@@ -640,11 +662,14 @@ Goal: SwiftUI code that matches the screenshot pixel-for-pixel, using only asset
    ```
    Emits a `{hex, swiftPath, source, lightHex, darkHex}` map of every color already in the project (Asset Catalog colorsets + `Color.<name>` extensions + `Color(hex:)` literals). C2 routing prefers this map over inventing new tokens: when a Figma hex matches a project entry, codegen `<swiftPath>` directly. Without the audit the agent eyeballs the project, misses matches, and emits parallel tokens that drift over time.
 10. **Coding-conventions probe (mandatory).** **Fast path:** run `scripts/c1-probe.sh --project <project-root> --output .figma-cache/<nodeId>/c1-conventions.json` — one call emits the full JSON described below (folder layout, ViewModel pattern, deployment target, IKNavigation/IKMacros detection, token enums, xcstrings/xcassets paths, generated-symbols flags). Re-invoke with `--asset-catalog <path>` when the project has multiple `.xcassets`. The hand-rolled detector list below is the explicit form. See [`references/adaptation-workflow.md` §0](references/adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit) for the full procedure. Detect:
-    - **Folder layout** — `screen-based` vs `flat` (count of `Screens/<X>Screen/<X>Screen.swift`)
-    - **ViewModel pattern** — `state-action-reducer` vs `ad-hoc` vs `none` (grep latest `*ViewModel.swift` for `enum Action` + `func send(_:)`)
-    - **Observation flavor** — `observable` (iOS 17+ + `@Observable`) vs `observable-object` (iOS 16+ default)
-    - **IKNavigation** — see [`references/iknavigation-bridge.md` §1](references/iknavigation-bridge.md#1-detection-c1-audit). Cache `usesIKNavigation`, `routerName`.
-    - **IKMacros** — see [`references/ikmacro-bridge.md` §1](references/ikmacro-bridge.md#1-detection-c1-audit). Cache `usesIKMacros`, `apiRepoTypeName`.
+    - **Folder layout** — `one-screen-per-folder` (canonical Ikame and non-Ikame; `Screens/<X>/<X>Screen.swift` co-located with `<X>ViewModel.swift`) vs `ikame-feature-flat` (brownfield: `Screens/<Feature>/<Feature>HomeScreen.swift` + `Screens/<Feature>/ViewModel/`) vs `flat`. See [`references/project-structure.md` §1](references/project-structure.md#1-detection-c1-audit) for detection rules.
+    - **ViewModel pattern** — `state-action-reducer` vs `ad-hoc` vs `none` (grep latest `*ViewModel.swift` for `enum Action` + `func send(_:)`); for Ikame projects also capture `viewToRouteWiring`: `"publishedRoute"` (canonical `@Published var route`) vs `"routePublisher"` (brownfield Combine subject).
+    - **Observation flavor** — `observable` (iOS 17+ + `@Observable`) vs `observable-object` (iOS 16+ default). Ikame projects are locked to `observable-object` regardless of deployment target (`ikame-decision-table.md` D-301).
+    - **IKNavigation** — see [`references/iknavigation-bridge.md` §1](references/iknavigation-bridge.md#1-detection-c1-audit). Cache `usesIKNavigation`, `routers[]` (per-feature router list), `routerLayout` (`"per-feature"` canonical / `"single"` brownfield).
+    - **IKMacros** — see [`references/ikmacro-bridge.md` §1](references/ikmacro-bridge.md#1-detection-c1-audit). Cache `usesIKMacros`, `apiRegistry` (`registryEnumName`, `registryFilePath`, `sharedRepoExpr`).
+    - **IKPopup** — see [`references/ikpopup-bridge.md` §1](references/ikpopup-bridge.md#1-detection-c1-audit). Cache `usesIKPopup`, `popupConfigurations[]`, `popupInvocationStyle` (`"closure"` canonical / `"namedArgs"` brownfield).
+    - **IKFeedback** — see [`references/ikfeedback-bridge.md` §1](references/ikfeedback-bridge.md#1-detection-c1-audit). Cache `usesIKFeedback`, `toastApi` (`"ikToast"` canonical / `"appToastWrapper"` brownfield), `appToastWrapper.typeName` + `funcSig` when applicable.
+    - **IKFont** — see [`references/fonts-styling-bridge.md` §1](references/fonts-styling-bridge.md#1-detection-c1-audit). Cache `usesIKFont`, `fontModifier` (`"ikFont"` canonical / `"appFont"` brownfield), `fontFamily`, `additionalFontFamilies[]`.
     - **xcstrings catalog path** — `find . -name '*.xcstrings'`
     - **Asset catalog path** — `find . -name '*.xcassets' -type d` (interactive prompt when multiple).
 
@@ -656,19 +681,25 @@ Goal: SwiftUI code that matches the screenshot pixel-for-pixel, using only asset
 useGeneratedSymbols       = <bool>
 useStringCatalogSymbols   = <bool>
 spacingEnum               = "Spacing" | "AppSpacing" | null  (cases: ...)
-ikFontEnum                = "IKFont"  | "AppFont"    | null  (cases: ...)
+fontModifier              = "ikFont" (canonical) | "appFont" (brownfield) | null
+fontFamily                = "Inter" | "SFProRounded" | <other> | null
+additionalFontFamilies    = ["FiraCode", ...] | []
 colorEnum                 = "IKCoreApp" | null              (cases: ...)
 hasColorHexExtension      = <bool>
 hasLottieSDK              = <bool>
 minDeploymentTarget       = iOS <N>
-observationFlavor         = observable | observable-object
+observationFlavor         = observable | observable-object       (Ikame locked to observable-object)
 localizationStyle         = xcstrings | strings
 darkModeScope             = enabled | disabled | unspecified
 projectColorMap           = .figma-cache/_shared/project-colors.json (<N> entries)
-screenFolderConvention    = screen-based | flat
+screenFolderConvention    = one-screen-per-folder (canonical) | ikame-feature-flat (brownfield) | flat
 viewModelPattern          = state-action-reducer | ad-hoc | none
-usesIKNavigation          = <bool>     routerName = <name|null>
-usesIKMacros              = <bool>     apiRepoTypeName = <name|null>
+viewToRouteWiring         = publishedRoute (canonical) | routePublisher (brownfield Ikame)
+usesIKNavigation          = <bool>     routers[] = [{name, featureSubfolder, routeEnumName}]    routerLayout = per-feature | single
+usesIKMacros              = <bool>     apiRegistry = {registryEnumName, registryFilePath, sharedRepoExpr}
+usesIKPopup               = <bool>     popupConfigurations = [...]    popupInvocationStyle = closure | namedArgs
+usesIKFeedback            = <bool>     toastApi = ikToast | appToastWrapper    appToastWrapper = {typeName, funcSig} | null
+usesIKFont                = <bool>     (see fontModifier / fontFamily / additionalFontFamilies above)
 ```
 
 The full JSON is at `.figma-cache/<nodeId>/c1-conventions.json`. Both this skill and `figma-flow-to-swiftui-feature` read from this single source of truth.
@@ -712,29 +743,29 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
   - `#Preview` macro, never `PreviewProvider`. **Mandatory** — every emitted `<Name>Screen.swift` MUST end with a `#Preview { … }` block that builds the screen with mock state (e.g. `<Name>Screen(viewModel: <Name>ViewModel())` plus any required dependency stubs). C5 Engine A (xcode MCP RenderPreview) targets this `#Preview` directly — without it, the agent falls back to the slower xcodebuild/simctl path and the user pays the SPM-resolve hang penalty. If the screen has external dependencies (network, persistence) that can't be mocked inline, build a `#Preview { … }` with placeholder data + a `// preview: <reason>` comment.
   - Conditional modifier toggle by ternary, never `if/else` view branching.
   - Animations always carry a `value:` parameter.
-  - `NavigationStack` + `.navigationDestination(for:)`; never `NavigationView` or `NavigationLink(destination:)`.
+  - `NavigationStack` + `.navigationDestination(for:)`; never `NavigationView` or `NavigationLink(destination:)`. **For Ikame projects** (`usesIKNavigation == true`), see `references/iknavigation-bridge.md` §3 — root-level `NavigationStack` is owned by IKNavigation; use state-driven `.navigationDestination(item: $viewModel.route)` Style A or imperative `navigation.push(to:)` Style B; `.navigationDestination(for: <Type>.self)` is banned.
   - No `Text` concatenation with `+`; use interpolation.
   - `.onTapGesture` only when you need tap location/count; otherwise `Button`.
 - **iOS 16 baseline fallbacks (MANDATORY).** Project baseline is iOS 16+. Several swiftui-pro rules target iOS 17/18/26 and MUST be conditionally rewritten on iOS 16. Full table: `references/swiftui-pro-bridge.md` §6. Examples: `.clipShape(RoundedRectangle(cornerRadius: 12))` (not `.rect(cornerRadius:)`), `.navigationBarLeading` (not `.topBarLeading`), `tabItem { Label(…) }` (not `Tab(…)`), `ObservableObject` + `@StateObject` (not `@Observable` + `@Bindable`). Always emit comment marker `// iOS 16 fallback — switch to <modern API> at iOS <N>+` so future bumps are search-replaceable.
-- **Project token routing (MANDATORY when audit flags set).** Read `c1-conventions.json` for the actual enum names (`spacingEnum`, `ikFontEnum`, `colorEnum` — may be `null` when absent). Route Figma values through them per `references/swiftui-pro-bridge.md` §3:
+- **Project token routing (MANDATORY when audit flags set).** Read `c1-conventions.json` for the actual enum names (`spacingEnum`, `colorEnum` — may be `null` when absent) and font modifier (`fontModifier` — `"ikFont"` canonical for Ikame, `"appFont"` brownfield wrapper, or null for non-Ikame projects with `AppFont.swift` generated by B0b). Route Figma values per `references/swiftui-pro-bridge.md` §3 + `references/fonts-styling-bridge.md` §2:
   - Spacing/padding/gap → `<spacingEnum>.<token>` first; fall back inline literal when no token matches OR when `spacingEnum == null`.
-  - Typography → `<ikFontEnum>.<token>` first; else `@ScaledMetric` + `.font(.system(size:weight:))`.
+  - Typography (Ikame, `fontModifier == "ikFont"`) → `.ik<Preset>(weight:)` when `(fontSize, lineHeightPx)` matches a preset row; `.ikFont(<size>, weight:)` escape hatch when off-token; `.<family>(<size>, weight:)` per-family helper when Figma uses a non-project family. Typography (brownfield, `fontModifier == "appFont"`) → `.appFont<Preset>()` / `.appFont(<size>, weight:)`. Typography (non-Ikame) → `AppFont.<token>()` from B0b-generated wrapper.
   - Top-level app values → `<colorEnum>.colors.*`, `<colorEnum>.spacing.*` when present.
   - Never invent new enum cases; surface mismatches in the run summary instead.
 - **Coding conventions (MANDATORY, governed by `c1-conventions.json`).** All emitted Swift files conform to the project's detected conventions. Read each reference once before C2 starts:
-  - **Folder layout & file naming** — [`references/project-structure.md`](references/project-structure.md). When `screenFolderConvention = "screen-based"`, place new screen at `Screens/<Name>Screen/<Name>Screen.swift` + `Screens/<Name>Screen/<Name>ViewModel.swift`; subviews/models/enums prefixed with screen name. Enforced by `scripts/c8-conventions-gate.sh`.
+  - **Folder layout & file naming** — [`references/project-structure.md`](references/project-structure.md). Canonical Ikame and non-Ikame layout: `screenFolderConvention = "one-screen-per-folder"` — new screen at `Screens/<Name>/<Name>Screen.swift` + `Screens/<Name>/<Name>ViewModel.swift`; subviews/models/enums prefixed with screen name under per-screen folder. Brownfield Ikame projects with feature-flat layout (`screenFolderConvention = "ikame-feature-flat"`) follow legacy `Screens/<Feature>/<Feature>HomeScreen.swift` pattern — see project-structure.md §3. Enforced by `scripts/c8-conventions-gate.sh`.
   - **ViewModel shape** — [`references/viewmodel-pattern.md`](references/viewmodel-pattern.md). Every ViewModel: `@MainActor` + `final class` + nested `enum Action` + `func send(_ action: Action)` reducer + flat `@Published` state + nested `enum Route` if the screen navigates. iOS 17+ projects with `observationFlavor = "observable"` get the `@Observable` variant. Enforced by `scripts/c8-vm-pattern.sh`.
   - **Function & view size** — [`references/swift-style.md`](references/swift-style.md) §2-3. Functions ≤ 50 lines (hard); subview structs ≤ 50 lines. Enforced by `scripts/c8-func-length.sh`.
   - **Golden path** — [`references/swift-style.md`](references/swift-style.md) §4. `guard` + early return; nesting depth ≤ 1 level for happy-path body.
   - **Modifier order** — [`references/swift-style.md`](references/swift-style.md) §11. Typography → Layout → Decoration → Effect → Interaction → State/Lifecycle → Presentation → Environment.
   - **Memory** — [`references/swift-style.md`](references/swift-style.md) §6. `[weak self]` in escaping closures (Combine sinks, URLSession callbacks, custom-callback APIs). `Task` inside `@MainActor` reducer is exempt.
   - **Error handling** — [`references/swift-style.md`](references/swift-style.md) §9. Per-domain `Error` enum, catch case-by-case; never `catch { errorMessage = error.localizedDescription }`.
-  - **IKNavigation** — when `usesIKNavigation = true`, follow [`references/iknavigation-bridge.md`](references/iknavigation-bridge.md). Use `@Environment(\.ikNavigationable)` + `navigation.push(to:)`; banned: `NavigationStack`, `NavigationLink`, `.navigationDestination(for:)`. Extend the existing router; do NOT invent a new one. Enforced by `scripts/c8-iknavigation.sh`.
+  - **IKNavigation** — when `usesIKNavigation = true`, follow [`references/iknavigation-bridge.md`](references/iknavigation-bridge.md) and `ikame-ios-coding/references/iknavigation.md`. Canonical wiring: ViewModel exposes `enum Route: Equatable, Hashable` + `@Published var route: Route?`; View binds `.navigationDestination(item: $viewModel.route)` (Style A) or, for purely-UI navigation, calls `@Environment(\.ikNavigationable)` + `navigation.push(to: .<feature>Route(.<case>))` (Style B). Banned at root: screen-level `NavigationStack(path:)`, `NavigationLink(destination:)`, `.navigationDestination(for: <Type>.self)`, `NavigationPath`. **`.navigationDestination(item:)` is NOT banned — it's the canonical Style A binding.** Extend the matching per-feature router under `Core/Router/<Feature>/`; do NOT invent a new feature router unless authorized. Enforced by `scripts/c8-iknavigation.sh`.
   - **IKMacros** — when `usesIKMacros = true` AND the run generates DTO/service code, follow [`references/ikmacro-bridge.md`](references/ikmacro-bridge.md). DTOs use `@JsonSerializable` + `@JsonKey`; services use `@APIProtocol` + `@GET`/`@POST`/etc. Inject `IKAPIRepository` via init.
 - **Strict-fidelity rules (MANDATORY, banned patterns enforced by C3 Pass 1).** Every generated view file is reviewed against these:
   - **No inline string literals.** `Text("Continue")` is banned in view files. Use String Catalog keys or `Strings.<Screen>.<key>` from the B0a manifest. Exception: developer-debug screens explicitly opted out.
   - **No inline hex / RGB color literals.** `Color(red: 0x3B/255, …)` and `Color(hex: "#3B7BFD")` in views are banned. Use `Color.<token>` from the B0b-generated `Color+Tokens.swift`.
-  - **No inline font sizes.** `.font(.system(size: 28, weight: .bold))` in views is banned. Use `AppFont.<token>()` from the B0b-generated `AppFont.swift`. If the screen needs a value not in tokens, STOP and ask the user — typography drift is a bug.
+  - **No inline font sizes.** `.font(.system(size: 28, weight: .bold))` in views is banned. **For Ikame projects** (`usesIKFont == true`): use the matching `ikFont` preset (`.ikLargeTitle(weight: .bold)`) when `(fontSize, lineHeightPx)` exactly matches a preset row; use `ikFont(<size>, weight: .<weight>)` escape hatch when off-token. For additional families (Figma uses a font different from the project family), use the per-family 4-layer helper (`Text(...).firaCode(13)`). See `references/fonts-styling-bridge.md` + `ikame-ios-coding/references/fonts-and-styling.md`. **Non-Ikame projects**: use `AppFont.<token>()` from the B0b-generated `AppFont.swift`. If the screen needs a value not in tokens, STOP and ask the user — typography drift is a bug.
   - **No made-up token names.** Adding `surfaceCard`, `textTertiary`, `cardGap` (or any case) to `Color+Tokens.swift` / `Spacing.swift` without a backing entry in `tokens.json` is banned. Pass 1 review greps new enum cases against `tokens.json` and rejects mismatches.
   - **Layout values trace to Figma.** Every `padding(.<edge>, <number>)`, `frame(width: <number>)`, `.cornerRadius(<number>)` must (a) trace to a literal in `design-context.md` (Tailwind class such as `p-[16px]`, `rounded-[16px]`, `w-[343px]`) or (b) come from a `Spacing` / `CornerRadius` enum case backed by `tokens.json`. One-off absolute-layout positions require `// Figma: y=192, w=375` comment to pass review.
   - **`.frame(width:)` on Text BANNED.** Reading Figma's measured visual width on a hug-mode Text and emitting `.frame(width: 200)` ships truncation as soon as content grows. Default for Text is hug (no frame) or fill (`maxWidth: .infinity`). Allow-list: Figma `primaryAxisSizingMode === FIXED` AND `// Figma fixed-width: <reason>` comment present. See `references/visual-fidelity.md` §7 #9 + `references/layout-translation.md` §"Text sizing-mode → SwiftUI".
@@ -760,11 +791,15 @@ Element-by-element ADD/UPDATE/REMOVE diff, user review before coding. See `refer
 - `references/responsive-layout.md` — size classes, iPhone+iPad
 
 **Coding-convention references (read once before C2):**
-- `references/project-structure.md` — folder layout + file naming (Screens/<Name>Screen/, prefix rules)
+- `references/project-structure.md` — folder layout + file naming (canonical `Screens/<Name>/<Name>Screen.swift`, brownfield ikame-feature-flat)
 - `references/viewmodel-pattern.md` — State + Action + `send(_:)` reducer (canonical ViewModel shape)
 - `references/swift-style.md` — function/view size, golden path, modifier order, memory, error handling
-- `references/iknavigation-bridge.md` — IKNavigation usage when `usesIKNavigation = true`
-- `references/ikmacro-bridge.md` — `@APIProtocol` / `@JsonSerializable` when `usesIKMacros = true` AND generating service/DTO code
+- `references/iknavigation-bridge.md` — IKNavigation usage when `usesIKNavigation = true` (Style A `.navigationDestination(item:)` vs Style B `navigation.push`)
+- `references/ikmacro-bridge.md` — `@APIProtocol` / `@JsonSerializable` / `enum API` registry when `usesIKMacros = true` AND generating repository/DTO code
+- `references/ikpopup-bridge.md` — IKPopup closure-form invocation + per-project config cases when `usesIKPopup = true`
+- `references/ikfeedback-bridge.md` — IKLoading + IKToast (canonical) + IKHaptics + brownfield `AppUtils.shared.showAppBottomToast` wrapper when `usesIKFeedback = true`
+- `references/fonts-styling-bridge.md` — Figma typography token → `ikFont` preset / escape hatch / additional family helper when `usesIKFont = true`
+- For Ikame canonical conventions: `ikame-ios-coding/references/<topic>.md` is the source of truth — bridges above only document the figma-specific delta.
 
 ### Step C3 — Self-Check (mandatory, five passes + structural gates)
 
@@ -831,7 +866,7 @@ scripts/c8-func-length.sh --src "$SWIFT_SRC" || FAIL=1
 # (4) IKNavigation gate (skipped when usesIKNavigation = false)
 scripts/c8-iknavigation.sh --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
 
-# (5) IKFont gate (skipped when ikFontEnum = null)
+# (5) IKFont gate (skipped when usesIKFont = false)
 scripts/c8-ikfont.sh --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
 
 # (6) Weak-self closure scan (informational; agent acknowledges in summary)
@@ -841,11 +876,15 @@ scripts/c8-weak-self.sh --src "$SWIFT_SRC"
 ```
 
 Each gate prints `GATE: PASS`, `GATE: FAIL: <reason>`, or `GATE: SKIP (...)` with exit code matching. Reference docs:
-- [`references/project-structure.md`](references/project-structure.md) — folder layout + file naming
-- [`references/viewmodel-pattern.md`](references/viewmodel-pattern.md) — State/Action/reducer
-- [`references/swift-style.md`](references/swift-style.md) — function size, golden path, weak self
-- [`references/iknavigation-bridge.md`](references/iknavigation-bridge.md) — IKNavigation usage (conditional)
-- [`references/ikmacro-bridge.md`](references/ikmacro-bridge.md) — IKMacros DTO/service (conditional)
+- [`references/project-structure.md`](references/project-structure.md) — folder layout + file naming (canonical `one-screen-per-folder`, brownfield `ikame-feature-flat`)
+- [`references/viewmodel-pattern.md`](references/viewmodel-pattern.md) — State/Action/reducer with canonical `@Published var route` (brownfield `routePublisher`)
+- [`references/swift-style.md`](references/swift-style.md) — function size, golden path, modifier order, weak self
+- [`references/iknavigation-bridge.md`](references/iknavigation-bridge.md) — IKNavigation Style A (`.navigationDestination(item:)`) vs Style B (imperative push), per-feature router (conditional)
+- [`references/ikmacro-bridge.md`](references/ikmacro-bridge.md) — IKMacros DTO/repository + `enum API` registry (conditional)
+- [`references/ikpopup-bridge.md`](references/ikpopup-bridge.md) — IKPopup closure form + project-level config cases (conditional)
+- [`references/ikfeedback-bridge.md`](references/ikfeedback-bridge.md) — IKLoading + IKToast + IKHaptics + brownfield AppUtils.bottomToast (conditional)
+- [`references/fonts-styling-bridge.md`](references/fonts-styling-bridge.md) — Figma typography token → `ikFont` preset / escape hatch / per-family helper; Color(hex:) vs Asset Catalog (conditional)
+- `ikame-ios-coding/references/<topic>.md` — canonical source of truth for Ikame conventions; bridges above are figma-specific delta.
 
 Anything in code not traceable to inventory → guess → fix. Never "tweak until it looks right".
 
@@ -1022,7 +1061,7 @@ These hooks turn the in-skill gates into OS-level enforcement. Without them, gat
 
 4. **PostToolUse hook — auto-run Gate C3-Pass2 on `c3-pass2-diff.md` write.** `figma-to-swiftui-pass2-gate.sh`: saves one round-trip per attempt and surfaces structural bugs immediately.
 
-5. **PostToolUse hook — C8 coding-conventions write-time gate.** `figma-to-swiftui-c8-gate.sh`: runs after every `Write/Edit *.swift` inside a figma task. Reads `c1-conventions.json` from the cache and per-file checks: (a) path correctness — `-Screen` suffix banned in `Subviews/Models/Enums/SubViewModels/`, parent-`-Screen` files must live at `Screens/<X>Screen/<X>Screen.swift`, top-level files in `Screens/<X>Screen/` must end with `-Screen` or `-ViewModel`; (b) subview prefix — files in `<X>Screen/Subviews/` start with `<X>`; (c) ViewModel content — `*ViewModel.swift` must have `@MainActor` + `enum Action` + `func send(_ action: Action)`, plus `enum Route` if `route` is referenced; (d) IKNavigation banned APIs (`NavigationStack` / `NavigationLink` / `.navigationDestination`) when `usesIKNavigation = true`; (e) raw `.font(.system(size:))` without `@ScaledMetric` and `Font.custom()` when `ikFontEnum` is set; (f) function bodies > 50 lines (hard fail). Catches violations IMMEDIATELY at write-time so the agent fixes the file before building on top of it. Pairs with the session-end Stop hook (item 6) for tree-wide checks (parent-view existence, weak-self warnings).
+5. **PostToolUse hook — C8 coding-conventions write-time gate.** `figma-to-swiftui-c8-gate.sh`: runs after every `Write/Edit *.swift` inside a figma task. Reads `c1-conventions.json` from the cache and per-file checks: (a) path correctness — when `screenFolderConvention == "one-screen-per-folder"`: parent-`-Screen` files must live at `Screens/<X>/<X>Screen.swift` (folder name `<X>`, NOT `<X>Screen`), `<X>ViewModel.swift` is co-located in the same folder, `-Screen` suffix banned in `Subviews/Models/Enums/SubViewModels/`; when `screenFolderConvention == "ikame-feature-flat"`: parent-`-Screen` files must live at `Screens/<Feature>/<Feature>HomeScreen.swift` or `Screens/<Feature>/<Feature><Action>Screen.swift`, ViewModel under `Screens/<Feature>/ViewModel/`; (b) subview prefix — files in `Subviews/` start with the parent screen's base name; (c) ViewModel content — `*ViewModel.swift` must have `@MainActor` + `enum Action` + `func send(_ action: Action)`, plus `enum Route: Equatable, Hashable` if `route` is referenced (or `let routePublisher = PassthroughSubject<Route, Never>()` only when C1 captures `viewToRouteWiring: "routePublisher"`); (d) IKNavigation banned root APIs (screen-level `NavigationStack(path:)` / `NavigationLink` / `.navigationDestination(for: <Type>.self)` / `NavigationPath`) when `usesIKNavigation = true`; `.navigationDestination(item:)` is NOT banned (canonical Style A binding); (e) Ikame font violations when `usesIKFont = true`: raw `.font(.system(size:))`, `.font(.body)` / `.font(.title)` etc., `Font.custom("…", size:)` at view call sites (only allowed inside the 4-layer additional-font helper that delegates to `ikCustomFont`); (f) function bodies > 50 lines (hard fail). Catches violations IMMEDIATELY at write-time so the agent fixes the file before building on top of it. Pairs with the session-end Stop hook (item 6) for tree-wide checks (parent-view existence, weak-self warnings).
 
 6. **Stop hook — block session termination when Done-Gate unsatisfied.** `figma-to-swiftui-stop-gate.sh`: for every screen-cache with `phaseA == "done"`, requires `phaseB == "done"` + `rows[]` non-empty + `verification.c5.gate == "PASS"` (or one of four system skip reasons) + C5.6 coverage script passing + project-wide C6 (asset completeness) + C7 (no system chrome) + C8 (coding conventions — folder layout, ViewModel pattern, function length, conditional IKNavigation/IKFont) passing. The previous "only enforce when phaseB done" gate left a hole — agents skipped Phase B entirely and stopped freely. This version closes it.
 

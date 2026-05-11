@@ -2,6 +2,8 @@
 
 Style rules the skill applies to every generated Swift file. Hard rules — enforced by `scripts/c8-func-length.sh`, `scripts/c8-weak-self.sh`, and inline grep gates in C3.
 
+**For Ikame projects, the canonical source for SwiftUI view-shape conventions (body ≤ 50 lines, modifier order, `@ViewBuilder` vs nested struct) is `ikame-ios-coding/references/swiftui-view.md`.** This file mirrors those rules and adds the function-length gate, weak-self gate, and code-generation-specific style points.
+
 ---
 
 ## §1. Formatting
@@ -278,15 +280,15 @@ route = .detail(id)
 
 ## §11. Modifier order
 
-Modifiers on a SwiftUI view follow this order (top to bottom):
+Per `ikame-ios-coding/references/swiftui-view.md`, modifiers on a SwiftUI view follow this fixed order top-to-bottom:
 
 ```
-1. Text / Typography      .font, .lineLimit, .multilineTextAlignment, .truncationMode, .foregroundStyle
+1. Typography / Text      .font (.ikBody / .ikLargeTitle / etc.), .foregroundStyle, .lineLimit, .multilineTextAlignment, .truncationMode
 2. Layout / Sizing        .padding, .frame, .fixedSize, .layoutPriority
-3. Decoration             .background, .overlay, .border, .clipShape, .mask, .shadow
-4. Effect                 .opacity, .blur, .saturation, .animation
-5. Interaction            .onTapGesture, .gesture, .contextMenu, .swipeActions
-6. State / Lifecycle      .onChange, .onReceive, .onAppear, .task
+3. Decoration             .background, .overlay, .clipShape, .cornerRadius, .shadow, .border
+4. Effect                 .opacity, .blur, .saturation, .animation, .transition, .rotationEffect
+5. Interaction            .onTapGesture, .gesture, .contextMenu, .swipeActions, .disabled
+6. State / Lifecycle      .onAppear, .onChange, .onReceive, .task
 7. Presentation           .sheet, .fullScreenCover, .alert, .confirmationDialog, .navigationDestination
 8. Environment            .environmentObject, .environment, .preferredColorScheme
 ```
@@ -294,18 +296,28 @@ Modifiers on a SwiftUI view follow this order (top to bottom):
 Within each group, smaller-scope modifiers come first.
 
 ```swift
-// ✓
-Text("Hello")
-    .font(IKFont.bodyMedium16)
-    .foregroundStyle(Color(.primaryText))
-    .padding(.horizontal, Spacing.l16)
-    .frame(maxWidth: .infinity)
-    .background(Color(.surfaceCard))
+// ✓ Canonical (matches ios-coding-skill style)
+Text("Save")
+    // 1. Typography
+    .ikBody(weight: .semibold)
+    .foregroundStyle(.white)
+    // 2. Layout
+    .padding(.horizontal, 24)
+    .padding(.vertical, 12)
+    .frame(minWidth: 120)
+    // 3. Decoration
+    .background(Color(.accentBrand))
     .clipShape(RoundedRectangle(cornerRadius: 12))
-    .onTapGesture { viewModel.send(.tapped) }
+    .shadow(radius: 4, y: 2)
+    // 4. Effect
+    .opacity(isEnabled ? 1.0 : 0.5)
+    // 5. Interaction
+    .onTapGesture { viewModel.send(.didTapSave) }
+    // 6. State
+    .disabled(!isFormValid)
 ```
 
-**Why the order matters.** SwiftUI applies modifiers in declaration order. `.padding().background()` ≠ `.background().padding()` — first creates padding with the background filling it, second draws background flush to the view with padding outside. A consistent order makes review tractable.
+**Why the order matters.** SwiftUI applies modifiers in declaration order — `.padding().background()` ≠ `.background().padding()`. The first creates padding with the background filling it; the second draws background flush to the view with padding outside. A consistent order makes review tractable and prevents real bugs (especially `.padding` after `.background` silently changing hit area). See `ikame-ios-coding/references/swiftui-view.md` for the full pitfalls catalogue.
 
 ---
 
@@ -320,7 +332,7 @@ Already enforced elsewhere; listed here for reference:
 | `NavigationView` (deprecated) | Use `NavigationStack` (or `IKNavigation` if project uses it) | C3 swiftui-pro |
 | Inline hex `Color(red: 0.2, green: 0.5, ...)` when `_shared/tokens.json` has the token | tokens.json is the source | C3 Pass 1 |
 | Inline string literals in `Text("...")` when localization is set up | xcstrings symbol API | C3 Pass 1 |
-| `.font(.system(size: N))` without `@ScaledMetric` AND when `IKFont` enum exists | Dynamic Type + project tokens | C3 swiftui-pro |
+| `.font(.system(size: N))` / `.font(.body)` / `Font.custom(...)` at call site in Ikame projects | Use `ikFont` preset (`.ikBody()` etc.) or `ikFont(size:weight:)` escape hatch; raw `Font.custom` only inside the 4-layer additional-font helper that delegates to `ikCustomFont`. See `ikame-ios-coding/references/fonts-and-styling.md` and `references/fonts-styling-bridge.md`. | C3 swiftui-pro, c8-ikfont |
 | `onTapGesture` on a tappable area that should be a `Button` | a11y / interaction semantics | C3 Pass 1 |
 | Force unwrap (`!`) without explanatory comment | safety | C3 |
 | Generic `catch { errorMessage = error.localizedDescription }` | leaks system text | C3 |

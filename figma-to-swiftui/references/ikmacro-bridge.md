@@ -1,8 +1,10 @@
 # IKMacros Bridge
 
-How `figma-to-swiftui` adapts service / DTO output when the target project uses **IKMacros** (`@APIProtocol`, `@JsonSerializable`, etc.). Conditional — applies only when `c1-conventions.json.usesIKMacros == true`.
+How `figma-to-swiftui` adapts repository / DTO output when the target project uses **IKMacros** (`@APIProtocol`, `@JsonSerializable`, etc.). Conditional — applies only when `c1-conventions.json.usesIKMacros == true`.
 
-The skill rarely needs to generate networking code (most Figma-to-SwiftUI tasks are UI-only). When the user's request DOES require new service code (e.g. "wire this list to the /articles endpoint"), this file is the spec.
+**Canonical source: `ikame-ios-coding/references/api-ikmacros.md` and `references/ikame-decision-table.md` §3 (D-214, D-215).** This file holds only the figma-specific delta — DTO ↔ Entity mapping when figma drives the data shape, and per-endpoint code generation patterns.
+
+The skill rarely needs to generate networking code (most Figma-to-SwiftUI tasks are UI-only). When the user's request DOES require new endpoint code (e.g. "wire this list to the /articles endpoint"), this file is the spec.
 
 ---
 
@@ -15,14 +17,18 @@ C1 sets `usesIKMacros = true` when ANY of these signals are present:
 | `import IKMacros` in any existing Swift file | grep |
 | `@APIProtocol(baseURL:` in any file | grep |
 | `@JsonSerializable` on a struct | grep |
-| `Package.swift` lists `ikmacros` package | manual |
+| `Podfile` lists `pod 'IKMacros'` (or umbrella `pod 'IKCoreApp'` re-export) | grep |
 | `IKAPIRepository` protocol conformance | grep |
+| `enum API { static var ... }` registry file (typically `Core/Network/API.swift`) | grep |
 
-If any signal present → `usesIKMacros = true`. Skill emits IKMacros-flavored DTOs and services.
+If any signal present → `usesIKMacros = true`. Skill emits IKMacros-flavored DTOs and repositories.
 
-If absent → skill emits plain `Codable` DTOs and a hand-written `URLSession` service. Do not introduce IKMacros into a project that doesn't have it.
+If absent → skill emits plain `Codable` DTOs and a hand-written `URLSession` client. Do not introduce IKMacros into a project that doesn't have it.
 
-C1 also captures `apiRepoTypeName` (e.g. `AppAPIRepository`) so the skill knows which repo to inject.
+C1 also captures `apiRegistry`:
+- `registryEnumName` (e.g. `API`) — the registry enum the skill must extend.
+- `registryFilePath` (e.g. `Core/Network/API.swift`) — where to add the new accessor.
+- `sharedRepoExpr` (e.g. `sharedRepo`, `AppAPIRepository.shared`) — the expression the registry uses to instantiate each `<Domain>RepositoryImpl(repo:)`.
 
 ---
 
@@ -68,27 +74,30 @@ struct ArticleDTO: Codable {
 
 ---
 
-## §3. Service — `@APIProtocol`
+## §3. Repository — `@APIProtocol`
 
-Networking lives in `Core/Network/` (or wherever C1 detected the existing convention). Each service is a `Sendable` protocol with `@APIProtocol`:
+Networking lives in `Core/Network/Repositories/` (canonical) or wherever C1 detected the existing convention. Each repository is a `Sendable` protocol with `@APIProtocol`:
 
 ```swift
 import IKMacros
 
 @APIProtocol(
-    baseURL: "https://api.example.com/v2",
-    defaultHeaders: defaultAPIHeaders
+    baseURL: AppConstants.baseURL,
+    defaultHeaders: [
+        "Accept": "application/json",
+        "X-Platform": "iOS"
+    ]
 )
-protocol ArticleService: Sendable {
+protocol ArticleRepository: Sendable {
 
     @GET(path: "articles", fields: [
-        "page" => .query,
+        "page"  => .query,
         "limit" => .query(key: "per_page")
     ])
-    func getArticles(page: String, limit: String) async throws -> PaginatedResponse<ArticleDTO>
+    func getArticles(page: Int, limit: Int) async throws -> PaginatedResponse<ArticleDTO>
 
     @GET(path: "articles/{id}", fields: [
-        "id" => .path,
+        "id"   => .path,
         "auth" => .headers
     ])
     func getArticle(id: String, auth: [String: String]) async throws -> ArticleDTO
@@ -101,56 +110,98 @@ protocol ArticleService: Sendable {
 }
 ```
 
-The macro generates `ArticleServiceImpl` automatically. Use it as:
-
-```swift
-let service: ArticleService = ArticleServiceImpl(repo: AppAPIRepository.shared)
-```
+The macro generates `ArticleRepositoryImpl` automatically. **Never instantiate `ArticleRepositoryImpl(...)` at call sites** — go through the registry (§3a).
 
 **Rules:**
+- Naming: `<Domain>Repository`. Macro generates `<Domain>RepositoryImpl`. The figma-to-swiftui skill canonical name is "Repository", not "Service" — matches `ikame-ios-coding/references/api-ikmacros.md`.
 - Protocol is `Sendable` (compile-time required by `@APIProtocol`).
 - Every method is `async throws`.
-- Path variables in the URL `{id}` map to a `.path` field with the same key.
-- Use the `=>` operator form for new code (`"key" => .query`); the explicit enum form (`.query("key", mapToParamName: "key")`) is older syntax kept for backward compat.
+- Return type must be `Decodable` (or `Sendable` for raw types).
+- Path variables in the URL `{id}` map to a `.path` field with the same parameter name.
+- Use the `=>` operator form (`"key" => .query`); the explicit enum form (`.query("key", mapToParamName: "key")`) is older syntax kept for backward compat.
 - Headers field is `[String: String]`; per-request headers merge with default (per-request wins).
-- Body field accepts `Codable` — the macro auto-calls `toDictionary()` to encode.
+- Body field accepts `Encodable`.
 
 ---
 
-## §4. ViewModel uses the protocol, not the impl
+## §3a. Expose via `enum API` registry — non-negotiable
+
+Every repository goes through a single `enum API` registry. **No `<Domain>RepositoryImpl(...)` instantiation outside it.**
+
+```swift
+// Core/Network/API.swift
+import IKCoreApp
+
+enum API {
+
+    static var articleRepository: any ArticleRepository {
+        ArticleRepositoryImpl(repo: sharedRepo)
+    }
+
+    static var userRepository: any UserRepository {
+        UserRepositoryImpl(repo: sharedRepo)
+    }
+
+    // Shared IKAPIRepository — resolved from app DI / created once.
+    private static let sharedRepo: IKAPIRepository = ...
+}
+```
+
+**Skill action when adding a new repository:**
+
+1. Define the protocol with `@APIProtocol(...)` per §3.
+2. Add `static var <domain>Repository: any <Domain>Repository { <Domain>RepositoryImpl(repo: sharedRepo) }` to `enum API` (use the actual `sharedRepoExpr` captured by C1).
+3. Use as `API.<domain>Repository.<method>(...)` from ViewModels.
+
+The registry is **one place** to swap base URL, change shared `IKAPIRepository`, or hook in interceptors. ViewModels never reference `Impl` types — only protocols.
+
+---
+
+## §4. ViewModel injection via `API.<domain>Repository` default
 
 ```swift
 @MainActor
 final class ArticleListViewModel: ObservableObject {
     enum Action { /* ... */ }
+    enum Route: Equatable, Hashable { /* ... */ }
+
     @Published var articles: [Article] = []
-    // ...
+    @Published var isLoading: Bool = false
+    @Published var route: Route?
 
-    private let articleService: ArticleService
+    private let articleRepository: any ArticleRepository
 
-    init(articleService: ArticleService = ArticleServiceImpl(repo: AppAPIRepository.shared)) {
-        self.articleService = articleService
+    init(articleRepository: any ArticleRepository = API.articleRepository) {
+        self.articleRepository = articleRepository
     }
 
     private func fetch() async {
+        isLoading = true
+        defer { isLoading = false }
         do {
-            let response = try await articleService.getArticles(page: "1", limit: "20")
+            let response = try await articleRepository.getArticles(page: 1, limit: 20)
             articles = response.data.map(Article.init(dto:))
-        } catch { /* ... */ }
+        } catch {
+            IKToast.show(.error, message: error.localizedDescription)
+        }
     }
 }
 ```
 
-The default-value form lets tests inject a mock conforming to `ArticleService` without changing call sites:
+`init(<name>Repository: any <Name>Repository = API.<name>Repository)` is the **canonical** form — tests pass a mock; production uses the registry default. **Banned**: `init(<name>Repository: ... = <Name>RepositoryImpl(repo: AppAPIRepository.shared))` (direct Impl instantiation) — always go through `API.<name>Repository`.
+
+Tests inject a mock conforming to the same protocol:
 
 ```swift
-struct MockArticleService: ArticleService {
+struct MockArticleRepository: ArticleRepository {
     var stubArticles: [ArticleDTO] = []
-    func getArticles(page: String, limit: String) async throws -> PaginatedResponse<ArticleDTO> {
+    func getArticles(page: Int, limit: Int) async throws -> PaginatedResponse<ArticleDTO> {
         PaginatedResponse(data: stubArticles, totalCount: stubArticles.count, page: 1)
     }
     // ... other methods stubbed
 }
+
+let sut = ArticleListViewModel(articleRepository: MockArticleRepository(stubArticles: [.fixture()]))
 ```
 
 (Tests are out of scope for this skill, but the protocol-based design is what makes them possible.)
@@ -203,21 +254,26 @@ Even when the project has IKMacros, skip it for:
 
 There is no hard gate for IKMacros — the macro itself fails compilation when used wrong, which is enough.
 
-The skill does emit a soft check: when `usesIKMacros == true` AND the run generated a service file, verify:
-1. The service protocol conforms to `Sendable`.
+The skill does emit a soft check: when `usesIKMacros == true` AND the run generated a repository file, verify:
+1. The repository protocol conforms to `Sendable`.
 2. Every method is `async throws`.
-3. Path variables in the URL match `.path` fields.
+3. Path variables in the URL match `.path` fields with the same Swift parameter name.
+4. The new repository was exposed through `enum API` (registry file at `c1-conventions.json.apiRegistry.registryFilePath`).
+5. No ViewModel imports `<Domain>RepositoryImpl` directly — every call site uses `API.<domain>Repository`.
 
 These mirror the macro's compile-time errors but catch them earlier in the verification summary.
 
 ---
 
-## §8. App boot — repository registration
+## §8. App boot — registry singleton
 
-`@APIProtocol` services need an `IKAPIRepository` instance via init. C1 records `apiRepoTypeName` (e.g. `AppAPIRepository`) by reading the App entry / DI container. The skill instantiates services like:
+`@APIProtocol` repositories need an `IKAPIRepository` instance via init. The `enum API` registry holds a single `private static let sharedRepo: IKAPIRepository = ...` (resolved from the app's DI / created once at app start). C1 captures `apiRegistry.sharedRepoExpr` (e.g. `sharedRepo`, or in older projects `AppAPIRepository.shared`) so the skill instantiates new registry entries consistently:
 
 ```swift
-ArticleServiceImpl(repo: AppAPIRepository.shared)
+// In enum API — uses whatever C1 captured
+static var articleRepository: any ArticleRepository {
+    ArticleRepositoryImpl(repo: sharedRepo)
+}
 ```
 
-…where `AppAPIRepository.shared` is whatever the project already exposes. The skill does NOT wire up a new singleton or DI graph; it reuses what exists.
+The skill does NOT wire up a new singleton or DI graph; it reuses what exists in `Core/Network/API.swift` (or wherever C1 located the registry file).

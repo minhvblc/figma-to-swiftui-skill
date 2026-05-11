@@ -2,7 +2,9 @@
 
 The **only** ViewModel shape this skill emits. Hard rule — enforced by `scripts/c8-vm-pattern.sh`.
 
-This pattern applies regardless of whether the project uses `ObservableObject` (iOS 16) or `@Observable` (iOS 17+). The shape is the same; the storage differs.
+**For Ikame projects (`usesIKCoreApp == true`), the canonical source for this pattern is `ikame-ios-coding/references/viewmodel.md`.** This file mirrors the same shape (§1) for vanilla iOS 16+ projects, adds the iOS 17+ `@Observable` form for non-Ikame projects on a newer deployment target (§2), and documents the gate enforcement (§7). If anything here conflicts with `ikame-ios-coding`, the Ikame skill wins for Ikame projects.
+
+This pattern applies regardless of whether the project uses `ObservableObject` (iOS 16) or `@Observable` (iOS 17+). The shape is the same; the storage differs. (Ikame projects are locked to `ObservableObject` per `ikame-decision-table.md` D-301; the `@Observable` variant below is for non-Ikame projects only.)
 
 ---
 
@@ -78,110 +80,45 @@ The View only ever calls `viewModel.send(.something)`. Never `viewModel.fetchSte
 
 ---
 
-## §1b. Ikame variant — `routePublisher` Combine subject
+## §1b. Brownfield exception — legacy `routePublisher`
 
-When `c1-conventions.json.usesIKCoreApp == true` (i.e. project uses IKNavigation + IKCoreApp umbrella), routes are delivered through a Combine `PassthroughSubject` instead of `@Published var route: Route?`. This is the locked Ikame default — see `references/ikame-decision-table.md` D-301, D-405, D-1206.
+Some older Ikame projects (notably authenv2) deliver routes through a Combine `PassthroughSubject<Route, Never>` named `routePublisher` instead of `@Published var route: Route?`, with the View consuming via `.onReceive(viewModel.routePublisher) { route in onNavigation(to: route) }`. C1 captures this as `viewToRouteWiring: "routePublisher"`.
+
+**This form is brownfield-only.** When detected in an existing project, match the legacy form in additions to that project. **Do NOT introduce `routePublisher` into a project that doesn't already have it.** Canonical Ikame code (per `ikame-ios-coding/references/viewmodel.md` and `references/ikame-decision-table.md` D-404, D-1206) uses the state-driven `@Published var route: Route?` form from §1 above — same as non-Ikame projects.
+
+Shape of the legacy form (for reference when editing a brownfield project):
 
 ```swift
-import Foundation
-import Combine
-import IKCoreApp
-
 @MainActor
 final class CodesHomeViewModel: ObservableObject {
+    enum Route { case scanQRCode, editOTP(GROTPModel) /* ... */ }
+    enum Action { case changeHeaderState, addFolder /* ... */ }
 
-    enum Route {
-        case scanQRCode
-        case editOTP(GROTPModel)
-        case goToFolder(GFolderModel)
-        case popupDeleteCodeConfirm(objectIds: Set<String>)
-    }
-    enum Action {
-        case changeHeaderState
-        case addFolder
-        case startDeleteOTP
-        case confirmedDeleteOTP(objectIds: Set<String>)
-    }
-
-    // Flat @Published state — same as §1
     @Published var codesHomeState: CodesHomeState = .normal
-    @Published var otpIdSelecteds: Set<String> = []
-    @Published var newAddedOTPIds: Set<String> = []
-
-    // Routes go through a Combine subject — NOT @Published var route: Route?
-    let routePublisher = PassthroughSubject<Route, Never>()
-
-    private let repository: CodesHomeRepository
-
-    init(repository: CodesHomeRepository = CodesHomeRepository()) {
-        self.repository = repository
-    }
+    let routePublisher = PassthroughSubject<Route, Never>()      // ← Combine subject, not @Published
 
     func send(_ action: Action) {
         switch action {
-        case .changeHeaderState:
-            codesHomeState = (codesHomeState == .edit) ? .normal : .edit
-
         case .addFolder:
-            routePublisher.send(.addFolder(otps: Array(otpIdSelecteds)))   // ← send through subject
-
-        case .confirmedDeleteOTP(let ids):
-            Task { await deleteOTP(ids: ids) }
-
-        case .startDeleteOTP:
-            // ...
-        }
-    }
-
-    private func deleteOTP(ids: Set<String>) async { /* ... */ }
-}
-```
-
-The View receives routes via `.onReceive`:
-
-```swift
-struct CodesHomeScreen: View {
-    @Environment(\.ikNavigationable) private var navigation
-    @StateObject var codesHomeViewModel: CodesHomeViewModel = .init()
-
-    var body: some View {
-        VStack { /* ... */ }
-            .onReceive(codesHomeViewModel.routePublisher) { route in
-                onNavigation(to: route)
-            }
-            .ikLogScreenActive(AppTracking.codesHome)
-    }
-}
-
-extension CodesHomeScreen {
-    func onNavigation(to route: CodesHomeViewModel.Route) {
-        switch route {
-        case .scanQRCode:                        actionShowCameraView()
-        case .editOTP(let otp):                  showEdit2FACode(otp: otp)
-        case .goToFolder(let folder):            navigation.push(to: NavigationItem.folderDetail(folder: folder))
-        case .popupDeleteCodeConfirm(let ids):   showPopupConfirmDeleteOTP(objectIds: ids)
+            routePublisher.send(.addFolder(...))                  // ← send through subject
+        // ...
         }
     }
 }
+
+// View
+.onReceive(codesHomeViewModel.routePublisher) { route in
+    onNavigation(to: route)                                       // ← extension func, not navigationDestination
+}
 ```
 
-**Differences from §1:**
-- `let routePublisher = PassthroughSubject<Route, Never>()` instead of `@Published var route: Route?`.
-- ViewModel `routePublisher.send(.<route>)` instead of `route = .<route>`.
-- View `.onReceive(viewModel.routePublisher) { route in onNavigation(to: route) }` instead of `.navigationDestination(item: $viewModel.route)`.
-- **No `case dismissRoute`** in `enum Action` — `PassthroughSubject` doesn't retain. Re-tapping re-publishes naturally.
-- Route handler is `func onNavigation(to:)` in a View extension (Ikame canonical), not inline `.navigationDestination` switch.
-- Requires `import Combine`.
-
-**When to use this variant:**
-- ALWAYS in Ikame projects (`usesIKCoreApp == true`). The `@Published var route` form from §1 is for non-Ikame projects only.
-- This is locked because all Ikame apps support iOS 16 (deployment target `'16.0'`); Ikame projects standardize on `ObservableObject + routePublisher` for cross-project consistency.
+Notable differences from §1: `let routePublisher = PassthroughSubject<Route, Never>()` (let, not @Published), no `case dismissRoute` (PassthroughSubject doesn't retain), View `.onReceive(...)` not `.navigationDestination(item:)`, requires `import Combine`.
 
 ---
 
-## §2. iOS 17+ variant
+## §2. iOS 17+ variant (non-Ikame projects only)
 
-When `c1-conventions.json.minDeploymentTarget >= 17` AND project uses `@Observable`:
+When `c1-conventions.json.minDeploymentTarget >= 17` AND project uses `@Observable`. **Banned for Ikame projects** (`usesIKCoreApp == true` is locked to `ObservableObject` per `ikame-decision-table.md` D-301 for cross-project consistency, regardless of `minDeploymentTarget`).
 
 ```swift
 import Observation
@@ -284,9 +221,9 @@ If the screen pushes / sheets / dismisses to anything, declare `enum Route` nest
 
 If the screen has zero outgoing navigation, omit `Route` entirely. The gate does not require it.
 
-**`navigation` flavor** — when the project uses `IKNavigation` (`c1-conventions.json.usesIKNavigation == true`), Route + Action still apply, but the View dispatches via `navigation.push(to:)` from the action handler instead of binding `navigationDestination(item:)`. See `references/iknavigation-bridge.md`.
+**`navigation` flavor (IKNavigation projects)** — when `c1-conventions.json.usesIKNavigation == true`, the canonical state-driven form from §1 still applies; the View just binds `.navigationDestination(item: $viewModel.route)` (or `.sheet(item:)` / `.fullScreenCover(item:)`) per route. Purely-UI navigation (static buttons, app-level pop-to-root) may use imperative `navigation.push(to: .<feature>Route(...))` directly from the View — see `references/iknavigation-bridge.md` §3 and `ikame-ios-coding/references/iknavigation.md`. **Do NOT call `navigation.push` from inside a ViewModel.**
 
-**Ikame variant** — when `c1-conventions.json.usesIKCoreApp == true`, route is delivered via `let routePublisher = PassthroughSubject<Route, Never>()` instead of `@Published var route: Route?`. **`case dismissRoute` is omitted** because `PassthroughSubject` does not retain — re-tapping re-publishes naturally. See §1b above and `references/ikame-decision-table.md` D-405.
+**Brownfield `routePublisher` (legacy Ikame only)** — when C1 captures `viewToRouteWiring: "routePublisher"`, route is delivered via `let routePublisher = PassthroughSubject<Route, Never>()` instead of `@Published var route: Route?`. **`case dismissRoute` is omitted** because `PassthroughSubject` does not retain — re-tapping re-publishes naturally. See §1b above and `references/ikame-decision-table.md` D-404 brownfield note.
 
 ### 3d. `@MainActor` at the class level
 
@@ -433,7 +370,7 @@ The gate runs at end of Step C3 and inspects every `*ViewModel.swift` generated 
 1. **Class header.** Class is `final` (warn if missing) AND has `@MainActor` annotation (hard).
 2. **`enum Action`.** Top-level nested `enum Action { ... }` exists.
 3. **`func send(_ action: Action)`.** Method exists with that exact signature, with a single `switch action` body.
-4. **`enum Route`.** If the file references `route` (any `var route` / `case route` / `dismissRoute` / `routePublisher`), `enum Route` exists. Both forms accepted: `@Published var route: Route?` (canonical, §1) AND `let routePublisher = PassthroughSubject<Route, Never>()` (Ikame variant, §1b). The `Equatable, Hashable` requirement applies only to the `@Published var route` form (used by `.navigationDestination(item: $route)` binding); for `routePublisher`, `Route` only needs the cases the View pattern-matches.
+4. **`enum Route`.** If the file references `route` (any `var route` / `case route` / `dismissRoute` / `routePublisher`), `enum Route` exists. Canonical form: `@Published var route: Route?` (§1) requires `enum Route: Equatable, Hashable` so `.navigationDestination(item: $route)` binding works. Brownfield form: `let routePublisher = PassthroughSubject<Route, Never>()` (§1b) — only accepted when C1 captures `viewToRouteWiring: "routePublisher"`; `Route` only needs the cases the View pattern-matches in that case.
 5. **Flat state heuristic.** If the file has ≥ 2 `@Published` declarations AND a top-level `struct ViewState` (or similar) wrapping all of them, fail. The single-struct exception (form input + flat state coexisting) is OK because flat state still exists.
 6. **No direct mutation from View.** Greps for `viewModel.<property>=` outside `viewModel.send(...)` and outside `$viewModel.` (binding) — fails when found in the corresponding `*Screen.swift` / `*View.swift`.
 
