@@ -415,6 +415,8 @@ GATES = [
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-gate.sh"),
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-banned-pattern-gate.sh"),
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-entry-bypass-gate.sh"),
+    ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-mode-gate.sh"),
+    ("PreToolUse",  "Bash",       "~/.claude/hooks/figma-to-swiftui-engine-gate.sh"),
     ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-pass2-gate.sh"),
     ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-c8-gate.sh"),
     ("Stop",        None,         "~/.claude/hooks/figma-to-swiftui-stop-gate.sh"),
@@ -452,6 +454,10 @@ PY
     echo "         radius, button-bloat, .frame(width:) on Text;"
     echo "       PreToolUse — entry-path bypass detector, blocks edits that set"
     echo "         initial route on App.swift/ContentView.swift for verification;"
+    echo "       PreToolUse — mode gate, blocks .swift writes until mode-detect"
+    echo "         has run (mode.json present; ambiguous needs userConfirmed);"
+    echo "       PreToolUse — engine gate, blocks raw xcodebuild/simctl in"
+    echo "         figma sessions when Engine A (xcode MCP) is available;"
     echo "       PostToolUse — auto-runs Gate C3-Pass2;"
     echo "       PostToolUse — C8 coding-conventions gate (folder/naming/"
     echo "         ViewModel pattern/function-length; conditional IKNavigation"

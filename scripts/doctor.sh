@@ -452,6 +452,8 @@ EXPECTED_HOOKS=(
   "figma-to-swiftui-gate.sh:PreToolUse"
   "figma-to-swiftui-banned-pattern-gate.sh:PreToolUse"
   "figma-to-swiftui-entry-bypass-gate.sh:PreToolUse"
+  "figma-to-swiftui-mode-gate.sh:PreToolUse"
+  "figma-to-swiftui-engine-gate.sh:PreToolUse"
   "figma-to-swiftui-pass2-gate.sh:PostToolUse"
   "figma-to-swiftui-c8-gate.sh:PostToolUse"
   "figma-to-swiftui-stop-gate.sh:Stop"
