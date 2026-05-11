@@ -27,44 +27,20 @@ set -uo pipefail
 INPUT=$(cat)
 
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
-TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty')
 
 # Empty command → allow (nothing to gate).
 [ -z "$COMMAND" ] && exit 0
 
 # ── 1. Session scope — only enforce during a figma-to-swiftui session ────────
-# Two signals (either flips it on; both off → allow). Outside a figma session,
-# the agent might be doing iOS coding for a different task and `xcodebuild`
-# is legitimate — let it pass.
-#
-#   (a) Transcript shows a figma-to-swiftui skill call or figma MCP tool call
-#       (mirrors the signal grep in figma-to-swiftui-stop-gate.sh).
-#   (b) Current working directory (or any ancestor up to 6 levels) contains
-#       a .figma-cache/ — the unambiguous on-disk signature of a figma task.
-#
-# When neither signal is present, fail open (allow). Don't gate `xcodebuild`
-# on unrelated projects.
-IN_FIGMA_SESSION=0
-if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
-  FIGMA_SIGNAL='"skill":[[:space:]]*"figma-to-swiftui|"skill":[[:space:]]*"figma-flow-to-swiftui-feature|"name":[[:space:]]*"mcp__[A-Za-z0-9_]*[Ff]igma|"name":[[:space:]]*"figma_(extract_tokens|export_assets|export_assets_unified|build_registry)'
-  if grep -qE "$FIGMA_SIGNAL" "$TRANSCRIPT_PATH" 2>/dev/null; then
-    IN_FIGMA_SESSION=1
-  fi
+# Delegate detection to the shared probe (transcript figma signal / user
+# message / cache). Fail-open when probe says "no" — don't gate `xcodebuild`
+# on unrelated iOS projects.
+PROBE="$(dirname "$0")/_figma-task-probe.sh"
+IS_FIGMA="no"
+if [ -x "$PROBE" ]; then
+  IS_FIGMA=$(printf '%s' "$INPUT" | "$PROBE" 2>/dev/null || echo "no")
 fi
-if [ "$IN_FIGMA_SESSION" = "0" ]; then
-  D="$PWD"
-  for _ in 1 2 3 4 5 6; do
-    if [ -d "$D/.figma-cache" ]; then
-      IN_FIGMA_SESSION=1
-      break
-    fi
-    PARENT=$(dirname "$D")
-    [ "$PARENT" = "$D" ] && break
-    D="$PARENT"
-  done
-fi
-
-[ "$IN_FIGMA_SESSION" = "0" ] && exit 0
+[ "$IS_FIGMA" != "yes" ] && exit 0
 
 # ── 2. Bypass via env-var prefix ──────────────────────────────────────────────
 # Agent that genuinely needs xcodebuild (debugging the build engine itself,
