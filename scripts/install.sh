@@ -364,12 +364,13 @@ else
     done
 
     # Also install all helper scripts (b0a-*/b0b-* codegen, c1-*/c3-*/c5-*/
-    # c6-*/c7-*/c8-* gates + drivers, colorset-codegen, timing-report) to
-    # ~/.claude/scripts/, so the stop hook's fallback path resolution
-    # (see scripts/hooks/figma-to-swiftui-stop-gate.sh) can find them
-    # regardless of where the user runs the skill from. The driver scripts
-    # (c8-all.sh, c3-static-checks.sh, c5-capture.sh) are picked up by the
-    # same globs (c8-*.sh / c3-*.sh / c5-*.sh).
+    # c6-*/c7-*/c8-* gates + drivers, colorset-codegen, timing-report,
+    # ikxcodegen-wrap, xcodeproj-add-files) to ~/.claude/scripts/, so the
+    # stop hook's fallback path resolution (see
+    # scripts/hooks/figma-to-swiftui-stop-gate.sh) can find them regardless
+    # of where the user runs the skill from. The driver scripts (c8-all.sh,
+    # c3-static-checks.sh, c5-capture.sh) are picked up by the same globs
+    # (c8-*.sh / c3-*.sh / c5-*.sh).
     mkdir -p "$SCRIPTS_DST"
     for src in "$SCRIPTS_SRC"/b0a-*.sh "$SCRIPTS_SRC"/b0b-*.sh \
                "$SCRIPTS_SRC"/c1-*.sh "$SCRIPTS_SRC"/c3-*.sh \
@@ -377,6 +378,8 @@ else
                "$SCRIPTS_SRC"/c7-*.sh "$SCRIPTS_SRC"/c8-*.sh \
                "$SCRIPTS_SRC"/mode-detect.sh \
                "$SCRIPTS_SRC"/colorset-codegen.sh \
+               "$SCRIPTS_SRC"/ikxcodegen-wrap.sh \
+               "$SCRIPTS_SRC"/xcodeproj-add-files.sh \
                "$SCRIPTS_SRC"/timing-report.sh \
                "$SCRIPTS_SRC"/timed-run.sh; do
       [ -f "$src" ] || continue

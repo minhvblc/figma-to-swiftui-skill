@@ -25,6 +25,7 @@ bold()   { printf "\033[1m%s\033[0m" "$1"; }
 
 ok()   { echo "  $(green ✓) $1"; PASS=$((PASS+1)); }
 bad()  { echo "  $(red ✗) $1"; FAIL=$((FAIL+1)); }
+warn() { echo "  $(yellow ⚠) $1"; }
 hint() { echo "      $(yellow →) $1"; }
 
 # Candidate Claude config paths, in resolution order
@@ -336,9 +337,10 @@ for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
               c8-ikpopup.sh c8-ikfeedback.sh c8-iktracking.sh c8-iklocalized.sh \
               c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
               c1-probe.sh c1-project-color-audit.sh \
-              b0a-extract-copy.sh b0b-tokens-codegen.sh \
+              b0a-extract-copy.sh b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
               mode-detect.sh \
-              colorset-codegen.sh timing-report.sh; do
+              colorset-codegen.sh timing-report.sh \
+              ikxcodegen-wrap.sh xcodeproj-add-files.sh; do
   path="$SCRIPTS_DIR/$script"
   if [ ! -f "$path" ]; then
     bad "$script missing at $path"
@@ -363,8 +365,9 @@ if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
                 c8-ikpopup.sh c8-ikfeedback.sh c8-iktracking.sh c8-iklocalized.sh \
                 c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
                 c1-probe.sh \
-                b0a-extract-copy.sh b0b-tokens-codegen.sh \
-                timing-report.sh; do
+                b0a-extract-copy.sh b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
+                timing-report.sh \
+                ikxcodegen-wrap.sh xcodeproj-add-files.sh; do
     p="$INSTALLED_SCRIPTS_DIR/$script"
     if [ ! -x "$p" ]; then
       bad "$script not installed at $p (stop-gate fallback may miss it)"
@@ -469,7 +472,8 @@ if [ -d "$SCRIPTS_INSTALLED" ]; then
              "$SCRIPTS_REPO"/c6-*.sh "$SCRIPTS_REPO"/c7-*.sh "$SCRIPTS_REPO"/c8-*.sh \
              "$SCRIPTS_REPO"/b0a-*.sh "$SCRIPTS_REPO"/b0b-*.sh \
              "$SCRIPTS_REPO"/mode-detect.sh "$SCRIPTS_REPO"/colorset-codegen.sh \
-             "$SCRIPTS_REPO"/timing-report.sh "$SCRIPTS_REPO"/xcodeproj-add-files.sh; do
+             "$SCRIPTS_REPO"/timing-report.sh \
+             "$SCRIPTS_REPO"/ikxcodegen-wrap.sh "$SCRIPTS_REPO"/xcodeproj-add-files.sh; do
     [ -f "$src" ] || continue
     name=$(basename "$src")
     dst="$SCRIPTS_INSTALLED/$name"
@@ -480,6 +484,12 @@ if [ -d "$SCRIPTS_INSTALLED" ]; then
         hint "Repo: $src"
         hint "Installed: $dst"
       fi
+    else
+      DRIFT_COUNT=$((DRIFT_COUNT+1))
+      bad "$name: in repo but NOT installed (new script added; install.sh's glob loop never copied it)"
+      hint "Repo: $src"
+      hint "Expected at: $dst"
+      hint "Fix: scripts/install.sh --yes (re-runs install loops to pick up new files)"
     fi
   done
 fi
