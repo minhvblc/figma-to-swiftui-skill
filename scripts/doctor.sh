@@ -157,6 +157,24 @@ else
     SERVER_VER=$(grep -oE '"version":"[0-9.]+"' "$TMP_OUT" | head -1 | sed 's/"version":"//;s/"//')
     ok "Binary responds to JSON-RPC and advertises all 3 required tools (mcp-figma ${SERVER_VER:-?})"
     MCP_RESPONDS=1
+    # Version gate — typography extraction needs mcp-figma >= 0.3.0. Older 0.2.x
+    # responds to tools/list but silently skips typography in figma_extract_tokens,
+    # forcing the agent into the inline-token fallback path.
+    if [ -n "$SERVER_VER" ]; then
+      VER_OK=$(python3 -c "
+import sys
+v = '$SERVER_VER'.split('.')
+try:
+    major, minor = int(v[0]), int(v[1])
+    sys.exit(0 if (major, minor) >= (0, 3) else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null && echo yes || echo no)
+      if [ "$VER_OK" != "yes" ]; then
+        warn "mcp-figma $SERVER_VER < 0.3.0 — typography extraction missing (figma_extract_tokens.typography[] will be empty)"
+        hint "Update: re-run scripts/install.sh (downloads latest release) OR cd MCPFigma && git pull && swift build -c release"
+      fi
+    fi
   elif [ ! -s "$TMP_OUT" ]; then
     bad "Binary did not respond to tools/list within 3s"
     hint "Try running it manually to see startup errors:"
@@ -336,26 +354,33 @@ PY
   esac
 fi
 
-# ── 5b. xcode MCP (Xcode 26+) — optional, unlocks C5 Engine A ────────────────
+# ── 5b. xcode MCP (Xcode 26+) — required for C5 Engine A ─────────────────────
 # When `xcrun mcpbridge` exists AND Xcode is running with the project open,
-# C5 can use BuildProject + RenderPreview instead of xcodebuild + simctl.
+# C5 uses BuildProject + RenderPreview instead of xcodebuild + simctl.
 # Wins: bypass SPM "Creating working copy" hang + simctl boot cold start +
-# previewEntry user prompt. Optional — skill falls back to xcodebuild path
-# when xcode MCP is unavailable.
+# previewEntry user prompt.
+#
+# Hard requirement on the Xcode 26+ baseline (memory: fleet standardized on
+# Xcode 26+). xcrun + mcpbridge missing → FAIL (run `softwareupdate --install`
+# or update via App Store). Xcode-not-running stays WARN — runtime state the
+# user can fix in seconds by opening the project.
 echo
-echo "5b. xcode MCP (optional, unlocks C5 Engine A)"
+echo "5b. xcode MCP (required for C5 Engine A)"
 if ! command -v xcrun >/dev/null 2>&1; then
-  warn "xcrun not found — xcode MCP unavailable, C5 will use xcodebuild fallback"
+  bad "xcrun not found — Xcode CLT missing or PATH broken"
+  hint "Install Xcode 26+ from the App Store, then: xcode-select --install"
 elif ! xcrun mcpbridge --help >/dev/null 2>&1; then
-  warn "xcrun mcpbridge not available (Xcode < 26?) — C5 will use xcodebuild fallback"
-  hint "Update Xcode to 26+ to enable RenderPreview-based C5 verification"
+  bad "xcrun mcpbridge not available — Xcode is older than 26"
+  hint "Update Xcode to 26+ from the App Store. mcpbridge ships with Xcode 26 and unlocks Engine A (mcp__xcode__BuildProject / RenderPreview)."
+  hint "Without it, C5 falls back to xcodebuild + simctl — slower SPM resolve + simctl cold start."
 else
-  ok "xcrun mcpbridge available"
+  ok "xcrun mcpbridge available (Engine A path enabled)"
   if pgrep -lf "Xcode[^/]*\.app/Contents/MacOS/Xcode$" >/dev/null 2>&1; then
     ok "Xcode app is running (BuildProject will use the live session)"
   else
-    warn "Xcode not running — start Xcode and open the target project for Engine A to work"
-    hint "C5 will fall back to xcodebuild when Xcode is not running"
+    warn "Xcode not running — start Xcode and open the target project before C5"
+    hint "Engine A needs a live Xcode session. Open: open -a Xcode <project>.xcworkspace"
+    hint "C5 falls back to Engine B (xcodebuild) when Xcode is not running."
   fi
 fi
 

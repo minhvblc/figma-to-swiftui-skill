@@ -17,11 +17,17 @@
 #   c5-capture.sh --cache <.figma-cache/nodeId> --udid <simulator-udid>
 #                 [--settle <seconds=2>] [--no-figma-cmp]
 #
+# Engine guard: this script is the Engine B (xcodebuild + simctl) path. When
+# manifest.verification.c5.engine == "xcode-mcp" (Engine A), it refuses and
+# points the agent at mcp__xcode__RenderPreview. Engine selection lives in
+# scripts/c5-engine-select.sh.
+#
 # Exit codes:
 #   0 — all three files present and valid PNG
 #   1 — at least one capture / shrink step failed
 #  64 — bad usage
 #  65 — simctl / sips missing OR cache dir missing
+#  66 — engine mismatch (run picked Engine A; use mcp__xcode__RenderPreview)
 
 set -uo pipefail
 
@@ -64,6 +70,33 @@ done
 
 command -v xcrun >/dev/null 2>&1 || { echo "FAIL: xcrun missing (Xcode CLT not installed?)" >&2; exit 65; }
 command -v sips  >/dev/null 2>&1 || { echo "FAIL: sips missing (macOS only)" >&2; exit 65; }
+
+# Engine guard — refuse when this run was already pinned to Engine A
+# (xcode MCP). c5-capture.sh is the Engine B (xcodebuild + simctl) path;
+# Engine A doesn't need simctl screenshots because mcp__xcode__RenderPreview
+# returns a canvas-sized PNG directly.
+if [ -f "$CACHE/manifest.json" ] && command -v jq >/dev/null 2>&1; then
+  ENGINE=$(jq -r '.verification.c5.engine // empty' "$CACHE/manifest.json" 2>/dev/null)
+  if [ "$ENGINE" = "xcode-mcp" ]; then
+    {
+      echo "REFUSED: this run picked Engine A (xcode MCP) — c5-capture.sh is Engine B only."
+      echo ""
+      echo "Manifest: $CACHE/manifest.json — verification.c5.engine = \"xcode-mcp\""
+      echo ""
+      echo "Engine A path (use these instead, no bash helper needed):"
+      echo "  mcp__xcode__BuildProject       — full project build"
+      echo "  mcp__xcode__RenderPreview      — snapshot the screen's #Preview directly"
+      echo "  (writes c5-render.png to your cache; skip the sips -Z 2000 shrink, the PNG"
+      echo "   is already canvas-sized.)"
+      echo ""
+      echo "If you genuinely need Engine B for this screen (e.g. screen has no #Preview"
+      echo "and you must verify on a real simulator), re-pick the engine first:"
+      echo "  bash scripts/c5-engine-select.sh --screen-file <path> --explain"
+      echo "  jq '.verification.c5.engine = \"xcodebuild\"' $CACHE/manifest.json > $CACHE/manifest.json.tmp && mv $CACHE/manifest.json.tmp $CACHE/manifest.json"
+    } >&2
+    exit 66
+  fi
+fi
 
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   C_RED=$(tput setaf 1); C_GRN=$(tput setaf 2); C_DIM=$(tput dim); C_RST=$(tput sgr0)

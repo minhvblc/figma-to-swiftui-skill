@@ -223,7 +223,7 @@ Status bar, Dynamic Island, home indicator, system keyboard, system back chevron
 * Detects `Spacing` / `IKFont` / `IKCoreApp` / `Color(hex:)` / Lottie SDK / String Catalog / generated symbol assets in the project, and routes Figma values through them where present (no parallel abstractions).
 * Auto-detects `IPHONEOS_DEPLOYMENT_TARGET` and emits iOS 16 fallbacks for iOS 17/18/26 APIs with a search-replaceable comment marker.
 * Uses `NavigationStack` + `.navigationDestination(for:)`; refuses to mix in deprecated `NavigationView` / `NavigationLink(destination:)`.
-* Per-screen C5 = build with `xcodebuild`, boot simulator, install, screenshot, visual-diff vs Figma.
+* Per-screen C5 = build + capture + visual-diff vs Figma. Engine picked by `scripts/c5-engine-select.sh`: Engine A (xcode MCP — `mcp__xcode__BuildProject` + `RenderPreview`, default on Xcode 26+) bypasses SPM resolve hang and simctl cold-start; Engine B (`xcodebuild` + `xcrun simctl`) is the universal fallback.
 
 ### Not opinionated about architecture
 
@@ -300,7 +300,9 @@ repo-root/
 | `figma_build_registry` errors with "unauthorized" | Bad / expired `FIGMA_ACCESS_TOKEN` | Regenerate at [figma.com/settings](https://www.figma.com/settings), update MCP env |
 | Gate B fails with "rows empty but design has N hints" | B1 Inventory missed nodes | Re-scan `screenshot.png` and `design-context.md`; do NOT bypass the gate |
 | `cornerRadius()` / `foregroundColor()` lint failures in Pass 4 | Used deprecated SwiftUI API | Replace per `references/swiftui-pro-bridge.md` §2 (always-on transforms) |
-| C5 says "FAIL: build" | `xcodebuild` build error | Open `c5-build.log`, fix compile errors, re-run C5 |
+| C5 says "FAIL: build" | Build failure on the chosen engine | Engine A: read `mcp__xcode__XcodeListNavigatorIssues` / `GetBuildLog` for structured errors. Engine B: open `c5-build.log`. Fix compile errors, re-run C5. |
+| C5 hook blocks `xcodebuild ... build` | Engine A is available; raw xcodebuild is a regression | Use `mcp__xcode__BuildProject` / `RenderPreview` instead. Probe engine: `scripts/c5-engine-select.sh --explain`. Bypass for legitimate Engine B run: prefix command with `ALLOW_XCODEBUILD=1`. |
+| Hook blocks `Write` on a `.swift` file: "project mode not yet detected" | `scripts/mode-detect.sh` hasn't run for this project | Run `scripts/mode-detect.sh <projectFolder> --write-cache`. For `greenfield-ikame`, then `scripts/ikxcodegen-scaffold.sh <Name>` (ask user Y/n first). |
 | Agent claims done without C5 results | Done-Gate violation | Ask the agent to re-run; consider enabling the Stop hook (see "Strongly recommended hooks" in `figma-to-swiftui/SKILL.md`) |
 
 More: [`figma-to-swiftui/references/mcpfigma-setup.md`](figma-to-swiftui/references/mcpfigma-setup.md) and [`figma-to-swiftui/references/figma-mcp-setup.md`](figma-to-swiftui/references/figma-mcp-setup.md).
