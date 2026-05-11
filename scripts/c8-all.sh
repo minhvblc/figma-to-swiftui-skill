@@ -72,6 +72,8 @@ GATES=(
   "ikfeedback:c8-ikfeedback.sh:enforcing:yes"
   "iktracking:c8-iktracking.sh:enforcing:yes"
   "iklocalized:c8-iklocalized.sh:enforcing:yes"
+  "color-name-collision:c8-color-name-collision.sh:enforcing:no"
+  "fonts-registered:c8-fonts-registered.sh:enforcing:no"
   "weak-self:c8-weak-self.sh:informational:no"
 )
 

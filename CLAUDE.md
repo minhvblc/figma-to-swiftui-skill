@@ -124,6 +124,13 @@ C1 step **probe project conventions** rồi ghi `c1-conventions.json`. Mọi quy
 | `c3-static-checks.sh` | Pass 3 + 3b + Pass 4 Part A bash sweep | C3 |
 | `c8-all.sh` | 6 c8-* gates chạy song song | C3 Pass 5 |
 | `timing-report.sh` | Đọc manifest.timing và in bảng wall-time | regression check |
+| `timed-run.sh` | Helper của `timing-report.sh` — wrap command, record wall-time vào manifest.timing | per-step instrumentation |
+| `preflight-bundle-verify.sh` | Pull canonical bundle ID từ Info.plist + check sim cho prefix collision | Phase 0 |
+| `preflight-smoke-test.sh` | Build + launch scaffold + screenshot baseline TRƯỚC Phase A | Phase 0 |
+| `b0c-fonts-fetch.sh` | Download Inter / Playfair Display / ... từ curated mirror table | B0c |
+| `b0d-info-plist-fonts.sh` | Idempotent inject `UIAppFonts` vào Info.plist | B0d |
+| `b0a-tokens-from-design-context.sh` | Fallback path khi `figma_extract_tokens` 403 — parse hex từ design-context.md | B0a fallback |
+| `sync-check.sh` | Verify mọi script trong scripts/ obeys 4-position cross-file sync rule | meta — anti-orphan |
 
 Driver scripts **không đổi semantics** — chỉ gộp call. Bash blocks gốc trong SKILL.md vẫn còn nguyên làm fallback explicit form. Khi sửa logic 1 gate, sửa ở **cả** sub-script gốc lẫn driver.
 

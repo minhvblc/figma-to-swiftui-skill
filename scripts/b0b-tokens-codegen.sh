@@ -73,8 +73,58 @@ done
 [ -n "$TOKENS"   ] || { print_usage; exit 64; }
 [ -n "$XCASSETS" ] || [ "$SKIP_COLORSET" = "1" ] || { print_usage; exit 64; }
 [ -n "$OUTDIR"   ] || { print_usage; exit 64; }
-[ -s "$TOKENS"   ] || { echo "FAIL: tokens.json missing or empty: $TOKENS" >&2; exit 65; }
+# 0. tokens.json validation + 403 fallback. Fix-spec F — if tokens.json is
+#    missing or has empty colors[] (figma_extract_tokens returned 403, etc.),
+#    fall back to b0a-tokens-from-design-context.sh which parses inline hex
+#    from design-context.md files.
+SCRIPT_DIR_PRE="$(cd "$(dirname "$0")" && pwd)"
+if [ ! -s "$TOKENS" ]; then
+  echo "WARN: tokens.json missing/empty at $TOKENS"
+  FALLBACK="$SCRIPT_DIR_PRE/b0a-tokens-from-design-context.sh"
+  CACHE_ROOT=$(dirname "$(dirname "$TOKENS")")  # tokens.json lives in .figma-cache/_shared/
+  if [ -x "$FALLBACK" ] && [ -d "$CACHE_ROOT" ]; then
+    echo "Attempting design-context fallback..."
+    if "$FALLBACK" "$CACHE_ROOT" --output "$TOKENS"; then
+      echo "Fallback synthesis succeeded; continuing with synthesized tokens."
+    else
+      echo "FAIL: tokens.json missing AND fallback also failed" >&2
+      exit 65
+    fi
+  else
+    echo "FAIL: tokens.json missing and no fallback available" >&2
+    exit 65
+  fi
+fi
+
+# Verify file is non-empty after potential fallback
+[ -s "$TOKENS" ] || { echo "FAIL: tokens.json still empty after fallback" >&2; exit 65; }
 command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 required" >&2; exit 65; }
+
+# Fix-spec C — auto-prefix conflicting names so we don't ship colorsets
+# whose names shadow SwiftUI's Color built-ins (primary, secondary, accent,
+# named colors). Mutates tokens.json in place if any name needs renaming.
+python3 - "$TOKENS" <<'PY'
+import json, sys
+banned = {"primary","secondary","accent","red","green","blue","gray","orange",
+          "pink","purple","yellow","black","white","clear","indigo","mint",
+          "teal","cyan","brown"}
+p = sys.argv[1]
+with open(p) as f:
+    data = json.load(f)
+renamed = []
+for entry in data.get("colors", []):
+    nm = entry.get("swiftName", "")
+    if nm.lower() in banned:
+        new = f"app{nm[0].upper()}{nm[1:]}"
+        entry["swiftName"] = new
+        renamed.append((nm, new))
+if renamed:
+    with open(p, 'w') as f:
+        json.dump(data, f, indent=2)
+    print(f"b0b: auto-prefixed {len(renamed)} colorset name(s) to avoid SwiftUI Color built-in shadowing:")
+    for old, new in renamed:
+        print(f"  {old} → {new}")
+PY
 
 mkdir -p "$OUTDIR"
 

@@ -373,9 +373,12 @@ else
     # (c8-*.sh / c3-*.sh / c5-*.sh).
     mkdir -p "$SCRIPTS_DST"
     for src in "$SCRIPTS_SRC"/b0a-*.sh "$SCRIPTS_SRC"/b0b-*.sh \
+               "$SCRIPTS_SRC"/b0c-*.sh "$SCRIPTS_SRC"/b0d-*.sh \
                "$SCRIPTS_SRC"/c1-*.sh "$SCRIPTS_SRC"/c3-*.sh \
                "$SCRIPTS_SRC"/c5-*.sh "$SCRIPTS_SRC"/c6-*.sh \
                "$SCRIPTS_SRC"/c7-*.sh "$SCRIPTS_SRC"/c8-*.sh \
+               "$SCRIPTS_SRC"/preflight-*.sh \
+               "$SCRIPTS_SRC"/sync-check.sh \
                "$SCRIPTS_SRC"/mode-detect.sh \
                "$SCRIPTS_SRC"/colorset-codegen.sh \
                "$SCRIPTS_SRC"/ikxcodegen-wrap.sh \
@@ -417,8 +420,10 @@ GATES = [
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-entry-bypass-gate.sh"),
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-mode-gate.sh"),
     ("PreToolUse",  "Bash",       "~/.claude/hooks/figma-to-swiftui-engine-gate.sh"),
+    ("PreToolUse",  "Bash",       "~/.claude/hooks/figma-to-swiftui-bundle-id-gate.sh"),
     ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-pass2-gate.sh"),
     ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-c8-gate.sh"),
+    ("PostToolUse", "Write|Edit|MultiEdit", "~/.claude/hooks/figma-to-swiftui-ikonboarding-pattern-gate.sh"),
     ("Stop",        None,         "~/.claude/hooks/figma-to-swiftui-stop-gate.sh"),
 ]
 

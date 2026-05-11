@@ -76,6 +76,25 @@ if [ -d "$OUTPUT_DIR" ]; then
   OUTPUT_DIR=$(cd "$OUTPUT_DIR" && pwd)
 fi
 
+# Detect runtime facts the c1-conventions.json should record so downstream
+# scripts (preflight-bundle-verify, ikonboarding-pattern-gate, etc.) have
+# something to compare against — see SKILL_IMPROVEMENT_PLAN Fix-spec A + B.
+PODFILE="$OUTPUT_DIR/Podfile"
+USES_IKONBOARDING="false"
+if [ -f "$PODFILE" ] && grep -qE "^[[:space:]]*pod[[:space:]]+['\"]IKOnboardingFlow['\"]" "$PODFILE"; then
+  USES_IKONBOARDING="true"
+fi
+
+# Extract bundleIdentifier from project.pbxproj if available — preflight
+# verify can populate it post-build, but recording the source pbxproj value
+# at scaffold time gives a starting reference.
+PBXPROJ="$OUTPUT_DIR/$PROJECT_NAME.xcodeproj/project.pbxproj"
+BUNDLE_ID=""
+if [ -f "$PBXPROJ" ]; then
+  BUNDLE_ID=$(grep -m 1 "PRODUCT_BUNDLE_IDENTIFIER = " "$PBXPROJ" 2>/dev/null \
+    | sed -E 's/.*= ([^;]+);.*/\1/' | tr -d ' "')
+fi
+
 # Write c1-conventions.json. ikxcodegen template uses fixed paths/names so we
 # can hard-wire most fields. featureRoot is <ProjectName>/Screens; navigationItem
 # enum is MainRoute at Core/Router/Main/MainRoute.swift; tracking enum and toast
@@ -108,11 +127,25 @@ cat > "$OUTPUT_DIR/.figma-cache/_shared/c1-conventions.json" <<EOF
   "entitiesPrefix": "",
   "apiRepoTypeName": "APIRepo",
   "swiftMinTarget": "17.0",
+  "usesIKOnboardingFlow": $USES_IKONBOARDING,
+  "bundleIdentifier": "$BUNDLE_ID",
+  "smokeTestResult": null,
+  "customFonts": [],
   "mode": "$MODE",
   "scaffoldVariant": "ikame",
-  "notes": "Ikame scaffold from ikxcodegen. All Ikame umbrella conventions active. Switch mode to 'production' before final review."
+  "notes": "Ikame scaffold from ikxcodegen. All Ikame umbrella conventions active. Switch mode to 'production' before final review. Run scripts/preflight-bundle-verify.sh post-build to confirm bundleIdentifier matches Info.plist (it may differ from pbxproj when build settings interpolate)."
 }
 EOF
+
+# After scaffold, emit pointer hints for the new preflight gates.
+if [ "$USES_IKONBOARDING" = "true" ]; then
+  echo ""
+  echo "⚠️  IKOnboardingFlow pod detected in Podfile."
+  echo "   Phase 0 smoke-test is MANDATORY before Phase A:"
+  echo "     scripts/preflight-smoke-test.sh $OUTPUT_DIR"
+  echo "   Onboarding registration uses single-View orchestrator (NOT IKNavigation.makeView):"
+  echo "     see ~/.claude/skills/figma-to-swiftui/references/ikonboardingflow-integration.md"
+fi
 
 echo ""
 echo "✅ ikxcodegen-scaffold done."

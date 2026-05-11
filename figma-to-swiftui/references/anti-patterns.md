@@ -290,6 +290,104 @@ Every hook ships with one or two opt-out paths so legitimate edge cases don't ge
 
 ---
 
+## §15. AP-15 — Bundle ID prefix-launch trap
+
+**Symptom:** `xcrun simctl launch` returns PIDs (success-looking), but screenshots show wrong / older / unfamiliar UI. Code-changes to strings/colors don't propagate to sim. Easy to misdiagnose as "framework owns this screen", "DI registration overridden", or "build cache stale".
+
+**Root cause:** the bundle ID arg you passed is a PREFIX of an old install in the sim that wasn't uninstalled. iOS LaunchServices matches by exact bundle ID, so the older app launches silently. The Bible Widgets session lost ~75 min to this.
+
+**Banned:**
+```bash
+xcrun simctl launch $SIM com.foo           # ← prefix only when actual is com.foo.MyApp
+```
+
+**Fix:** always extract the canonical bundle ID from the **compiled** Info.plist:
+```bash
+plutil -extract CFBundleIdentifier raw "<.app>/Info.plist"
+```
+
+Or run `scripts/preflight-bundle-verify.sh` once at session start — it writes `.figma-cache/_shared/bundle-id.txt` for downstream scripts to read. The bundle-id-gate hook then blocks any `simctl install|launch|uninstall|terminate` with a mismatched ID at write time.
+
+**See:** [bundle-id-verification.md](bundle-id-verification.md), `scripts/preflight-bundle-verify.sh`, `scripts/hooks/figma-to-swiftui-bundle-id-gate.sh`.
+
+---
+
+## §16. AP-16 — IKNavigation-wrapped IKOnboardingFlow registration
+
+**Symptom:** `.intro` / `.splash` / `.introIap` slot doesn't render the registered view. Default placeholder shows instead, OR the slot enters a broken state where `\.ikOFDismiss` never fires.
+
+**Root cause:** wrapped the registration with `IKNavigation.makeView(router:, root:)`. That wrapper creates a nested navigation host that interferes with IKOFHostingController's `finishPromise` mechanism. The framework can't tell when your flow ends, so the chain breaks.
+
+**Banned:**
+```swift
+IKDI.onboardingFlow.register(forScreen: .intro) {
+    IKNavigation.makeView(router: IntroRouter(), root: .introRoute(.source))  // ← wrong
+}
+```
+
+**Fix:** register a single root View orchestrator that owns its own internal step state via `@State` + `\.onboardingNextStep` env + calls `\.ikOFDismiss` on completion:
+
+```swift
+IKDI.onboardingFlow.register(forScreen: .intro) {
+    MyOnboardingFlow()    // see authenv2 OnboardingFlow.swift for the pattern
+}
+```
+
+Note: `.main` slot accepts `IKNavigation.makeView` because IKNavigation IS the canonical entry point post-onboarding. The shape difference is ONLY for `.splash` / `.intro` / `.introIap`.
+
+**See:** [ikonboardingflow-integration.md](ikonboardingflow-integration.md), `scripts/hooks/figma-to-swiftui-ikonboarding-pattern-gate.sh`.
+
+---
+
+## §17. AP-17 — SwiftUI Color built-in shadowing in colorsets
+
+**Symptom:** every build emits 2 warnings: `The "primary" color asset name resolves to a conflicting Color symbol "primary". Try renaming the asset.` Code using `Color("primary")` silently picks up SwiftUI's `Color.primary` (system label color), NOT your colorset. Designs use the wrong color.
+
+**Root cause:** colorset names like `primary`, `secondary`, `accent`, `red`, `gray`, `black`, `white`, `clear`, etc. shadow SwiftUI's built-in Color statics. Bible Widgets shipped `primary` + `secondary` colorsets from style guide tokens, hit this on first build.
+
+**Banned colorset names** (lowercase, exact match): `primary`, `secondary`, `accent`, `red`, `green`, `blue`, `gray`, `orange`, `pink`, `purple`, `yellow`, `black`, `white`, `clear`, `indigo`, `mint`, `teal`, `cyan`, `brown`.
+
+**Fix:** prefix with `app` (or your project namespace):
+```
+Assets.xcassets/Colors/primary.colorset      → appPrimary.colorset
+Assets.xcassets/Colors/secondary.colorset    → appSecondary.colorset
+AppColor.swift:
+  static let primary = Color("primary")      → static let appPrimary = Color("appPrimary")
+```
+
+**Enforcement:** `scripts/c8-color-name-collision.sh` (wired into c8-all.sh + PostToolUse hook on `*.xcassets/Colors/`). `b0b-tokens-codegen.sh` auto-prefixes conflicting names at codegen time.
+
+---
+
+## §18. AP-18 — Silent system-font fallback
+
+**Symptom:** typography in sim renders close to but NOT exactly matching Figma. Subtle stroke weight differences, slight x-height mismatch. No build error, no runtime warning. Easy to dismiss as "minor sub-pixel difference".
+
+**Root cause:** `Font.custom("Inter-Medium", size: 17)` references a PostScript name that isn't bundled with the app. iOS silently falls back to system font. Bible Widgets had Inter + Playfair Display in tokens.json but no `.otf`/`.ttf` files in `Resources/Fonts/`, no `UIAppFonts` array in Info.plist — all custom fonts silently rendered as system.
+
+**Banned setup:**
+```swift
+AppFont.swift:
+  static func interMedium(_ size: CGFloat) -> Font { .custom("Inter-Medium", size: size) }
+
+Info.plist:
+  // no UIAppFonts array — fonts NOT registered
+Resources/Fonts/:
+  // empty — no .otf/.ttf files
+```
+
+**Fix:** automated via `scripts/b0c-fonts-fetch.sh` + `scripts/b0d-info-plist-fonts.sh` after `b0b-tokens-codegen.sh`:
+
+1. `b0c` reads `tokens.json` fontFamilies, downloads from curated mirror to `Resources/Fonts/`.
+2. `b0d` injects every file into Info.plist `UIAppFonts` array (idempotent merge).
+3. `c8-fonts-registered.sh` gate verifies every `Font.custom("X")` call has matching file + plist entry.
+
+For families not in the mirror table, the script STOPs and asks the user to extend it — **no silent fallback**.
+
+**See:** [font-registration.md](font-registration.md), `scripts/b0c-fonts-fetch.sh`, `scripts/b0d-info-plist-fonts.sh`, `scripts/c8-fonts-registered.sh`.
+
+---
+
 ## Failure-mode self-check (read at the end of every run)
 
 Before you write the Verification summary, scan your draft for these phrases. If you find any, you have NOT finished the run — you have a failed run with a footnote:

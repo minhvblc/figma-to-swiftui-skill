@@ -414,11 +414,16 @@ for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
               c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
               c8-iknavigation.sh c8-ikfont.sh c8-weak-self.sh \
               c8-ikpopup.sh c8-ikfeedback.sh c8-iktracking.sh c8-iklocalized.sh \
+              c8-color-name-collision.sh c8-fonts-registered.sh \
               c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
               c1-probe.sh c1-project-color-audit.sh \
-              b0a-extract-copy.sh b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
+              b0a-extract-copy.sh b0a-tokens-from-design-context.sh \
+              b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
+              b0c-fonts-fetch.sh b0d-info-plist-fonts.sh \
+              preflight-bundle-verify.sh preflight-smoke-test.sh \
+              sync-check.sh \
               mode-detect.sh \
-              colorset-codegen.sh timing-report.sh \
+              colorset-codegen.sh timing-report.sh timed-run.sh \
               ikxcodegen-wrap.sh ikxcodegen-scaffold.sh vanilla-scaffold.sh \
               xcodeproj-add-files.sh; do
   path="$SCRIPTS_DIR/$script"
@@ -439,14 +444,21 @@ done
 INSTALLED_SCRIPTS_DIR="$HOME/.claude/scripts"
 if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
   for script in c5-coverage-check.sh c5-capture.sh c5-engine-select.sh \
+                c5-crop-sections.sh c5-weasel-detect.sh \
                 c6-asset-completeness.sh c7-no-system-chrome.sh \
                 c8-conventions-gate.sh c8-vm-pattern.sh c8-func-length.sh \
-                c8-iknavigation.sh c8-ikfont.sh \
+                c8-iknavigation.sh c8-ikfont.sh c8-weak-self.sh \
                 c8-ikpopup.sh c8-ikfeedback.sh c8-iktracking.sh c8-iklocalized.sh \
+                c8-color-name-collision.sh c8-fonts-registered.sh \
                 c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
-                c1-probe.sh \
-                b0a-extract-copy.sh b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
-                timing-report.sh mode-detect.sh \
+                c1-probe.sh c1-project-color-audit.sh \
+                b0a-extract-copy.sh b0a-tokens-from-design-context.sh \
+                b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
+                b0c-fonts-fetch.sh b0d-info-plist-fonts.sh \
+                preflight-bundle-verify.sh preflight-smoke-test.sh \
+                sync-check.sh \
+                timing-report.sh timed-run.sh mode-detect.sh \
+                colorset-codegen.sh \
                 ikxcodegen-wrap.sh ikxcodegen-scaffold.sh vanilla-scaffold.sh \
                 xcodeproj-add-files.sh; do
     p="$INSTALLED_SCRIPTS_DIR/$script"
@@ -479,8 +491,10 @@ EXPECTED_HOOKS=(
   "figma-to-swiftui-entry-bypass-gate.sh:PreToolUse"
   "figma-to-swiftui-mode-gate.sh:PreToolUse"
   "figma-to-swiftui-engine-gate.sh:PreToolUse"
+  "figma-to-swiftui-bundle-id-gate.sh:PreToolUse"
   "figma-to-swiftui-pass2-gate.sh:PostToolUse"
   "figma-to-swiftui-c8-gate.sh:PostToolUse"
+  "figma-to-swiftui-ikonboarding-pattern-gate.sh:PostToolUse"
   "figma-to-swiftui-stop-gate.sh:Stop"
 )
 
@@ -554,9 +568,13 @@ if [ -d "$SCRIPTS_INSTALLED" ]; then
   for src in "$SCRIPTS_REPO"/c1-*.sh "$SCRIPTS_REPO"/c3-*.sh "$SCRIPTS_REPO"/c5-*.sh \
              "$SCRIPTS_REPO"/c6-*.sh "$SCRIPTS_REPO"/c7-*.sh "$SCRIPTS_REPO"/c8-*.sh \
              "$SCRIPTS_REPO"/b0a-*.sh "$SCRIPTS_REPO"/b0b-*.sh \
+             "$SCRIPTS_REPO"/b0c-*.sh "$SCRIPTS_REPO"/b0d-*.sh \
+             "$SCRIPTS_REPO"/preflight-*.sh "$SCRIPTS_REPO"/sync-check.sh \
              "$SCRIPTS_REPO"/mode-detect.sh "$SCRIPTS_REPO"/colorset-codegen.sh \
-             "$SCRIPTS_REPO"/timing-report.sh \
-             "$SCRIPTS_REPO"/ikxcodegen-wrap.sh "$SCRIPTS_REPO"/xcodeproj-add-files.sh; do
+             "$SCRIPTS_REPO"/timing-report.sh "$SCRIPTS_REPO"/timed-run.sh \
+             "$SCRIPTS_REPO"/ikxcodegen-wrap.sh "$SCRIPTS_REPO"/ikxcodegen-scaffold.sh \
+             "$SCRIPTS_REPO"/vanilla-scaffold.sh \
+             "$SCRIPTS_REPO"/xcodeproj-add-files.sh; do
     [ -f "$src" ] || continue
     name=$(basename "$src")
     dst="$SCRIPTS_INSTALLED/$name"

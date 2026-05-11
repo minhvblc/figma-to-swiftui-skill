@@ -118,23 +118,79 @@ long_side() {
     | awk '/pixel(Width|Height)/ {print $2}' | sort -n | tail -1
 }
 
+# 0. Ensure sim is Booted before attempting screenshot. Fix-spec G — Bible
+#    Widgets session hit "Unable to lookup in current state: Shutdown" errors
+#    repeatedly because sim drifted to Shutdown between operations.
+ensure_booted() {
+  for attempt in 1 2 3; do
+    state=$(xcrun simctl list devices 2>/dev/null \
+      | grep -F "$UDID" \
+      | grep -oE '\((Booted|Shutdown|Booting|Shutting Down)\)' | tr -d '()')
+    case "$state" in
+      Booted) return 0 ;;
+      Shutdown|Shutting\ Down)
+        xcrun simctl boot "$UDID" 2>/dev/null || true
+        sleep $((attempt * 2))
+        ;;
+      Booting|*) sleep $((attempt * 2)) ;;
+    esac
+  done
+  return 1
+}
+
+if ! ensure_booted; then
+  bad "sim $UDID not Booted after 3 attempts (state: $state)"
+  hint "Manual recovery: xcrun simctl shutdown $UDID && xcrun simctl boot $UDID"
+  exit 1
+fi
+
 # 1. Settle. SKILL.md uses `sleep 2`. Make it a parameter so warm-sim runs
 #    can skip it.
 if [ "$SETTLE" != "0" ] 2>/dev/null; then
   sleep "$SETTLE"
 fi
 
-# 2. simctl screenshot. Capture stderr separately so we can surface simctl
-#    errors verbatim (e.g. "device not booted").
+# 2. simctl screenshot, with retry on transient stuck-state errors.
+#    Fix-spec G — Bible Widgets session: "request to open com.X failed" /
+#    "Unable to lookup in current state" errors required manual shutdown+boot
+#    cycles. Built into the script now: 3 attempts with 2s/4s/8s backoff.
 SIMCTL_ERR=$(mktemp -t c5-capture-err.XXXXXX)
 trap 'rm -f "$SIMCTL_ERR"' EXIT
 
-if ! xcrun simctl io "$UDID" screenshot "$SIM_PNG" 2>"$SIMCTL_ERR"; then
-  bad "simctl screenshot exited non-zero for udid=$UDID"
+capture_ok=0
+for attempt in 1 2 3; do
+  if xcrun simctl io "$UDID" screenshot "$SIM_PNG" 2>"$SIMCTL_ERR"; then
+    capture_ok=1
+    break
+  fi
+
+  err_msg=$(cat "$SIMCTL_ERR" 2>/dev/null)
+  echo "${C_DIM}simctl attempt $attempt failed: $err_msg${C_RST}"
+
+  # Stuck-state recovery on final attempt: full sim restart cycle
+  if [ $attempt -eq 3 ]; then
+    if echo "$err_msg" | grep -qE "Unable to lookup|state: Shutdown"; then
+      echo "${C_DIM}Last attempt: recovering with shutdown+boot...${C_RST}"
+      xcrun simctl shutdown "$UDID" 2>/dev/null || true
+      sleep 2
+      xcrun simctl boot "$UDID" 2>/dev/null || true
+      sleep 4
+      if xcrun simctl io "$UDID" screenshot "$SIM_PNG" 2>"$SIMCTL_ERR"; then
+        capture_ok=1
+      fi
+    fi
+  else
+    sleep $((attempt * 2))
+  fi
+done
+
+if [ $capture_ok -eq 0 ]; then
+  bad "simctl screenshot exited non-zero for udid=$UDID after 3 retries + recovery"
   if [ -s "$SIMCTL_ERR" ]; then
     echo "${C_DIM}simctl stderr:${C_RST}"
     cat "$SIMCTL_ERR"
   fi
+  hint "See: ~/.claude/skills/figma-to-swiftui/references/c5-sim-reliability.md"
   exit 1
 fi
 
