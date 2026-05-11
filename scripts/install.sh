@@ -463,10 +463,16 @@ PY
     echo "         has run (mode.json present; ambiguous needs userConfirmed);"
     echo "       PreToolUse — engine gate, blocks raw xcodebuild/simctl in"
     echo "         figma sessions when Engine A (xcode MCP) is available;"
+    echo "       PreToolUse — bundle-id gate, blocks simctl install/launch/"
+    echo "         uninstall/terminate when bundle ID doesn't match the"
+    echo "         preflight-bundle-verify canonical;"
     echo "       PostToolUse — auto-runs Gate C3-Pass2;"
     echo "       PostToolUse — C8 coding-conventions gate (folder/naming/"
     echo "         ViewModel pattern/function-length; conditional IKNavigation"
     echo "         + IKFont per c1-conventions.json);"
+    echo "       PostToolUse — IKOnboarding pattern gate, blocks wrong"
+    echo "         IKOnboardingFlow registration (IKNavigation.makeView body"
+    echo "         instead of single root View);"
     echo "       Stop — blocks termination when C5/C6/C7/C8 Done-Gate unsatisfied)"
   fi
 fi
