@@ -503,7 +503,7 @@ echo "  • Skills installed  : ~/.claude/skills/figma-to-swiftui"
 echo "                        ~/.claude/skills/figma-flow-to-swiftui-feature"
 echo "  • Claude config     : $CONFIG"
 if [ "$INSTALL_HOOKS" = "1" ]; then
-  echo "  • Enforcement hooks : 6 gates registered in ~/.claude/settings.json"
+  echo "  • Enforcement hooks : 8 gates registered in ~/.claude/settings.json"
 else
   echo "  • Enforcement hooks : $(yellow "skipped (--no-hooks)")"
 fi
