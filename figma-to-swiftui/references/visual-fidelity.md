@@ -247,7 +247,19 @@ These are the silent killers. Watch for each:
 | `FIXED` (designer set explicit width N) | `Button { Text("...") }.frame(width: N)` on Button outer; no width modifier on inner Text |
 | `AUTO/HUG` (button hugs its label — chip / tag / pill) | `Button { Text("...") }` — no width modifier; let Button intrinsic-size to label |
 
-**Patterns for asymmetric button content** (icon + label that need to push to opposite edges):
+**Patterns for asymmetric button content** (icon + label inside a fill-width button). Pick the pattern from the Figma signal — emitting the wrong one is a class of bug C5.6.6 "Button internal layout check" catches.
+
+**Pattern selection — read from `design-context.md` first:**
+
+| Figma / design-context signal                                                                                 | Pattern                                  |
+|---------------------------------------------------------------------------------------------------------------|------------------------------------------|
+| Button is Auto-layout HORIZONTAL with `primaryAxisAlignItems: SPACE_BETWEEN` (text + icon at opposite edges, no overlap). Tailwind: flex children, no `absolute` on icon. | **Case A — HStack + Spacer**             |
+| Icon node has `layoutPositioning: ABSOLUTE` OR Tailwind output puts `absolute` (e.g. `absolute right-6`) on the icon inside a `relative` button. Text node's own `textAlignHorizontal: CENTER` and visually sits at the button's horizontal center (not at the leading edge). | **Case B — ZStack overlay**              |
+| Single-child button (text only, no icon)                                                                      | `Button { Text("...") }.frame(maxWidth: .infinity)` — Text auto-centers. |
+
+**The eye-test on the Figma screenshot is the tiebreaker.** Text visually at the leading edge of the button = Case A. Text visually at the horizontal center (with icon floating at the trailing edge as an accent) = Case B. Skipping the eye-test and defaulting to Case A turns every centered-CTA-with-trailing-icon design into a left-aligned button.
+
+#### Case A — Text-leading + Icon-trailing (push to opposite edges)
 
 ```swift
 // CORRECT — Button fills, HStack inside uses Spacer to push apart
@@ -275,7 +287,57 @@ Button(action: tapped) {
 .padding(.horizontal, 16)     // bypassed — Button already filled the screen
 ```
 
-**Allow-list.** A `Text(...).frame(maxWidth: .infinity)` inside `Button { ... }` requires a justifying comment `// allow-text-fill: <reason>` on the same line OR the line above. Legitimate cases are rare; before adding the comment, check whether `HStack { Spacer(); ...; Spacer() }` accomplishes the same intent without the cascade. Enforced by `figma-to-swiftui-banned-pattern-gate.sh` Check 8.
+#### Case B — Text-centered + Icon-trailing overlay (decoration icon, text owns the center)
+
+When Figma's `Continue →` button shows the text **at the button's horizontal center** with the arrow icon sitting at the trailing edge as a non-spacing accent, an HStack with a Spacer between is wrong — the Spacer pulls the text to the leading edge. The text needs to anchor at center; the icon overlays on top.
+
+```swift
+// CORRECT — ZStack: Text anchor centered; icon overlay layer at trailing edge
+Button(action: tapped) {
+  ZStack {
+    Text("Continue")                           // anchor — auto-centers in ZStack
+    HStack {
+      Spacer()
+      Image("icAIArrowRight")
+    }
+    .padding(.trailing, 24)                    // distance from Figma right edge
+  }
+  .frame(maxWidth: .infinity, minHeight: 56)   // button intrinsic height from Figma
+}
+.background(Color.accent, in: .rect(cornerRadius: 12))
+.padding(.horizontal, 16)                      // caller margin — Button still owns fill-width
+```
+
+The `ZStack` default alignment is `.center` — the Text positions at the geometric center of the button's drawing rect regardless of the icon's presence. The icon layer is a fill-width HStack with a single trailing Spacer + Image; `.padding(.trailing, 24)` matches the Figma distance from the right edge.
+
+```swift
+// WRONG #1 — HStack-Spacer-Icon: Text gets pushed to leading edge
+Button(action: tapped) {
+  HStack {
+    Text("Continue")     // ends up leading, NOT centered
+    Spacer()
+    Image("icAIArrowRight")
+  }
+}
+.frame(maxWidth: .infinity)
+// Visual: "Continue" sits at left, arrow at right — Figma had text centered.
+// C5.6.6 Button internal layout check → text x% mismatch FAIL high.
+```
+
+```swift
+// WRONG #2 — Spacer sandwich: Text near-centered but icon pushed past trailing edge
+Button(action: tapped) {
+  HStack {
+    Spacer(); Text("Continue"); Spacer()
+    Image("icAIArrowRight")
+  }
+}
+// Visual: text appears centered relative to its OWN slot, but the icon eats
+// part of the trailing Spacer's space — text actually sits slightly LEFT of
+// the button's true geometric center. Subtle but breaks the 3pp threshold.
+```
+
+**Allow-list.** A `Text(...).frame(maxWidth: .infinity)` inside `Button { ... }` requires a justifying comment `// allow-text-fill: <reason>` on the same line OR the line above. Legitimate cases are rare (Case B already handles centered text without needing inner maxWidth); before adding the comment, check whether the ZStack overlay above accomplishes the same intent. Enforced by `figma-to-swiftui-banned-pattern-gate.sh` Check 8.
 
 **Symmetric trap on the height axis.** `.frame(maxHeight: .infinity)` cascades the same way through vertical containers. Less common in Figma-to-SwiftUI runs (most screens are bounded vertically by ScrollView), but the rule is identical: maxHeight goes on the outermost bounded container, not on inner Text inside a Card or inner Card inside a Button-styled tappable row.
 
@@ -367,6 +429,33 @@ The same Figma frames also draw the **iPhone bezel** — the rounded outline of 
 ### NavigationStack
 - Adds large title padding by default. Use `.navigationBarTitleDisplayMode(.inline)` when Figma header is compact, or `.toolbar(.hidden, for: .navigationBar)` for fully custom headers.
 - Adds a back button and safe-area insets automatically. Factor these into layout.
+
+#### Navigation chrome visibility — Figma intent detection
+
+System nav bar and tab bar are iOS-rendered chrome that NavigationStack/TabView pull in for free. The bug class: code forgets to hide them when Figma's design uses a custom in-content header, OR forgets to show them when Figma's design relies on system chrome. Caught visually by C5.6.6 "Navigation visibility check" — this section is the source-of-truth for *how to detect intent from the Figma screenshot* and *which modifier to emit*.
+
+**Detection (read from `screenshot.png` / `screenshot-cmp.png`):**
+- **Nav bar visible in Figma** = top ~44–50pt of the canvas is a system-style bar — centered title (or large-title block on first scroll position), leading back chevron when not the root, system SF font, edge-to-edge near-opaque background that visually separates from content below. Status-bar chrome (time "9:41", signal/wifi/battery) sits ABOVE the nav bar — that part is always there in Figma mockups and is iOS-rendered separately (don't conflate).
+- **Nav bar NOT visible in Figma** = top of the canvas is a custom content block: gradient header, illustration / hero image, branded headline in a non-system font, a row with custom-styled icons (e.g. user avatar + notification bell), or simply scrollable content starting immediately under the safe-area inset.
+- **Tab bar visible in Figma** = bottom ~50–80pt is a row of 3–5 evenly spaced tab icons + labels, with a top hairline separator (`Color(uiColor: .separator)` or similar). The home-indicator capsule (~134×5pt) sits BELOW the tab bar and is iOS-rendered.
+- **Tab bar NOT visible in Figma** = bottom is scrollable content, empty padding to the home indicator, or a single full-width CTA button (e.g. "Continue") sitting `safe-area + padding` above the home indicator.
+
+**Modifier matrix (emit on the screen body or push destination):**
+
+| Figma intent          | SwiftUI modifier                                  | When                                                       |
+|-----------------------|---------------------------------------------------|------------------------------------------------------------|
+| Nav bar visible       | (no modifier — NavigationStack default)           | System back chevron + title bar are part of the design.    |
+| Nav bar visible, inline | `.navigationBarTitleDisplayMode(.inline)`       | Compact title, no large-title block.                       |
+| Nav bar hidden        | `.toolbar(.hidden, for: .navigationBar)`          | Custom in-content header. iOS 16+; on iOS 15 use `.navigationBarHidden(true)`. |
+| Tab bar visible       | (no modifier — TabView default)                   | Tab strip is part of the design at this screen.            |
+| Tab bar hidden        | `.toolbar(.hidden, for: .tabBar)`                 | Pushed/presented screen that should cover the tab strip.   |
+
+**Common bugs the matrix catches:**
+- Pushed screen has custom branded header in Figma; code wraps the screen body in `NavigationStack { ... }` but forgets `.toolbar(.hidden, for: .navigationBar)` → simulator shows an extra ~44pt system bar at top with leading back chevron + empty title, and Figma's custom header pushes ~44pt below where it should be. C5.6.6 "Navigation visibility check" → row `nav bar | no | yes | FAIL`.
+- Detail screen pushed inside a TabView; Figma shows no tab strip at the bottom (full-screen content); code forgets `.toolbar(.hidden, for: .tabBar)` → simulator shows the inherited tab bar at the bottom, eating ~50pt of content. C5.6.6 → row `tab bar | no | yes | FAIL`.
+- Root view that owns the NavigationStack carries `.toolbar(.hidden, for: .navigationBar)` accidentally on the destination instead of conditionally per-screen → root screen loses its system title bar that Figma intended visible. C5.6.6 → row `nav bar | yes | no | FAIL`.
+
+**Where this is enforced:** C3 Pass 2 has no dedicated check letter for toolbar visibility — the offline diff cannot reliably distinguish "agent forgot the modifier" from "agent intended hidden". The check lives in C5.6.6 (visual diff against the simulator screenshot) and is enforced by `scripts/c5-coverage-check.sh` check #12. See [`verification-loop.md` §C5.6.6](verification-loop.md#c566--negative-spot-check--4-anchor-proportional-check).
 
 ### Font width / tracking (iOS 16+)
 - Figma "Expanded Semibold" = `.fontWeight(.semibold).fontWidth(.expanded)`. Using only `.semibold` loses the expanded width.

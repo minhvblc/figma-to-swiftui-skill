@@ -710,6 +710,18 @@ A: <enumerate or "none">
 |-------------------------|----------|--------|-------|---------|
 | "Continue" (primary CTA)| 87       | 100    | 13    | FAIL    |
 | "Skip" (secondary)      | 30       | 30     | 0     | PASS    |
+
+## Button internal layout check
+| button label / role     | figma text x% | sim text x% | figma icon x% | sim icon x% | match |
+|-------------------------|---------------|-------------|---------------|-------------|-------|
+| "Continue" (primary CTA)| 50            | 32          | 92            | 92          | FAIL  |
+| "Skip" (secondary)      | 50            | 50          | n/a           | n/a         | PASS  |
+
+## Navigation visibility check
+| chrome   | figma shows? | sim shows? | match | note                                                                                                              |
+|----------|--------------|------------|-------|-------------------------------------------------------------------------------------------------------------------|
+| nav bar  | no           | yes        | FAIL  | Figma has custom in-content header; sim shows system nav bar with back chevron — missing `.toolbar(.hidden, for: .navigationBar)` |
+| tab bar  | yes          | yes        | PASS  | -                                                                                                                 |
 ```
 
 Anchor delta > 5pp on either axis = `FAIL high`. If primary CTA isn't present, write `n/a — no CTA` in that row and explain.
@@ -718,7 +730,24 @@ Anchor delta > 5pp on either axis = `FAIL high`. If primary CTA isn't present, w
 
 If no buttons exist on the screen, write `n/a — no buttons on screen` as the only row (still write the block — Gate C5 verifies the block is present). If the screen has buttons but they're invisible in the simulator (hidden, off-screen, conditional), explain per-row instead of skipping the block.
 
-The negative spot-check exists because the structured table is biased toward "does Figma's element appear in the simulator" — it never asks the inverse, so spurious extra simulator content (e.g. system-chrome redraws, debug overlays, leftover placeholder text) routinely escapes detection. The button width check exists because the structured table compares position percentages but rarely catches *width* mismatches at primary-CTA scale; a button stretched from 343pt to 393pt is the most common silent C5 escape.
+**Button internal layout check (mandatory if any button has composite content — text + ≥1 icon).** Button width check catches *the button's outer width* against the canvas; this check catches *the text and icon positions inside that width*. The bug class: Figma shows `[ ___ Continue → ]` with text horizontally centered and the arrow icon overlaid at the trailing edge, but code emits `HStack { Text("Continue"); Spacer(); Image("arrow") }` — Spacer pushes Text to the leading edge → `[ Continue ____ → ]`. Button width PASSes (outer width unchanged), but the internal layout is wrong. See `references/visual-fidelity.md` §"Patterns for asymmetric button content" Case A vs Case B.
+
+For every button with composite content:
+- Estimate **text x%** = visual center of the text's bounding box, as a percentage of canvas width. For a single-line label inside a button at the screen's horizontal center, a *centered* text reads ~50%; a *leading* text reads in the low-to-mid 20s–30s depending on caller padding.
+- Estimate **icon x%** = visual center of the icon's bounding box, as a percentage of canvas width. A *trailing* icon reads in the high 80s–low 90s.
+- Compute `delta_text = |figma_text_x% - sim_text_x%|`, `delta_icon = |figma_icon_x% - sim_icon_x%|`. **Threshold 3pp on either axis** — ≥ 3pp is `FAIL high`. The example row above (Continue: figma text x%=50, sim text x%=32, delta 18) is exactly the HStack-Spacer-instead-of-ZStack-overlay bug.
+
+If the button has only text (no icon), write `n/a` in both icon columns and apply the 3pp threshold to text x% alone. If no button has composite content, write a single row `n/a — no composite buttons on screen` (still write the block — Gate C5 verifies its presence).
+
+**Navigation visibility check (mandatory).** Read Figma intent from `screenshot-cmp.png`:
+- **Nav bar shown in Figma** = the top ~44–50pt of the canvas renders a system-style bar (centered title OR large-title block, leading back chevron if not root, system font weight, ~opaque background extending edge-to-edge). When Figma's top area is instead a **custom content block** (gradient header, illustration, branded headline with custom font/color/icon, hero image) → nav bar should be **hidden**.
+- **Tab bar shown in Figma** = the bottom ~50–80pt renders a row of tab icons + labels (typically 3–5 evenly spaced, with a top separator hairline). If Figma's bottom is scrollable content, empty padding, or a single full-width CTA → tab bar should be **hidden** at this screen.
+
+For each row, compute `match` from `figma shows? == sim shows?`. Any mismatch = **FAIL high**. Typical fixes: `.toolbar(.hidden, for: .navigationBar)` / `.toolbar(.hidden, for: .tabBar)` on the screen body, or remove an existing hide-modifier when Figma intends the bar visible. See `references/visual-fidelity.md` §"NavigationStack" for the API matrix.
+
+If the screen is not nested in a NavigationStack / TabView at the C5 entry path (e.g. root view that owns the NavigationStack, full-screen cover with no toolbar context, sheet at `.fullScreenCover`) → write a single row `| both | n/a | n/a | N/A | not nested in NavigationStack/TabView at this entry path |` instead of the two-row form. Gate C5 requires the block to exist; if N/A, the row's note is the gate's evidence the agent considered it.
+
+The negative spot-check exists because the structured table is biased toward "does Figma's element appear in the simulator" — it never asks the inverse, so spurious extra simulator content (e.g. system-chrome redraws, debug overlays, leftover placeholder text) routinely escapes detection. The button width check exists because the structured table compares position percentages but rarely catches *width* mismatches at primary-CTA scale; a button stretched from 343pt to 393pt is the most common silent C5 escape. The button internal layout check exists because button width is blind to *what's inside* the button's drawing rect — the button can be 343pt wide (perfect width-PASS) while its label sits at the leading edge instead of the geometric center; the C3 Pass 2 `AL` letter checks `.multilineTextAlignment(.center)` is present but a Text inside an HStack-with-Spacer pattern still reads as left-aligned, and the 3-axis table's LY axis routinely PASSes on "internal spacing" because the agent reads the spacing relative to siblings (correct in HStack) instead of relative to the button's full width (wrong vs Figma). The navigation visibility check exists because hiding/showing the system nav bar or tab bar is a single modifier the agent routinely forgets to emit — the offline C3 Pass 2 has no check letter for toolbar visibility, and the 3-axis table treats the bar as either "missing element" or "extra element" only when the agent thinks to list it as a section, which they often don't because system chrome looks "native" and reads past the eye.
 
 #### C5.6.7 — Self-attestation
 

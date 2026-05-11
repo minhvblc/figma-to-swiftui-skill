@@ -18,6 +18,12 @@
 #   9. "## Attestation" present
 #  10. No weasel words in PASS rows (delegates to c5-weasel-detect.sh)
 #  11. "## Button width check" block present with ≥1 row (Figma vs sim width %)
+#  12. "## Navigation visibility check" block present with ≥1 row
+#      (nav bar / tab bar figma-shows? vs sim-shows?, or single n/a row when
+#       screen is not nested in a NavigationStack/TabView)
+#  13. "## Button internal layout check" block present with ≥1 row
+#      (per-button text x% / icon x% Figma vs sim, 3pp threshold; n/a row when
+#       no composite buttons (text+icon) on screen)
 #
 # Usage:
 #   c5-coverage-check.sh --cache <.figma-cache/nodeId>
@@ -232,6 +238,69 @@ if grep -q '^## Button width check' "$DIFF"; then
   fi
 else
   bad "## Button width check block missing — add per-button width comparison (3pp threshold) or 'n/a — no buttons on screen' if none"
+fi
+
+# 13. Button internal layout check — block must exist with ≥1 populated row.
+#     Per-button text x% / icon x% Figma vs sim with a 3pp threshold (per
+#     `references/verification-loop.md` §C5.6.6). Catches HStack-Spacer-
+#     instead-of-ZStack-overlay bug where Button width PASSes but text is
+#     left-aligned in sim when Figma had it centered.
+#     For screens with no composite buttons: single row
+#     `| n/a — no composite buttons on screen | n/a | n/a | n/a | n/a | N/A |`
+if grep -q '^## Button internal layout check' "$DIFF"; then
+  BIL_ROWS=$(awk '
+    /^## Button internal layout check/ { in_block=1; next }
+    /^## /                              { in_block=0 }
+    in_block && /^\| *[A-Za-z"`]/ {
+      n=split($0, cells, "|")
+      empties=0; total=0
+      for (i=2; i<n; i++) {
+        v=cells[i]; gsub(/^ +| +$/, "", v)
+        total++
+        if (v=="") empties++
+      }
+      if (total>=4 && empties==0) print
+    }
+  ' "$DIFF" | wc -l | tr -d ' ')
+  if [ "$BIL_ROWS" -ge 2 ]; then
+    ok "## Button internal layout check: $BIL_ROWS populated row(s) (header + data)"
+  else
+    bad "## Button internal layout check has $BIL_ROWS populated row(s); expected ≥ 2 (header + ≥ 1 data row, use '| n/a — no composite buttons on screen | n/a | n/a | n/a | n/a | N/A |' if none)"
+  fi
+else
+  bad "## Button internal layout check block missing — add per-button text/icon x% comparison (3pp threshold) or 'n/a — no composite buttons on screen' if none"
+fi
+
+# 12. Navigation visibility check — block must exist with ≥1 populated row.
+#     For screens inside a NavigationStack/TabView: 2 rows (nav bar, tab bar)
+#     with figma-shows? / sim-shows? / match / note. Mismatch = FAIL high
+#     (caught upstream by the agent — this script only verifies the BLOCK is
+#     present and populated, same shape as Button width check).
+#     For screens not nested: a single row `| both | n/a | n/a | N/A | ... |`.
+#     Per `references/verification-loop.md` §C5.6.6.
+if grep -q '^## Navigation visibility check' "$DIFF"; then
+  NV_ROWS=$(awk '
+    /^## Navigation visibility check/ { in_block=1; next }
+    /^## /                            { in_block=0 }
+    in_block && /^\| *[A-Za-z"`]/ {
+      n=split($0, cells, "|")
+      empties=0; total=0
+      for (i=2; i<n; i++) {
+        v=cells[i]; gsub(/^ +| +$/, "", v)
+        total++
+        if (v=="") empties++
+      }
+      if (total>=4 && empties==0) print
+    }
+  ' "$DIFF" | wc -l | tr -d ' ')
+  # ≥ 2: header row + ≥ 1 data row (data row = nav-bar/tab-bar/both/n-a).
+  if [ "$NV_ROWS" -ge 2 ]; then
+    ok "## Navigation visibility check: $NV_ROWS populated row(s) (header + data)"
+  else
+    bad "## Navigation visibility check has $NV_ROWS populated row(s); expected ≥ 2 (header + ≥ 1 data row, use '| both | n/a | n/a | N/A | not nested in NavigationStack/TabView |' if screen has no toolbar context)"
+  fi
+else
+  bad "## Navigation visibility check block missing — add nav bar / tab bar visibility comparison (figma-shows vs sim-shows, mismatch = FAIL high) or single n/a row if screen not in NavigationStack/TabView"
 fi
 
 # 10. Weasel detector — delegate to the standalone script.
