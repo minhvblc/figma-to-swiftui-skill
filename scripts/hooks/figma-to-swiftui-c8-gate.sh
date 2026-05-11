@@ -231,6 +231,21 @@ if [[ "$base" == *View ]] && [[ "$base" != *Screen ]] \
   add_violation "$rel: '$base.swift' should declare a struct named '$base'"
 fi
 
+# 3b. #Preview block required in parent *Screen.swift files.
+# Engine A (xcode MCP RenderPreview) snapshots the file's top-level #Preview
+# directly — without it, C5 falls back to the slower xcodebuild/simctl path
+# and the user pays the SPM-resolve + simctl-cold-start penalty. SKILL.md C2
+# critical rules mandate this. Subviews (under Subviews/) and ViewModels are
+# exempt — #Preview is only required on the parent screen file.
+if [[ "$base" == *Screen ]] && [[ "$base" != *Screens ]] \
+     && [[ "$parent_name" != "Subviews" ]] \
+     && [[ "$parent_name" != "Models" ]] \
+     && [[ "$parent_name" != "Enums" ]] \
+     && [[ "$parent_name" != "SubViewModels" ]] \
+     && ! grep -qE '^[[:space:]]*#Preview[[:space:]]*\{?' "$FILE_PATH"; then
+  add_violation "$rel: missing top-level '#Preview { … }' block (required for C5 Engine A RenderPreview — see SKILL.md §C2)"
+fi
+
 # ── 4. ViewModel content checks ─────────────────────────────────────────────
 if [[ "$base" == *ViewModel ]]; then
   if ! grep -qE '@MainActor' "$FILE_PATH"; then

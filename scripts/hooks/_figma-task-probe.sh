@@ -63,7 +63,10 @@ done
 # Transcript signals (1) + (2) — URL paste OR figma tool/skill use
 TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null)
 if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
-  FIGMA_SIGNAL='figma\.com/|"skill":[[:space:]]*"figma-to-swiftui|"skill":[[:space:]]*"figma-flow-to-swiftui-feature|"name":[[:space:]]*"mcp__[A-Za-z0-9_]*[Ff]igma|"name":[[:space:]]*"figma_(extract_tokens|extract_fills|export_assets|export_assets_unified|build_registry|list_assets)'
+  # Figma URL must use Figma's actual app paths (design/file/board/slides/make).
+  # Plain `figma.com/` substring would false-match URLs like
+  # `mycompany.com/figma.com/foo` or stray prose mentions.
+  FIGMA_SIGNAL='figma\.com/(design|file|board|slides|make)/|"skill":[[:space:]]*"figma-to-swiftui|"skill":[[:space:]]*"figma-flow-to-swiftui-feature|"name":[[:space:]]*"mcp__[A-Za-z0-9_]*[Ff]igma|"name":[[:space:]]*"figma_(extract_tokens|extract_fills|export_assets|export_assets_unified|build_registry|list_assets)'
   if grep -qE "$FIGMA_SIGNAL" "$TRANSCRIPT_PATH" 2>/dev/null; then
     echo "yes"
     exit 0

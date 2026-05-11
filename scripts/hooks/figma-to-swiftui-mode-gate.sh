@@ -98,9 +98,26 @@ if [ ! -s "$MODE_JSON" ]; then
   exit 2
 fi
 
-# ── 2. mode == ambiguous needs explicit user confirmation ────────────────────
+# ── 2. mode.json must parse — fail closed if jq returns empty for a
+#       non-empty file (corrupted JSON, truncated write, manual edit gone
+#       wrong). Previously this silently fell through and allowed the write.
 MODE=$(jq -r '.mode // empty' "$MODE_JSON" 2>/dev/null)
 CONFIRMED=$(jq -r '.userConfirmed // false' "$MODE_JSON" 2>/dev/null)
+if [ -s "$MODE_JSON" ] && [ -z "$MODE" ]; then
+  {
+    echo "BLOCKED: mode.json exists but jq could not extract .mode."
+    echo ""
+    echo "File:   $MODE_JSON"
+    echo "Likely: corrupted JSON, truncated write, or hand-edit gone wrong."
+    echo ""
+    echo "Fix:"
+    echo "  cat $MODE_JSON      # inspect"
+    echo "  bash scripts/mode-detect.sh <projectFolder> --write-cache  # regenerate"
+  } >&2
+  exit 2
+fi
+
+# ── 3. mode == ambiguous needs explicit user confirmation ────────────────────
 if [ "$MODE" = "ambiguous" ] && [ "$CONFIRMED" != "true" ]; then
   {
     echo "BLOCKED: project mode is \"ambiguous\" — explicit user confirmation required."
@@ -122,7 +139,7 @@ if [ "$MODE" = "ambiguous" ] && [ "$CONFIRMED" != "true" ]; then
   exit 2
 fi
 
-# ── 3. mode == greenfield-* needs a scaffold to have produced an .xcodeproj ──
+# ── 4. mode == greenfield-* needs a scaffold to have produced an .xcodeproj ──
 # Skip this check when the agent is writing the very first scaffold-output
 # files — they MUST land before .xcodeproj exists on disk for a brief window.
 # Heuristic: scaffold writes happen inside the cache's parent project root and

@@ -51,34 +51,35 @@ case "$COMMAND" in
 esac
 
 # ── 3. Inspect command for build/run intent ───────────────────────────────────
-# Look for the build keywords on the same word as xcodebuild OR within the
-# command following it. We match liberally on a substring basis; the read-only
-# allow-list below pre-empts the false positives.
+# Word-bounded match for build verbs. This handles two cases the previous
+# substring scheme got wrong:
+#   - `xcodebuild -showBuildSettings` — "Build" inside a flag name is NOT a
+#     standalone verb, regex \b(build|...)\b doesn't match (no word boundary
+#     between "show" and "Build" — both are word chars). Stays allowed.
+#   - `xcodebuild -list && xcodebuild build` — compound command with a build
+#     segment. The first allow-list pattern *xcodebuild*-list* used to win
+#     and bypass the entire gate. Now: presence of \bbuild\b anywhere in
+#     the command (with xcodebuild also present) flips NEEDS_GATE; compound
+#     commands no longer slip through.
+#
+# Read-only forms (`-list`, `-version`, `-showsdks`, `-showBuildSettings`,
+# `-help`, `simctl list`, `simctl getenv`) never contain the verb words so
+# they fall through NEEDS_GATE=0 and exit naturally — no allow-list needed.
 NEEDS_GATE=0
-case "$COMMAND" in
-  *xcodebuild*build*)   NEEDS_GATE=1 ;;
-  *xcodebuild*test*)    NEEDS_GATE=1 ;;
-  *xcodebuild*archive*) NEEDS_GATE=1 ;;
-  *xcodebuild*clean*)   NEEDS_GATE=1 ;;
-  *xcodebuild*run*)     NEEDS_GATE=1 ;;
-  *xcrun*simctl*boot*)         NEEDS_GATE=1 ;;
-  *xcrun*simctl*install*)      NEEDS_GATE=1 ;;
-  *xcrun*simctl*launch*)       NEEDS_GATE=1 ;;
-  *xcrun*simctl*io*screenshot*) NEEDS_GATE=1 ;;
-esac
+if printf '%s' "$COMMAND" | grep -qE '\bxcodebuild\b' \
+   && printf '%s' "$COMMAND" | grep -qiE '\b(build|test|archive|clean|run)\b'; then
+  NEEDS_GATE=1
+fi
+if printf '%s' "$COMMAND" | grep -qE '\bsimctl\b' \
+   && printf '%s' "$COMMAND" | grep -qE '\b(boot|install|launch)\b'; then
+  NEEDS_GATE=1
+fi
+# simctl io screenshot specifically — verb "screenshot" with "io" subcommand.
+if printf '%s' "$COMMAND" | grep -qE '\bsimctl\b.*\bio\b.*\bscreenshot\b'; then
+  NEEDS_GATE=1
+fi
 
 [ "$NEEDS_GATE" = "0" ] && exit 0
-
-# Allow-list pre-empts the gate: read-only inspection commands stay free.
-case "$COMMAND" in
-  *xcodebuild*-list*)              exit 0 ;;
-  *xcodebuild*-version*)           exit 0 ;;
-  *xcodebuild*-showsdks*)          exit 0 ;;
-  *xcodebuild*-showBuildSettings*) exit 0 ;;
-  *xcodebuild*-help*)              exit 0 ;;
-  *xcrun*simctl*list*)             exit 0 ;;
-  *xcrun*simctl*getenv*)           exit 0 ;;
-esac
 
 # ── 4. Probe Engine A availability ────────────────────────────────────────────
 MCPBRIDGE_OK=0
