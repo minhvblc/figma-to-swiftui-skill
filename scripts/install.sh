@@ -45,6 +45,7 @@ INSTALL_HOOKS=1
 PINNED_VERSION=""
 ASSUME_YES=0
 FORCE_SCOPE=""   # "" (default user-level) | "user" | "project"
+TOTAL_GATES=""   # set by the hook-install Python heredoc (len(GATES)); empty if hooks skipped
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --symlink) SYMLINK_SKILLS=1; shift ;;
@@ -403,9 +404,11 @@ else
     fi
     mkdir -p "$(dirname "$SETTINGS")"
 
-    python3 - "$SETTINGS" <<'PY'
+    GATES_COUNT_FILE=$(mktemp -t figma-gates-count.XXXXXX)
+    python3 - "$SETTINGS" "$GATES_COUNT_FILE" <<'PY'
 import json, os, sys
 path = sys.argv[1]
+gates_count_path = sys.argv[2]
 try:
     with open(path) as f:
         cfg = json.load(f)
@@ -449,8 +452,13 @@ with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
     f.write("\n")
 
+with open(gates_count_path, "w") as cf:
+    cf.write(str(len(GATES)))
+
 print(f"REGISTERED {added}")
 PY
+    TOTAL_GATES=$(cat "$GATES_COUNT_FILE")
+    rm -f "$GATES_COUNT_FILE"
     echo "  $(green ✓) Patched $SETTINGS — gates run automatically next session"
     echo "      (PreToolUse — Phase A+B coverage gate, blocks .swift writes when"
     echo "         assets missing or registry coverage incomplete;"
@@ -514,7 +522,7 @@ echo "  • Skills installed  : ~/.claude/skills/figma-to-swiftui"
 echo "                        ~/.claude/skills/figma-flow-to-swiftui-feature"
 echo "  • Claude config     : $CONFIG"
 if [ "$INSTALL_HOOKS" = "1" ]; then
-  echo "  • Enforcement hooks : 8 gates registered in ~/.claude/settings.json"
+  echo "  • Enforcement hooks : ${TOTAL_GATES:-?} gates registered in ~/.claude/settings.json"
 else
   echo "  • Enforcement hooks : $(yellow "skipped (--no-hooks)")"
 fi
