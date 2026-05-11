@@ -103,16 +103,24 @@ OPTIONS:
 
 ### Skill invocation (greenfield path)
 
-**Preferred entry:** call `scripts/ikxcodegen-wrap.sh` instead of `ikxcodegen` directly. The wrapper is a drop-in replacement that auto-fixes two friction points observed in real runs:
+**Preferred entry:** call `scripts/ikxcodegen-wrap.sh` instead of `ikxcodegen` directly. The wrapper is a drop-in replacement that auto-fixes three friction points observed in real runs:
 
 1. **CocoaPods + Ruby 4 unicode bug** (`Encoding::CompatibilityError` when `pod install` sees a non-UTF-8 `LANG`). The wrap sets `LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8` in the subshell.
-2. **`Copy InfoPlist` Run Script fails when `GOOGLE_SERVICE_INFO_NAME` is unset.** ikxcodegen ships the xcconfig files but doesn't wire them as the Configuration's xcconfig source, so the variable resolves to empty at build time. The wrap patches build settings to point at `GoogleService-Info-Firebase.plist` (dev) by default.
+2. **xcconfig files are shipped but not wired (the semantic fix).** ikxcodegen produces `<Project>/Environments/{firebase,appstore}{,-debug}.xcconfig` and adds them as PBXFileReference entries, but the app target's Debug + Release Configurations have `Based on Configuration File: None` — every xcconfig setting (`GOOGLE_SERVICE_INFO_NAME`, custom build flags, archive flags) resolves to empty at build time. **The wrap edits pbxproj to set `baseConfigurationReference`** on each Configuration of the app target (`PBXNativeTarget` whose `name == <ProjectName>`). Defaults match Ikame template's standard layout:
+   - Debug Configuration → `firebase-debug.xcconfig` (override via `--debug-xcconfig <file>`)
+   - Release Configuration → `appstore.xcconfig` (override via `--release-xcconfig <file>`)
 
-The wrap accepts every flag `ikxcodegen` accepts and adds one extra:
+   Test targets (`<Project>Tests`, `<Project>UITests`) are NOT touched — `pod install` wires their `Pods-<Project>Tests.{debug,release}.xcconfig` automatically via CocoaPods. The wrap only owns the app target's Configuration wiring.
+
+3. **`Copy InfoPlist` Run Script fails when `GOOGLE_SERVICE_INFO_NAME` is unset (fallback only).** Used only when (2) fails (xcconfig file missing from project, unexpected pbxproj structure). The wrap patches `buildSettings` directly with `GOOGLE_SERVICE_INFO_NAME = <plist>`. This is a symptom-fix for one variable; (2) is the semantic fix for all xcconfig settings. **When (2) succeeds the wrap explicitly SKIPS (3)** — because `buildSettings` overrides `xcconfig`, applying both would silently break future xcconfig edits (the developer thinks they're editing the source of truth but the buildSetting hijacks the value).
+
+The wrap accepts every flag `ikxcodegen` accepts and adds three extras:
 
 | New flag | Effect |
 |---|---|
-| `--google-plist <filename>` | Sets `GOOGLE_SERVICE_INFO_NAME` in build settings. Default `GoogleService-Info-Firebase.plist` (dev). Pass `GoogleService-Info-Appstore.plist` for production-config builds. |
+| `--debug-xcconfig <filename>` | xcconfig file wired into the Debug Configuration's `baseConfigurationReference`. Default `firebase-debug.xcconfig`. Must exist as a PBXFileReference in the generated pbxproj (ikxcodegen ships the standard 4; override only for custom templates). |
+| `--release-xcconfig <filename>` | xcconfig file wired into the Release Configuration's `baseConfigurationReference`. Default `appstore.xcconfig`. |
+| `--google-plist <filename>` | **Fallback only** — sets `GOOGLE_SERVICE_INFO_NAME` directly in `buildSettings` when xcconfig wire (step 2) fails. Default `GoogleService-Info-Firebase.plist`. Ignored when the wire succeeds. |
 
 Arguments are derived from input:
 
@@ -139,16 +147,18 @@ ikxcodegen MyAuthApp \
 ```
 
 **When to NOT use the wrap:**
-- `pod install` will be skipped (`--skip-pods` or offline) AND the agent will manually wire xcconfigs to the build configurations themselves. Then `ikxcodegen` raw is fine.
+- The project uses a custom Configuration scheme (Staging/Beta/etc. in addition to Debug/Release). The wrap only wires Debug + Release; Staging needs manual wiring after. `ikxcodegen` raw + manual wiring is fine for that case.
 - Project doesn't use the Firebase config flow (rare in Ikame).
 
 **Wrap exit codes** (distinct from raw `ikxcodegen`):
-- `0` — scaffold + pod install succeeded; build settings patched
+- `0` — scaffold + pod install succeeded; xcconfig wired (§3a) OR buildSetting fallback applied (§3b). The final summary line tells you which path.
 - `1` — ikxcodegen itself failed
 - `2` — pod install failed even with LANG fix → surface verbatim, do NOT retry
-- `3` — build settings patch failed (project file format unexpected — likely ikxcodegen template changed) → surface and ask user
+- `3` — BOTH §3a (xcconfig wire) AND §3b (buildSetting fallback) failed → surface and ask user; usually means the pbxproj structure diverged from ikxcodegen's standard template
 - `64` — bad usage
 - `65` — `ikxcodegen` not on PATH (see §2 install)
+
+**Verifying the xcconfig wire after wrap exits:** open `<ProjectName>.xcodeproj` in Xcode → Project → Info → Configurations. Debug should show `firebase-debug.xcconfig` (or whatever `--debug-xcconfig` was set to) under "Based on Configuration File" for the app target row, and Release should show `appstore.xcconfig`. Test targets show `Pods-...debug.xcconfig` / `Pods-...release.xcconfig` (wired by `pod install` independently). If any app-target row shows `None` after the wrap exited 0, the wire silently no-op'd — re-run with `--verbose` and report the §3a output.
 
 After successful exit:
 - `<output>/<ProjectName>.xcodeproj` exists
