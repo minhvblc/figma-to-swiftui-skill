@@ -292,3 +292,126 @@ Rules:
 - Check project deps for Lottie — use if present
 - Don't over-animate. Prototype links = navigation, not custom animation.
 - Complex choreographed animations → ask user whether to implement fully or simplify
+
+---
+
+## Component Variants (State / Size / Style / Content)
+
+Figma components use variant properties (`State=Default|Pressed|Disabled|Loading`, `Size=S|M|L`, `Style=Primary|Secondary|Destructive`, `HasIcon=true|false`). Fetch all variants of a component set via `get_metadata` on sibling nodes, then `get_design_context` on each.
+
+### State variants — prefer system states first
+
+| Figma state | SwiftUI |
+|---|---|
+| Pressed | `configuration.isPressed` inside `ButtonStyle.makeBody(configuration:)` |
+| Disabled | `@Environment(\.isEnabled)` in style, or `.disabled(true)` at call site |
+| On/Off (toggle) | `configuration.isOn` inside `ToggleStyle` |
+| Focused | `@FocusState` + `.focused()` modifier |
+| Selected (in list/picker) | Selection binding in List/Picker |
+| Loading / Error / Empty / Skeleton | Custom enum, drive with `@State` or ViewModel |
+
+```swift
+enum ButtonLoadingState { case idle, loading, success, error }
+
+struct PrimaryButtonStyle: ButtonStyle {
+    let loadingState: ButtonLoadingState
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.7 : 1.0)
+            .opacity(isEnabled ? 1.0 : 0.5)
+            .overlay { if loadingState == .loading { ProgressView() } }
+            .allowsHitTesting(loadingState != .loading)
+    }
+}
+```
+
+**Rule:** if a Figma state matches a system state, use the system mechanism. Custom enum only when system has no equivalent.
+
+### Size variants
+
+- System controls (Button, Toggle, Picker) → `.controlSize(.mini/.small/.regular/.large/.extraLarge)`
+- Custom components → custom enum + switch on size in style body
+
+### Style / Type variants
+
+- **One style + enum parameter** when differences are minimal (colors, borders): `enum ButtonVariant { case primary, secondary, destructive }` + switch on variant for `foregroundColor` / `backgroundColor` / `borderColor`.
+- **Separate styles** when layout / structure differs significantly: `FloatingButtonStyle` (icon-only circular shadow) vs `TextLinkButtonStyle` (underlined text, no background).
+
+### Content toggles
+
+- **Optional parameters** for simple slots: `var subtitle: String? = nil`; conditionally render `if let subtitle { ... }`.
+- **`@ViewBuilder` generics** when slot content varies in structure:
+  ```swift
+  struct CardView<Header: View, Footer: View>: View {
+      @ViewBuilder let header: Header
+      @ViewBuilder let footer: Footer
+      var body: some View { VStack { header; Text(title); footer } }
+  }
+  ```
+
+---
+
+## Responsive Layout (iPhone + iPad)
+
+### When to ask about device support
+
+- Figma frame 375-430pt (iPhone) + project targets iPad → **ask user** if iPad adaptation is needed
+- Multiple frames (iPhone + iPad in Figma) → fetch all, ask user how to combine
+- Figma frame 744-1024pt (iPad) only → ask if iPhone support is needed
+
+**Do not assume. Always confirm device scope.**
+
+### Figma fixed values → adaptive
+
+| Figma | SwiftUI |
+|---|---|
+| Full-screen width (375/390/393/430) | `.frame(maxWidth: .infinity)` — never `.frame(width: 375)` |
+| Fixed-size elements (icons, avatars, badges) | Keep `.frame(width:, height:)` — intentionally fixed |
+| Content containers with fixed width (e.g. 343 in 375pt = 91.5%) | `.containerRelativeFrame(.horizontal) { length, _ in length * 0.915 }` (iOS 17+) OR `GeometryReader` |
+
+**Banned:** `UIScreen.main.bounds` — breaks in Split View / Slide Over / Stage Manager. Use `containerRelativeFrame` or `GeometryReader`.
+
+### Size classes for layout switching
+
+```swift
+@Environment(\.horizontalSizeClass) private var sizeClass
+
+if sizeClass == .compact {
+    NavigationStack { ItemList() }       // iPhone portrait, iPad split/slide-over
+} else {
+    NavigationSplitView {                // iPad full-screen
+        ItemList()
+    } detail: { ItemDetail() }
+}
+```
+
+**Use size classes when:** layouts are fundamentally different (list vs grid, single-column vs sidebar+content, stacked vs side-by-side).
+
+**Do NOT use size classes when** layouts are the same just wider — use `maxWidth: .infinity` instead.
+
+### Common patterns
+
+| Figma | SwiftUI |
+|---|---|
+| Sidebar + content (iPad) | `NavigationSplitView` |
+| 2-col grid (iPad) → 1-col (iPhone) | `LazyVGrid` with `GridItem(.adaptive(minimum: 160))` |
+| Full-width card (iPhone) + constrained card (iPad) | `.frame(maxWidth: 600)` inside `.frame(maxWidth: .infinity)` parent |
+| Horizontal tabs (iPad) → bottom tab bar (iPhone) | `TabView` (system handles) or switch on sizeClass |
+
+### `ViewThatFits` (iOS 16+)
+
+When Figma shows two layout variants without device tie:
+
+```swift
+ViewThatFits(in: .horizontal) {
+    HStack { icon; label; Spacer(); value }   // try first
+    VStack(alignment: .leading) {              // fall back
+        HStack { icon; label }
+        value
+    }
+}
+```
+
+Best for: action bars, label+value pairs, tag rows.

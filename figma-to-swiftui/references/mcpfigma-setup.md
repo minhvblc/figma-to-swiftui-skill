@@ -344,3 +344,70 @@ Projects with multiple `.xcassets` (per-target, per-feature, modular) cannot be 
 | Multiple `.xcassets` error | Project has > 1 catalog | Pass `assetCatalogPath` directly; B0 handles this |
 | Claude doesn't see the tools after install | Claude wasn't restarted | Cmd+Q and reopen |
 | `tools/list` shows `mcp__figma__get_figma_data` / `mcp__figma__download_figma_images` but not `figma_build_registry` | A different Figma MCP (Framelink / `figma-developer-mcp`) is registered instead of MCPFigma | **Do NOT use the substitute** — its output shape breaks every gate. Install MCPFigma per the steps above, then verify with `scripts/doctor.sh`. See `figma-to-swiftui/SKILL.md` §"BANNED substitute MCPs" for the full ban list. |
+
+---
+
+## Registry-empty cases — P0 STOP
+
+When `figma_build_registry` returns empty `screens[]`, the agent MUST stop and resolve **before** writing any Swift view file. Hard precondition, not soft warning. The most common failure mode (anti-patterns §13 "template-from-doc") starts here: agent sees empty `screens[]`, reads the product doc, builds 30 generic views from doc wording without per-screen `get_design_context`. The simulator shows screens; the screens DO NOT match Figma. STOP exists because by the time the agent realizes, cost-to-fix is 30 redo cycles.
+
+### Case 1 — `candidateScreens[]` populated
+
+Root is a Group; MCPFigma surfaces phone-sized FRAMEs nested inside:
+
+```json
+{
+  "screens": [],
+  "candidateScreens": [
+    { "nodeId": "1:793", "name": "Intro 1", "type": "FRAME", "width": 375, "height": 812 },
+    ...
+  ],
+  "warnings": [{ "reason": "ROOT_IS_GROUP: root is a GROUP, found 47 phone-sized FRAMEs" }]
+}
+```
+
+**Workflow:**
+1. Surface to user: *"Registry detected root is a Group, not a Board. Found N candidate phone-sized frames. Treating `candidateScreens[]` as the screen list."*
+2. Treat `candidateScreens` as `screens` for every downstream step — these ARE the screens, MCPFigma just couldn't classify via Board-children path.
+3. Fetch Phase A artifacts per candidate. No shortcuts. Each `candidateScreen.nodeId` gets `get_design_context` + `get_screenshot` + `figma_export_assets_unified`.
+4. Cross-reference doc: if doc lists 30 screens AND `candidateScreens.length === 30`, wire each to a section. Counts differ → surface discrepancy, do NOT silently pick a subset.
+5. Update `c1-conventions.json` to note candidateScreens as authoritative for this run.
+
+**Banned:** skipping Phase A for any candidate "they look similar"; building a generic template + doc strings; picking "first 5 representative"; treating candidateScreens as untrustworthy.
+
+### Case 2 — both `screens[]` AND `candidateScreens[]` empty
+
+```json
+{
+  "screens": [],
+  "candidateScreens": [],
+  "warnings": [],
+  "recommendedNextCall": {
+    "tool": "figma_build_registry",
+    "argsTemplate": { "nodeId": "<a CANVAS or PAGE ancestor>", "depth": "5" }
+  }
+}
+```
+
+**Workflow:**
+1. **Hard STOP.** No Phase A, no Phase B, no Swift writes.
+2. Diagnose: `get_metadata(nodeId: <current root>, depth: 1)`. Check `rootNode.type` (`PAGE`/`CANVAS` with no FRAMEs = empty page), and child types/widths.
+3. Find correct rootNodeId: usually CANVAS/PAGE parent (URL `?node-id=1-2` typically points to a frame; the page is at `0:1`). Or next ancestor with multiple FRAME children at 375pt. Or different Figma file entirely — verify with user.
+4. Re-run `figma_build_registry` with new rootNodeId. Document in `c1-conventions.json` under `figmaRootNodeId`.
+
+**Banned:** proceeding with 0 screens; inferring screens from asset names like `eICBackground375x812`; building off the product doc alone; asking user "what should I do?" — propose 2-3 candidate rootNodeIds based on `get_metadata` evidence.
+
+### Gate enforcement
+
+- `figma-to-swiftui-gate.sh` (PreToolUse) blocks Swift writes when `manifest.phaseA != "done"` — empty registry cascades naturally.
+- Stop-gate `c6-asset-completeness.sh` flags Swift screen files with no matching cache directory — 30 fake screens fail this gate.
+
+---
+
+## Remote vs Desktop figma-desktop MCP
+
+**Remote MCP** (mcp.figma.com): requires `fileKey` and `nodeId` from URLs.
+
+**Desktop MCP**: connects to the Figma desktop app directly. No `fileKey` needed (uses currently open file); supports selection-based prompting; requires Figma desktop running; only works with currently open file.
+
+The skill's `Prerequisites` section of `SKILL.md` covers connection check (`get_metadata` + `figma_build_registry`) and sanity-checking response shape against banned substitute MCPs.

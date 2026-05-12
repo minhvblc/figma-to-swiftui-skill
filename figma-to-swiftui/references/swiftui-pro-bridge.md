@@ -1,169 +1,149 @@
 # swiftui-pro Bridge for Figma → SwiftUI
 
-This doc bridges what Figma's spec gives you with what `swiftui-pro` requires. The 9 reference files in `swiftui-pro/` are canonical — do not duplicate rule text here. This bridge only adds:
+Bridges Figma spec with swiftui-pro requirements. The consolidated [`swiftui-pro-rules.md`](swiftui-pro-rules.md) is canonical — this bridge adds tension resolutions, transform tables, iOS 16 fallbacks, and project-context branches.
 
-1. Tension resolutions when Figma intent appears to conflict with swiftui-pro
-2. Transform tables that convert naive Figma→SwiftUI output into compliant code
-3. iOS 16 baseline fallbacks for rules that target iOS 17/18/26
-4. Project-context branches that depend on Phase C1 audit flags
-
-Project baseline (locked): **iOS 16+**, **Localizable.xcstrings**, design constants enums **`Spacing`**, **`IKFont`**, **`IKCoreApp`**.
+Baseline: **iOS 16+**, **Localizable.xcstrings**, optional design enums `Spacing` / `IKFont` / `IKCoreApp`.
 
 ---
 
-## §1. Tension resolutions (read first)
+## §1. Tension resolutions
 
 ### 1a. Pixel fidelity vs "no hard-coded values"
 
-`design.md`: *"Avoid hard-coded values for padding and stack spacing unless specifically requested"*. Figma values ARE specifically requested — they're the spec. So:
+Figma values ARE the spec — they're specifically requested. Resolution:
 
-- **If `Spacing` enum exists in project (it does) → route Figma values through it.** `Spacing.l24` if `24` is defined; if no token matches, fall back inline.
-- **If no enum / no matching token → inline literal is compliant.** `.padding(24)` is fine because the value is specifically requested by the design.
-- **Never invent token names.** If Figma says 23pt and `Spacing.l24` is the closest, you have two choices: (a) use `Spacing.l24` with a comment if the user accepts the 1pt drift, or (b) use literal `23`. Do NOT add `Spacing.l23` to the enum without explicit user approval.
+- `Spacing` enum exists + token matches → route through it (`Spacing.l24`)
+- No enum / no matching token → inline literal compliant (`.padding(24)`)
+- **Never invent token names.** If Figma says 23pt and `Spacing.l24` is closest: use `Spacing.l24` with comment if user accepts 1pt drift, or use literal `23`. Do NOT add `Spacing.l23` without explicit user approval.
 
 ### 1b. Custom font sizes vs Dynamic Type
 
-`accessibility.md`: *"Do not force specific font sizes. Prefer Dynamic Type. If you need a custom font size, use @ScaledMetric"*. Figma typography is custom by definition.
-
-Decision tree per text style in inventory:
-1. Does the Figma size match a Dynamic Type role? (Body=17, Headline=17 semibold, Title2=22, Title3=20, Subheadline=15, Footnote=13, Caption=12, Caption2=11.) → use the role: `.font(.body)`, `.font(.headline)`, etc.
-2. Does the project's `IKFont` enum already define this typography? → use `IKFont.bodyMedium16` (or whatever the project's case names are; C1 audit lists them).
-3. Else → `@ScaledMetric var fontSize: CGFloat = <figma>` declared at the top of the View struct, then `.font(.system(size: fontSize, weight: <weight>))`. Never inline `.font(.system(size: 16))` without `@ScaledMetric` — it breaks Dynamic Type.
+For each text style:
+1. Matches Dynamic Type role? (Body=17, Headline=17 semibold, Title2=22, Title3=20, Subheadline=15, Footnote=13, Caption=12) → use role: `.font(.body)`
+2. `IKFont` enum already defines? → use `IKFont.bodyMedium16`
+3. Else → `@ScaledMetric var fontSize: CGFloat = <figma>` + `.font(.system(size: fontSize, weight:))`. **Never inline `.font(.system(size: 16))` without `@ScaledMetric`** — breaks Dynamic Type.
 
 ### 1c. Figma colors vs Asset Catalog
 
-Resolution order (highest priority first):
-1. If project has `IKCoreApp.colors.*` or similar token enum matching the Figma value → use that.
-2. Else if project asset catalog has a color asset matching the Figma value → `Color(.brandRed)` (iOS 17+ auto-generated `ColorResource` symbol — always available on Xcode 15+ baseline). The legacy `Color("brandRed")` string form is BANNED.
-3. Else if a light-only token exists in `Color+Tokens.swift` extension → `Color.brandRed` (static extension form).
-4. Else if `Color(hex:)` extension exists in project → `Color(hex: "#FF6600")`.
-5. Else `Color(red: 1.0, green: 0.4, blue: 0.0)` with a `// TODO: extract to asset catalog` comment.
+Resolution order:
+1. `IKCoreApp.colors.*` token match → use
+2. Asset catalog color asset → `Color(.brandRed)` (auto-generated `ColorResource`). String form `Color("brandRed")` BANNED.
+3. Light-only `Color+Tokens.swift` extension → `Color.brandRed`
+4. `Color(hex:)` extension exists → `Color(hex: "#FF6600")`
+5. `Color(red: 1.0, green: 0.4, blue: 0.0)` + `// TODO: extract to asset catalog`
 
-### 1d. Hard-coded strings vs xcstrings symbol API
+### 1d. Hard-coded strings vs xcstrings symbols
 
-Localization is **xcstrings (locked)**. Default codegen uses symbol-key API:
-
+xcstrings is canonical (locked baseline). Default emission:
 ```swift
 Text(.welcomeMessage)               // ✓ symbol from String Catalog Symbols
-Text("Welcome", bundle: .main)      // ✗ string literal — only when localization isn't desired
+Text("Welcome", bundle: .main)      // ✗ only when localization not desired
 ```
 
-Procedure: when emitting `Text(...)` for any user-facing string, add the key to the project's `Localizable.xcstrings` with `extractionState: "manual"`, then reference via the generated symbol. Offer to translate the new key into every language already in the catalog.
+Add key to `Localizable.xcstrings` with `extractionState: "manual"`, then reference via symbol. Offer to translate into existing catalog languages.
 
-If the project's xcstrings symbols haven't been generated yet, fall back to `Text("Welcome")` (which `LocalizedStringKey` picks up) and note it in the run summary so the user can enable `String Catalog Symbols` build setting.
+If catalog symbols not generated yet → `Text("Welcome")` (LocalizedStringKey picks up) + note in run summary.
 
 ### 1e. Re-using project tokens — search order
 
-For every Figma value (color, font, spacing, radius, animation), search project in this order:
-1. **Project color audit map** (`.figma-cache/_shared/project-colors.json`, emitted by `scripts/c1-project-color-audit.sh`) — for colors only, when the Figma hex matches an entry in `colors[].hex`, emit the entry's `swiftPath` directly (e.g. `Color(.primary500)` or `Color.brandSecondary`). This is the cheapest match and prevents inventing a parallel token.
-2. `IKCoreApp.colors.*`, `IKCoreApp.spacing.*`, etc. — top-level app tokens
+For every Figma value:
+1. Project color audit map (`.figma-cache/_shared/project-colors.json`) — for colors only; `swiftPath` from entry
+2. `IKCoreApp.colors.*`, `IKCoreApp.spacing.*` — top-level app tokens
 3. `Spacing.*`, `IKFont.*` — domain-specific enums
-4. Asset catalog symbol — `Color(.x)` (iOS 17+ auto-generated `ColorResource`, always available on Xcode 15+ baseline)
-5. Local computed constant in the same module
+4. Asset catalog symbol — `Color(.x)` (auto-generated `ColorResource`)
+5. Local computed constant in module
 6. Inline literal (last resort)
-
-C1 audit lists what's available **and** writes the color audit map; C2 picks the highest-priority match per value. For colors that survived to step 5+ but appear in `tokens.json` with both `lightHex` and `darkHex`, run `scripts/colorset-codegen.sh` to materialize them as colorsets first — that turns step 5 into step 4 for the next run.
 
 ---
 
-## §2. Always-on transforms (apply at C2, regardless of project context)
+## §2. Always-on transforms (apply at C2, every project)
 
-These rules apply on every emit, every project. The deployment target is **iOS 16+** so rules that need iOS 17+ have explicit fallbacks in §6.
-
-| # | Figma input | Naive output | swiftui-pro-compliant | Source rule |
-|---|---|---|---|---|
-| 1 | Bold weight on text | `.fontWeight(.bold)` | `.bold()` | design.md L27 |
-| 2 | Color modifier | `.foregroundColor(.red)` | `.foregroundStyle(.red)` | api.md L3 |
-| 3 | Top toolbar leading slot | `.toolbar { ToolbarItem(placement: .navigationBarLeading)` | iOS 17+ → `.topBarLeading`. **iOS 16 → keep `.navigationBarLeading` (mandatory fallback)**. Always emit comment marker. See §6. | api.md L11 |
-| 4 | Top toolbar trailing | as above | Same fallback. See §6. | api.md L11 |
-| 5 | Decorative Figma image | `Image(.decorativeBlob)` (no a11y) | `Image(decorative: .decorativeBlob)` | accessibility.md L6 |
-| 6 | Meaningful icon image | `Image(.icAIClose)` (no a11y) | `Image(.icAIClose).accessibilityLabel("Close")` (label derived from semantic Figma name) | accessibility.md L6 |
-| 7 | Icon-only `Button` | `Button { } label: { Image(...) }` | `Button("Close", systemImage: "xmark", action: close)` form OR keep custom label and add `.accessibilityLabel("Close")`. Never icon-only without a label. | accessibility.md L9 |
-| 8 | Tap action via gesture | `.onTapGesture { ... }` | `Button { ... } label: { ... }` | accessibility.md L12 |
-| 9 | Hide scroll indicators | `ScrollView(showsIndicators: false)` | `ScrollView { ... }.scrollIndicators(.hidden)` | api.md L17 |
-| 10 | Overlay with content | `.overlay(Text("..."), alignment: .top)` | `.overlay(alignment: .top) { Text("...") }` | api.md L10 |
-| 11 | Stroke + fill on shape | `Shape().fill(c).overlay(Shape().stroke(...))` | iOS 17+ → chained `.fill().stroke()`. **iOS 16 → keep overlay form**. See §6. | api.md L13 |
-| 12 | SwiftUI Preview | `struct V_Previews: PreviewProvider { static var previews: some View { ... } }` | `#Preview { V() }` | views.md L12 |
-| 13 | Conditional modifier | `if cond { v.opacity(0.5) } else { v }` | `v.opacity(cond ? 0.5 : 1)` | performance.md L3 |
-| 14 | Animation modifier | `.animation(.easeIn)` | `.animation(.easeIn, value: stateVar)` | views.md L20 |
-| 15 | Tap target < 44pt | raw `.frame(width: 24, height: 24)` on `Button` | `.contentShape(.rect).frame(minWidth: 44, minHeight: 44)` (or wrap content in 44+ frame) | design.md L12 |
-| 16 | View body length > ~40 lines | computed property `private var header: some View { ... }` | Extract to a separate `View` struct in its own file (vd. `LoginHeaderView.swift`) | views.md L3 |
-| 17 | Inline business logic in `body`/`task`/`onAppear` | `.task { try? await api.fetch() }` | Extract to method (`loadData()`) called from `.task`, or move to `@Observable` view model | views.md L4–7 |
-| 18 | Avoid `Image(systemName:)` for designed icons | `Image(systemName: "xmark")` | `Image(.icAIClose)` (downloaded in Phase B, referenced via iOS 17+ auto-generated `ImageResource` — never the string form `Image("icAIClose")`). Allowed exceptions: native `NavigationStack` back chevron, share-sheet icons. See ABSOLUTE RULE in SKILL.md. | (figma-to-swiftui rule, harmonizes with accessibility.md) |
-| 19 | `Text` concatenation with `+` | `Text("Hello") + Text("World")` | Interpolate: `let h = Text("Hello"); let w = Text("World"); Text("\(h)\(w)")` | api.md L18 |
-| 20 | `Group` wrapping single child | redundant `Group { ChildView() }` | Just `ChildView()` | (general SwiftUI hygiene) |
-| 21 | Nav title style | `.navigationTitle(...)` only | Confirm `.navigationBarTitleDisplayMode(.inline/.large)` matches Figma; use `Text(.titleKey)` symbol | navigation.md (general) |
-| 22 | Navigation route | `NavigationLink("Next", destination: NextView())` | `NavigationLink("Next", value: Route.next)` + `.navigationDestination(for: Route.self)` registered once on the stack root | navigation.md L4 |
-| 23 | Navigation root | `NavigationView` | `NavigationStack` (or `NavigationSplitView`) | navigation.md L3 |
+| # | Figma input | Naive | swiftui-pro-compliant |
+|---|---|---|---|
+| 1 | Bold text | `.fontWeight(.bold)` | `.bold()` |
+| 2 | Color modifier | `.foregroundColor(.red)` | `.foregroundStyle(.red)` |
+| 3 | Top toolbar leading | `.navigationBarLeading` | iOS 17+ → `.topBarLeading`. **iOS 16 → keep `.navigationBarLeading`** + comment marker |
+| 4 | Top toolbar trailing | same | Same fallback |
+| 5 | Decorative image | `Image(.decorativeBlob)` | `Image(decorative: .decorativeBlob)` |
+| 6 | Meaningful icon | `Image(.icAIClose)` | `Image(.icAIClose).accessibilityLabel("Close")` (label from semantic Figma name) |
+| 7 | Icon-only button | `Button { } label: { Image(...) }` | `Button("Close", systemImage: "xmark", action: close)` OR custom label + `.accessibilityLabel("Close")` |
+| 8 | Tap action via gesture | `.onTapGesture { ... }` | `Button { ... } label: { ... }` |
+| 9 | Hide scroll indicators | `ScrollView(showsIndicators: false)` | `ScrollView { ... }.scrollIndicators(.hidden)` |
+| 10 | Overlay with content | `.overlay(Text("..."), alignment: .top)` | `.overlay(alignment: .top) { Text("...") }` |
+| 11 | Stroke + fill on shape | overlay form | iOS 17+ → chained `.fill().stroke()`. **iOS 16 → keep overlay form** |
+| 12 | SwiftUI Preview | `struct V_Previews: PreviewProvider` | `#Preview { V() }` |
+| 13 | Conditional modifier | `if cond { v.opacity(0.5) } else { v }` | `v.opacity(cond ? 0.5 : 1)` |
+| 14 | Animation | `.animation(.easeIn)` | `.animation(.easeIn, value: stateVar)` |
+| 15 | Tap target < 44pt | raw `.frame(width: 24, height: 24)` on Button | `.contentShape(.rect).frame(minWidth: 44, minHeight: 44)` |
+| 16 | View body > ~40 lines with `@ViewBuilder` computed prop | extract to separate `View` struct in own file |
+| 17 | Inline business logic in `body`/`task`/`onAppear` | Extract to method or `@Observable` view model |
+| 18 | `Image(systemName:)` for designed icons | `Image(.icAIClose)` (Phase B downloaded). Allowed: native back chevron, share-sheet icons |
+| 19 | `Text + Text` concat | Interpolate: `Text("\(h)\(w)")` |
+| 20 | `Group` wrapping single child | Just `ChildView()` |
+| 21 | Nav title | `.navigationTitle(...)` + `.navigationBarTitleDisplayMode(.inline/.large)` + `Text(.titleKey)` symbol |
+| 22 | Navigation route | `NavigationLink("Next", value: Route.next)` + `.navigationDestination(for: Route.self)` |
+| 23 | Navigation root | `NavigationView` → `NavigationStack` |
 
 ---
 
 ## §3. Project-context-dependent transforms (C1 audit gates)
 
-Phase C1 sets these flags by inspecting the project AND writes them to `c1-conventions.json` (see [`adaptation-workflow.md` §0](adaptation-workflow.md#0-convention-probe-mandatory-run-before-the-audit) for the canonical shape). C2 reads the JSON and branches on each flag.
+C1 sets these flags in `c1-conventions.json`. C2 reads and branches.
 
-| Flag (in `c1-conventions.json`) | C1 detection | If TRUE | If FALSE |
+| Flag | C1 detection | If TRUE | If FALSE |
 |---|---|---|---|
-| `useGeneratedSymbols` | grep `pbxproj` for `GENERATE_ASSET_SYMBOLS = YES`; treat the flag's absence as `YES` on Xcode 15+ (default-on). Effectively always TRUE on the Xcode 15+ baseline this skill assumes. | Emit `Image(.icAIClose)`, `Color(.brandRed)` (iOS 17+ auto-generated `ImageResource` / `ColorResource`). | Only when project explicitly sets `GENERATE_ASSET_SYMBOLS = NO`. Then emit the legacy string form `Image("icAIClose")`, `Color("brandRed")`. The skill flags this on the run summary as a non-modern project. |
-| `useStringCatalogSymbols` | xcstrings present + `STRING_CATALOG_GENERATE_SYMBOLS = YES` | `Text(.welcomeMessage)` + add key to .xcstrings (extractionState: manual) + offer translate | `Text("Welcome")` (LocalizedStringKey infers) |
-| `spacingEnum` | grep `enum Spacing\|enum AppSpacing\|enum Padding` | Route Figma spacing values through `<enum>.<token>` | Inline literal `.padding(24)` |
-| `ikFontEnum` | grep `enum IKFont\|enum AppFont\|enum Typography` | Use `<enum>.<token>` for typography | `@ScaledMetric` + `.font(.system(size:weight:))` |
-| `colorEnum` | grep `enum IKCoreApp\|enum AppColors\|enum ColorPalette` | Use `<enum>.colors.<token>` etc. | Fallback by category (color asset / inline) |
-| `minDeploymentTarget` | read `IPHONEOS_DEPLOYMENT_TARGET` from pbxproj | gates §6 fallbacks | as decided by §6 |
-| `hasColorHexExtension` | grep `Color\(hex:` extension/init | use `Color(hex: "#FF6600")` for un-tokenized colors | `Color(red:green:blue:)` |
-| `hasLottieSDK` | grep `import Lottie` or `Package.resolved` for `lottie-ios` | eAnim* placeholders codegen `LottieView` | warn user, defer or skip |
-| `screenFolderConvention` | `Screens/<X>Screen/<X>Screen.swift` count ≥ 2 | Place new screen at `Screens/<Name>Screen/...` per `references/project-structure.md` §2 | Single-file output at user-requested path |
-| `viewModelPattern` | grep `enum Action` + `func send(_ action: Action)` in latest `*ViewModel.swift` | New ViewModels match existing reducer shape | New ViewModels use canonical reducer (default — see `references/viewmodel-pattern.md`) |
-| `observationFlavor` | iOS 17+ AND project uses `@Observable` | Emit `@Observable @MainActor` ViewModels | Emit `ObservableObject` + `@Published` |
-| `usesIKNavigation` | `import IKNavigation`, `IKRouter`, `@Environment(\.ikNavigationable)` | Emit per `references/iknavigation-bridge.md` | Emit per `references/swiftui-pro/navigation.md` |
-| `usesIKMacros` | `import IKMacros`, `@APIProtocol`, `@JsonSerializable` | Emit per `references/ikmacro-bridge.md` | Emit plain `Codable` + `URLSession` service |
-| `usesIKCoreApp` | `pod 'IKCoreApp'` in Podfile OR `import IKCoreApp` (Ikame umbrella — re-exports IKNavigation, IKFont, IKMacros, IKPopup, IKFeedback, IKTracking, IKLocalized, IKAsset). When true, **cascades** all dependent flags below to true regardless of their individual signals. | Apply Ikame conventions per `references/ikame-decision-table.md` (D-IDs), force `screenFolderConvention = "ikame-feature-flat"`, force `viewModelPattern = "state-action-route-publisher"` when VM uses Combine. | Per-flag detection still applies; usesIKNavigation/Macros may individually be true without the umbrella. |
-| `usesIKPopup` | `usesIKCoreApp` OR `IKPopup.shared.showPopup(` OR `@Environment(\.ikPopupDismiss)` | Emit `await IKPopup.shared.showPopup(...)` per `references/ikpopup-bridge.md` (D-501..D-507). Banned vanilla SwiftUI popup APIs require `// allow-vanilla-popup:` justification. | Use vanilla SwiftUI `.sheet` / `.alert` |
-| `usesIKFeedback` | `usesIKCoreApp` OR `IKLoading.show/dismissLoading` OR `IKHaptics.` OR `showAppBottomToast` | Emit `IKLoading` + `IKHaptics` + `AppUtils.shared.showAppBottomToast(...)` per `references/ikfeedback-bridge.md` (D-601..D-607). | Use `UIImpactFeedbackGenerator` / iOS 17 `.sensoryFeedback` |
-| `usesIKTracking` | `usesIKCoreApp` OR `.ikLogScreenActive(` OR `AppTrackingFeature.shared` | Emit `.ikLogScreenActive(AppTracking.<case>)` on every `*Screen.swift` body root + programmatic `AppTrackingFeature.shared.addTrackingFeature(...)` per `references/iktracking-bridge.md` (D-701..D-705). | Use third-party analytics (Firebase/Mixpanel) per project convention or skip |
-| `usesIKLocalized` | `usesIKCoreApp` OR `.ikLocalized()` extension call | Two paths per `references/iklocalized-bridge.md` (D-801..D-806): direct `Text("...")` literal (SwiftUI auto-localizes) or `"...".ikLocalized()` (String constants and non-Text APIs). Banned: `Text("...".ikLocalized())` double-localize, `LocalizedStringKey("...")` manual constructor, `NSLocalizedString`, `String(localized:)`. | Use `Text(.symbolKey)` symbol API or `NSLocalizedString` per project convention |
-| `usesIKAssetSymbol` | `usesIKCoreApp` OR `useGeneratedSymbols` (effectively always TRUE on Xcode 15+ baseline) | Emit `Image(.<assetName>)` (iOS 17+ auto-generated `ImageResource`) — `Image(.icCancel)`, NOT `Image("icCancel")` | Use `Image("icCancel")` string literal (legacy projects only) |
-| `entitiesPath` / `entitiesPrefix` / `entitiesSources` | folder `Entities/<Source>/<Prefix><Domain>Model.swift` pattern detected from existing code | New entity models go to `<entitiesPath>/<source>/<prefix><Domain>Model.swift` matching detected prefix (D-214). When `entitiesPrefix == ""`, emit unprefixed. | n/a (no entities folder) |
-| `trackingEnumName` / `trackingEnumPath` | `enum AppTracking` declaration grep | Reference `<enumName>.<case>` in `.ikLogScreenActive(...)`, `AppTrackingFeature.shared.addTrackingFeature(params: [.<key>: ..., ...])`. New cases require delta-request. | n/a |
-| `toastTypeEnumName` | `enum ToastSceenType\|ToastScreenType\|ToastType\|AppToastType` | Use `AppUtils.shared.showAppBottomToast(for: <enumName>.<case>)`. New cases require delta-request. | n/a |
-| `navigationItemEnumName` / `navigationItemPath` | `enum NavigationItem\|AppRoute\|MainRoute` declaration grep | Extend the existing enum + corresponding router; do NOT create a parallel one (D-218, `references/iknavigation-bridge.md` §5). | n/a |
+| `useGeneratedSymbols` | `GENERATE_ASSET_SYMBOLS = YES` (default-on Xcode 15+) | `Image(.icAIClose)`, `Color(.brandRed)` | Legacy `Image("icAIClose")` (flagged as non-modern) |
+| `useStringCatalogSymbols` | xcstrings + `STRING_CATALOG_GENERATE_SYMBOLS = YES` | `Text(.welcomeMessage)` + add key | `Text("Welcome")` (LocalizedStringKey infers) |
+| `spacingEnum` | grep `enum Spacing\|AppSpacing\|Padding` | Route via `<enum>.<token>` | Inline literal `.padding(24)` |
+| `ikFontEnum` | grep `enum IKFont\|AppFont\|Typography` | Use `<enum>.<token>` | `@ScaledMetric` + `.font(.system(size:weight:))` |
+| `colorEnum` | grep `enum IKCoreApp\|AppColors\|ColorPalette` | Use `<enum>.colors.<token>` | Fallback by category |
+| `minDeploymentTarget` | `IPHONEOS_DEPLOYMENT_TARGET` from pbxproj | Gates §6 fallbacks | As decided by §6 |
+| `hasColorHexExtension` | grep `Color\(hex:` extension | Use `Color(hex: "#FF6600")` | `Color(red:green:blue:)` |
+| `hasLottieSDK` | grep `import Lottie`/`Package.resolved`/`lottie-ios` | eAnim* → `LottieView` | Warn user, defer or skip |
+| `screenFolderConvention` | `Screens/<X>/<X>Screen.swift` count ≥ 2 | New screen at `Screens/<Name>/...` per [`project-structure.md`](project-structure.md) | Single-file output at user-requested path |
+| `viewModelPattern` | `enum Action` + `func send(_ action: Action)` in latest VM | Match existing reducer shape | Canonical reducer per [`viewmodel-pattern.md`](viewmodel-pattern.md) |
+| `observationFlavor` | iOS 17+ AND project uses `@Observable` | `@Observable @MainActor` | `ObservableObject` + `@Published` |
+| `usesIKNavigation` | `import IKNavigation`/`IKRouter`/`@Environment(\.ikNavigationable)` | Emit per [`iknavigation-bridge.md`](iknavigation-bridge.md) | Vanilla `NavigationStack` |
+| `usesIKMacros` | `import IKMacros`/`@APIProtocol`/`@JsonSerializable` | Per [`ikmacro-bridge.md`](ikmacro-bridge.md) | Plain `Codable` + `URLSession` |
+| `usesIKCoreApp` | `pod 'IKCoreApp'` OR `import IKCoreApp` (umbrella) | Cascade all dependent flags TRUE | Per-flag detection still applies |
+| `usesIKPopup` | `usesIKCoreApp` OR `IKPopup.shared.popup(` | Per [`ikpopup-bridge.md`](ikpopup-bridge.md) | Vanilla `.sheet` / `.alert` |
+| `usesIKFeedback` | `usesIKCoreApp` OR `IKLoading.show*` OR `IKHaptics.` | Per [`ikfeedback-bridge.md`](ikfeedback-bridge.md) | `UIImpactFeedbackGenerator` / iOS 17 `.sensoryFeedback` |
+| `usesIKFont` | `usesIKCoreApp` OR `.ikFont(`/`.ikBody()`/etc. | Per [`fonts-styling-bridge.md`](fonts-styling-bridge.md) | `AppFont.swift` from B0b |
 
-The skill always prints the resolved flags at end of C1 so the user can verify routing decisions before any code is written.
+C1 prints resolved flags at end so user can verify routing.
 
 ---
 
 ## §4. Structural rules (apply at C3 Pass 4 review)
 
-These can drift even with careful C2 emission. Pass 4 review catches them.
-
-| # | Anti-pattern | Required fix | Source rule |
-|---|---|---|---|
-| 1 | View body > ~40 lines with computed properties returning `some View` | Extract each into separate `View` struct in its own file | views.md L3, L14 |
-| 2 | Multiple types in one file | Each struct/class/enum in its own file | views.md L8 |
-| 3 | Inline business logic in `body`/`task`/`onAppear` | Method extraction or `@Observable` view model | views.md L4–7 |
-| 4 | `@Observable` class missing `@MainActor` | Add `@MainActor` (unless project default) | data.md L10 |
-| 5 | `Binding(get:set:)` in body | `@State` + `onChange()` | data.md L23 |
-| 6 | `NavigationView` | `NavigationStack` | navigation.md L3 |
-| 7 | `NavigationLink(destination:)` | `navigationDestination(for:)` | navigation.md L4 |
-| 8 | Navigation hierarchy mixes `navigationDestination(for:)` and `NavigationLink(destination:)` | Pick one; never mix | navigation.md L5 |
-| 9 | Force unwrap (`!`) on user-driven path | `if let` / `guard let` / `??` | swift.md L7 |
-| 10 | `DispatchQueue.main.async` | `Task { @MainActor in ... }` | swift.md L49 |
-| 11 | `Task.sleep(nanoseconds:)` | `Task.sleep(for: .seconds(...))` | swift.md L50 |
-| 12 | `GeometryReader` for layout | iOS 17+ → `containerRelativeFrame()` / `visualEffect()` / `Layout`. **iOS 16 → `GeometryReader` is allowed (no native alternative).** | api.md L7 |
-| 13 | `AnyView` | `@ViewBuilder` / `Group` / generics | performance.md L4 |
-| 14 | `UIScreen.main.bounds` | `containerRelativeFrame` / `GeometryReader` (iOS 16) | design.md L10 |
-| 15 | Manual date format `"yyyy-MM-dd"` for display | `Text(date, format: .dateTime.day().month().year())` | swift.md L15 |
-| 16 | `.frame(width: 100, height: 100)` on text-bearing view | Allow flex; use `minWidth`/`minHeight` if a minimum is needed | design.md L11 |
-| 17 | `ObservableObject` + `@Published` + `@StateObject` | iOS 17+ → `@Observable` + `@State` + `@Bindable`. **iOS 16 → keep ObservableObject form (no choice).** Add comment marker. | data.md L11 |
-| 18 | `fontWeight(.medium)`, `.semibold`, etc. scattered | Reserve `fontWeight()` for non-bold weights with reason; prefer Dynamic Type roles or `IKFont` | design.md L28 |
-| 19 | `caption2` font | Avoid; `caption` only when justified | design.md L31 |
-| 20 | `UIColor` in SwiftUI | `Color` or asset catalog | design.md L30 |
+| # | Anti-pattern | Required fix |
+|---|---|---|
+| 1 | View body > ~40 lines with computed `@ViewBuilder` props | Extract to separate `View` struct in own file |
+| 2 | Multiple types in one file | Each struct/class/enum in own file |
+| 3 | Inline business logic in `body`/`task`/`onAppear` | Method or `@Observable` view model |
+| 4 | `@Observable` class missing `@MainActor` | Add `@MainActor` |
+| 5 | `Binding(get:set:)` in body | `@State` + `onChange()` |
+| 6 | `NavigationView` | `NavigationStack` |
+| 7 | `NavigationLink(destination:)` | `navigationDestination(for:)` |
+| 8 | Mixing `navigationDestination(for:)` + `NavigationLink(destination:)` | Pick one; never mix |
+| 9 | Force unwrap on user-driven path | `if let`/`guard let`/`??` |
+| 10 | `DispatchQueue.main.async` | `Task { @MainActor in ... }` |
+| 11 | `Task.sleep(nanoseconds:)` | `Task.sleep(for: .seconds(...))` |
+| 12 | `GeometryReader` for layout | iOS 17+ → `containerRelativeFrame()`. **iOS 16 → GeometryReader allowed** |
+| 13 | `AnyView` | `@ViewBuilder`/`Group`/generics |
+| 14 | `UIScreen.main.bounds` | `containerRelativeFrame`/`GeometryReader` |
+| 15 | Manual `"yyyy-MM-dd"` for display | `Text(date, format: .dateTime.day().month().year())` |
+| 16 | `.frame(width:height:)` on text-bearing view | Allow flex; `minWidth`/`minHeight` if needed |
+| 17 | `ObservableObject` + `@Published` + `@StateObject` | iOS 17+ → `@Observable` + `@State` + `@Bindable`. **iOS 16 → keep ObservableObject** + comment marker |
+| 18 | `.fontWeight(.medium/.semibold)` scattered | Reserve for non-bold weights with reason; prefer Dynamic Type roles |
+| 19 | `caption2` font | Avoid; `caption` only when justified |
+| 20 | `UIColor` in SwiftUI | `Color` or asset catalog |
 
 ---
 
 ## §5. Output format for Pass 4 review
 
-Mirror swiftui-pro SKILL.md "Output Format". Group findings by file:
+Group findings by file:
 
 ```
 ### LoginView.swift
@@ -173,109 +153,73 @@ Mirror swiftui-pro SKILL.md "Output Format". Group findings by file:
 ```swift
 // Before
 Text("Hello").foregroundColor(.red)
-
 // After
 Text("Hello").foregroundStyle(.red)
 ```
 
 **Line 24: Icon-only button is bad for VoiceOver — add a text label.**
 
-```swift
-// Before
-Button(action: close) { Image(.icAIClose) }
-
-// After
-Button("Close", action: close) {
-    Image(.icAIClose)
-        .accessibilityHidden(true)   // image is decorative; the Button label provides accessibility
-}
-```
-
 ### Summary
 
-1. **Accessibility (high):** the close button on line 24 is invisible to VoiceOver.
+1. **Accessibility (high):** close button on line 24 invisible to VoiceOver.
 2. **Deprecated API (medium):** `foregroundColor()` on line 12.
 ```
-
-End each Pass 4 with this prioritized summary so user knows what to address first.
 
 ---
 
 ## §6. iOS 16 fallback table
 
-The project baseline is iOS 16+. swiftui-pro is written assuming iOS 18+/26 in places. When emitting for iOS 16, branch as follows. **Always include the fallback comment marker** so future iOS bumps can search-replace.
+Baseline iOS 16+. Comment marker format: `// iOS 16 fallback — switch to <modern API> at iOS <N>+`.
 
-Comment marker format:
-```swift
-// iOS 16 fallback — switch to <modern API> at iOS <N>+
-```
-
-| swiftui-pro rule | API min | iOS 16 emission |
+| swiftui-pro rule | Min iOS | iOS 16 emission |
 |---|---|---|
-| `Tab("...", systemImage:..., value:..)` (api.md L5) | iOS 18 | `tabItem { Label("Home", systemImage: "house") }` + `.tag(.home)` |
-| `.topBarLeading` / `.topBarTrailing` (api.md L11) | iOS 17 | `.navigationBarLeading` / `.navigationBarTrailing` |
-| `.clipShape(.rect(cornerRadius:))` (api.md L4) | iOS 17 | `.clipShape(RoundedRectangle(cornerRadius: 12))` |
-| `@Entry` macro (api.md L9) | iOS 18 / Xcode 16 | Manual `EnvironmentKey` + `EnvironmentValues` extension |
-| `@Observable` (data.md L11) | iOS 17 | `ObservableObject` + `@Published` + `@StateObject`/`@ObservedObject` |
-| `@Bindable` (data.md L11) | iOS 17 | `@ObservedObject` + `$model.field` direct |
-| `WebView` native (api.md L15) | iOS 26 | `UIViewRepresentable` wrap of `WKWebView` |
-| `Image(.assetName)` symbol (api.md L14) | build-time only | ✓ Use directly — `useGeneratedSymbols` is effectively always TRUE on Xcode 15+ baseline. Legacy `Image("assetName")` only when the project explicitly sets `GENERATE_ASSET_SYMBOLS = NO`. |
-| `Text(.symbolKey)` xcstrings (hygiene.md L8) | build-time only | ✓ Use directly when `useStringCatalogSymbols` |
-| `#Preview` macro (views.md L12) | Xcode 15+ runtime any | ✓ Use directly |
-| `containerRelativeFrame()` (api.md L7) | iOS 17 | Use `GeometryReader` (allowed exception on iOS 16) |
-| `.scrollIndicators(.hidden)` (api.md L17) | iOS 16 | ✓ Use directly |
-| `.bold()` modifier on view (design.md L27) | iOS 16 | ✓ Use directly |
-| `.foregroundStyle()` (api.md L3) | iOS 15 | ✓ Always |
-| `overlay(alignment:content:)` (api.md L10) | iOS 15 | ✓ Always |
-| `.fill().stroke()` chained (api.md L13) | iOS 17 | Keep `.overlay { Shape().stroke(...) }` form |
-| `sensoryFeedback()` (api.md L8) | iOS 17 | `UIImpactFeedbackGenerator` |
-| `NavigationStack` (navigation.md L3) | iOS 16 | ✓ Use directly |
-| `navigationDestination(for:)` (navigation.md L4) | iOS 16 | ✓ Use directly |
-| `task()` modifier (performance.md L13) | iOS 15 | ✓ Always |
-| `LazyVStack`/`LazyHStack` | iOS 14 | ✓ Always |
-| `.font(.body.scaled(by:))` (accessibility.md L5) | iOS 26 | `@ScaledMetric var fontSize: CGFloat = 16` + `.font(.system(size: fontSize, weight: ...))` |
-| `String Catalog Symbols` (hygiene.md L8) | Xcode 15+ build setting | ✓ Use directly when build setting on |
-| `scrollContentBackground` (performance.md L5) | iOS 16 | ✓ Use directly |
-| `scrollTargetBehavior` | iOS 17 | Skip — use `.scrollTargetLayout` only when target ≥17 |
-| `Symbol effects` (`.symbolEffect`) | iOS 17 | Skip on iOS 16 — leave SF Symbols static |
-| `sensoryFeedback` (haptics) | iOS 17 | `UIImpactFeedbackGenerator` |
-| `fontDesign(.rounded)` | iOS 16.1+ | OK on most iOS 16 patches; verify if exact 16.0 minimum required |
+| `Tab("...", systemImage:, value:)` | 18 | `tabItem { Label("Home", systemImage: "house") }` + `.tag(.home)` |
+| `.topBarLeading` / `.topBarTrailing` | 17 | `.navigationBarLeading` / `.navigationBarTrailing` |
+| `.clipShape(.rect(cornerRadius:))` | 17 | `.clipShape(RoundedRectangle(cornerRadius: 12))` |
+| `@Entry` macro | 18 / Xcode 16 | Manual `EnvironmentKey` + `EnvironmentValues` extension |
+| `@Observable` + `@Bindable` | 17 | `ObservableObject` + `@Published` + `@StateObject`/`@ObservedObject` + `$model.field` |
+| `WebView` native | 26 | `UIViewRepresentable` wrap `WKWebView` |
+| `containerRelativeFrame()` | 17 | `GeometryReader` (allowed exception) |
+| `.fill().stroke()` chained | 17 | `.overlay { Shape().stroke(...) }` |
+| `sensoryFeedback()` | 17 | `UIImpactFeedbackGenerator` |
+| `scrollTargetBehavior` | 17 | Skip — use `.scrollTargetLayout` only at ≥17 |
+| `.symbolEffect` | 17 | Skip on iOS 16 — leave SF Symbols static |
+| `.font(.body.scaled(by:))` | 26 | `@ScaledMetric var fontSize: CGFloat = 16` + `.font(.system(size: fontSize, ...))` |
+| Always-available (✓ use directly) | — | `.foregroundStyle()`, `.bold()`, `overlay(alignment:content:)`, `NavigationStack`, `.navigationDestination(for:)`, `task()`, `.scrollIndicators(.hidden)`, `LazyVStack`/`LazyHStack`, `scrollContentBackground`, `Image(.assetName)`, `Text(.symbolKey)`, `#Preview` |
 
-When the user later bumps the project to iOS 17+ or 18+, search for `// iOS 16 fallback —` comment markers — every occurrence is an upgrade candidate.
+When project bumps to iOS 17+/18+: search `// iOS 16 fallback —` comment markers; each is an upgrade candidate.
 
 ---
 
-## §7. Project tokens reference (detected: `spacingEnum`, `ikFontEnum`, `colorEnum`)
+## §7. Project tokens reference
 
-C1 audit greps for these enums and writes the detected name into `c1-conventions.json` (or `null` when absent). C2 routes Figma values through whichever enum is found. **Detect-then-apply** — if the project doesn't have these enums, use the fallback paths (inline literals, `@ScaledMetric`, etc.) — do NOT introduce a new `Spacing.swift` / `IKFont.swift` unless the user asks.
+C1 audit greps for enums + writes detected name to `c1-conventions.json` (or `null` when absent). **Detect-then-apply** — do NOT introduce a new `Spacing.swift` / `IKFont.swift` unless user asks.
 
-**`spacingEnum` — spacing/padding/gap.** Common project names: `Spacing`, `AppSpacing`, `Padding`. When detected:
+**`spacingEnum`** (Common: `Spacing`, `AppSpacing`, `Padding`):
 ```swift
-.padding(.horizontal, Spacing.l24)         // not .padding(.horizontal, 24)
-VStack(spacing: Spacing.m16) { ... }       // not VStack(spacing: 16)
+.padding(.horizontal, Spacing.l24)      // not .padding(.horizontal, 24)
+VStack(spacing: Spacing.m16) { ... }
 ```
-Common case-naming conventions: `Spacing.xs4`, `s8`, `m16`, `l24`, `xl32`, `xxl48`. C1 lists actual cases. When `spacingEnum == null` or no token matches the Figma value, fall back to inline literal with comment `// Figma: 24` for traceability.
+Cases: `Spacing.xs4`, `s8`, `m16`, `l24`, `xl32`, `xxl48`. C1 lists actual cases. `null` or no match → inline literal + `// Figma: 24` comment.
 
-**`ikFontEnum` — typography.** Common project names: `IKFont`, `AppFont`, `Typography`. When detected:
+**`ikFontEnum`** (Common: `IKFont`, `AppFont`, `Typography`):
 ```swift
 Text(.welcomeMessage).font(IKFont.headlineSemibold20)
 ```
-For each Figma typography style (size + weight + lineHeight + tracking), find the closest case. If none exists, use `@ScaledMetric` + `.font(.system(size:weight:))`. Never invent new cases without user approval. When `ikFontEnum == null`, default to `@ScaledMetric` for size + raw `.font(.system(size:weight:))`. Enforced by `scripts/c8-ikfont.sh` (gate skips when `ikFontEnum == null`).
+For each Figma typography (size+weight+lineHeight+tracking), find closest case. None exists → `@ScaledMetric` + `.font(.system(size:weight:))`. Never invent new cases without approval.
 
-**`colorEnum` — top-level app tokens.** Common project names: `IKCoreApp`, `AppColors`, `ColorPalette`. When detected:
+**`colorEnum`** (Common: `IKCoreApp`, `AppColors`, `ColorPalette`):
 ```swift
 .foregroundStyle(IKCoreApp.colors.textPrimary)
 .padding(IKCoreApp.spacing.contentPadding)
 ```
-Often namespaces the others. C1 lists what's exposed. When `colorEnum == null`, prefer Asset Catalog (`Color(.<name>)` via iOS 17+ auto-generated `ColorResource`) → tokens.json-emitted light-only extension `Color.<swiftName>` → `Color(hex:)` extension → inline `Color(red:green:blue:)` (last resort). Never the legacy string form `Color("name")`.
+Often namespaces others. `null` → prefer Asset Catalog → light-only extension → `Color(hex:)` → inline `Color(red:green:blue:)`. Never legacy string form.
 
-If a Figma value doesn't fit any detected token, surface it in the run summary so the user can decide whether to add a new case (skill never auto-edits enum files).
+Figma value doesn't fit any token → surface in run summary; skill never auto-edits enum files.
 
 ---
 
 ## §8. Quick reference — what NOT to do
-
-These are the most common drifts when generating from Figma. Self-check Pass 4 catches them, but C2 should avoid them outright.
 
 ```swift
 // ✗ DON'T
@@ -284,22 +228,21 @@ These are the most common drifts when generating from Figma. Self-check Pass 4 c
 .fontWeight(.bold)
 Text("Hello") + Text(" World")
 struct V_Previews: PreviewProvider { ... }
-Button(action: close) { Image(.icAIClose) }        // missing accessibility
-.onTapGesture { closeAction() }                     // not a Button
-if loading { v.opacity(0.5) } else { v }           // _ConditionalContent
-.animation(.easeIn)                                  // no value
+Button(action: close) { Image(.icAIClose) }         // missing accessibility
+.onTapGesture { closeAction() }                      // not a Button
+if loading { v.opacity(0.5) } else { v }            // _ConditionalContent
+.animation(.easeIn)                                   // no value
 ScrollView(showsIndicators: false) { ... }
 DispatchQueue.main.async { ... }
-Task { try! await api.load() }                      // force try
+Task { try! await api.load() }
 
 // ✓ DO
 .foregroundStyle(.red)
-.clipShape(RoundedRectangle(cornerRadius: 12))      // iOS 16 form
+.clipShape(RoundedRectangle(cornerRadius: 12))       // iOS 16 form
 .bold()
 let h = Text("Hello"); let w = Text(" World"); Text("\(h)\(w)")
 #Preview { V() }
 Button("Close", action: close) { Image(.icAIClose).accessibilityHidden(true) }
-Button { closeAction() } label: { Image(.icAIClose).accessibilityHidden(true) }.accessibilityLabel("Close")
 v.opacity(loading ? 0.5 : 1)
 .animation(.easeIn, value: loading)
 ScrollView { ... }.scrollIndicators(.hidden)

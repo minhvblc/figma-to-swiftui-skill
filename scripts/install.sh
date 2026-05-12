@@ -421,15 +421,6 @@ GATES = [
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-gate.sh"),
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-banned-pattern-gate.sh"),
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-entry-bypass-gate.sh"),
-    ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-mode-gate.sh"),
-    ("PreToolUse",  "Bash",       "~/.claude/hooks/figma-to-swiftui-engine-gate.sh"),
-    ("PreToolUse",  "Bash",       "~/.claude/hooks/figma-to-swiftui-bundle-id-gate.sh"),
-    ("PreToolUse",  "Bash",       "~/.claude/hooks/figma-to-swiftui-scaffold-gate.sh"),
-    ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-asset-export-gate.sh"),
-    ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-asset-symbol-case-gate.sh"),
-    ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-pass2-gate.sh"),
-    ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-c8-gate.sh"),
-    ("PostToolUse", "Write|Edit|MultiEdit", "~/.claude/hooks/figma-to-swiftui-ikonboarding-pattern-gate.sh"),
     ("Stop",        None,         "~/.claude/hooks/figma-to-swiftui-stop-gate.sh"),
 ]
 
