@@ -196,7 +196,7 @@ The skill writes its working state under `.figma-cache/<nodeId>/` next to the pr
 
 ### Three-phase workflow with mandatory gates
 
-`figma-to-swiftui` runs Phase A (Discover & Spec) → Phase B (Asset Pipeline) → Phase C (Implement). Each phase ends with a bash gate that prints `GATE: PASS` or fails — the next phase will not start without a pass. Phase C also runs four self-check passes (offline diff, asset-substitution grep, system-chrome grep, swiftui-pro review) plus a C5 simulator build + screenshot diff.
+`figma-to-swiftui` runs Phase A (Discover & Spec) → Phase B (Asset Pipeline) → Phase C (Implement). Each phase ends with a bash gate that prints `GATE: PASS` or fails — the next phase will not start without a pass. Phase C also runs three self-check passes (offline diff, asset-substitution grep, system-chrome grep) plus a C5 simulator build + screenshot diff.
 
 ### Native SwiftUI translation
 
@@ -256,8 +256,6 @@ repo-root/
       component-variants.md               — Figma variants → SwiftUI styles and enums
       asset-handling.md                   — Tagged path, fallback path, dedupe, naming
       lottie-placeholders.md              — eAnim* → LottieView stub codegen
-      swiftui-pro-bridge.md               — Always-on transforms + iOS 16 fallbacks + token routing
-      swiftui-pro/                        — swiftui-pro standards snapshot (api, views, data, accessibility, ...)
   figma-flow-to-swiftui-feature/
     SKILL.md                              — Flow orchestration, screen graph, integration
     references/
@@ -299,7 +297,6 @@ repo-root/
 | Skill says "Pass 2 cannot run without screenshot.png" | `figma-desktop` MCP not registered | Re-do step 2 of Install + restart Claude |
 | `figma_build_registry` errors with "unauthorized" | Bad / expired `FIGMA_ACCESS_TOKEN` | Regenerate at [figma.com/settings](https://www.figma.com/settings), update MCP env |
 | Gate B fails with "rows empty but design has N hints" | B1 Inventory missed nodes | Re-scan `screenshot.png` and `design-context.md`; do NOT bypass the gate |
-| `cornerRadius()` / `foregroundColor()` lint failures in Pass 4 | Used deprecated SwiftUI API | Replace per `references/swiftui-pro-bridge.md` §2 (always-on transforms) |
 | C5 says "FAIL: build" | Build failure on the chosen engine | Engine A: read `mcp__xcode__XcodeListNavigatorIssues` / `GetBuildLog` for structured errors. Engine B: open `c5-build.log`. Fix compile errors, re-run C5. |
 | C5 hook blocks `xcodebuild ... build` | Engine A is available; raw xcodebuild is a regression | Use `mcp__xcode__BuildProject` / `RenderPreview` instead. Probe engine: `scripts/c5-engine-select.sh --explain`. Bypass for legitimate Engine B run: prefix command with `ALLOW_XCODEBUILD=1`. |
 | Hook blocks `Write` on a `.swift` file: "project mode not yet detected" | `scripts/mode-detect.sh` hasn't run for this project | Run `scripts/mode-detect.sh <projectFolder> --write-cache`. For `greenfield-ikame`, then `scripts/ikxcodegen-scaffold.sh <Name>` (ask user Y/n first). |

@@ -89,7 +89,7 @@ C1 step **probe project conventions** rồi ghi `c1-conventions.json`. Mọi quy
 | Golden path (guard early), modifier order, [weak self], custom Error enum | `figma-to-swiftui/references/swift-style.md` §4-9 | `scripts/c8-weak-self.sh` (warn) |
 | IKNavigation thay cho NavigationStack (chỉ khi project đã dùng) | `figma-to-swiftui/references/iknavigation-bridge.md` | `scripts/c8-iknavigation.sh` (skip nếu off) |
 | IKMacros (@APIProtocol, @JsonSerializable) cho DTO/service (chỉ khi project đã dùng) | `figma-to-swiftui/references/ikmacro-bridge.md` | (compile-time validated) |
-| IKFont/AppFont enum thay cho .font(.system(size:)) raw (chỉ khi project có) | `figma-to-swiftui/references/swiftui-pro-bridge.md` §3 | `scripts/c8-ikfont.sh` (skip nếu off) |
+| IKFont/AppFont enum thay cho .font(.system(size:)) raw (chỉ khi project có) | `figma-to-swiftui/references/fonts-styling-bridge.md` | `scripts/c8-ikfont.sh` (skip nếu off) |
 
 **Detect-then-apply.** Nếu project iOS đích **không** có IKNavigation / IKMacros / IKFont → skill emit vanilla SwiftUI. Skill **không** import dependency mới mà user chưa có. Conventions tuyệt đối (folder layout, ViewModel pattern, function size) thì luôn áp dụng — không phụ thuộc project flag.
 
@@ -121,7 +121,7 @@ C1 step **probe project conventions** rồi ghi `c1-conventions.json`. Mọi quy
 | `b0a-extract-copy.sh` | Parse design-context.md → Strings.swift | B0a |
 | `b0b-tokens-codegen.sh` | Wrap colorset-codegen + emit Color+Tokens / AppFont / Spacing | B0b |
 | `c5-capture.sh` | simctl screenshot + sips shrink (cmp pair) | C5.5 + C5.5b |
-| `c3-static-checks.sh` | Pass 3 + 3b + Pass 4 Part A bash sweep | C3 |
+| `c3-static-checks.sh` | Pass 3 + 3b bash sweep | C3 |
 | `c8-all.sh` | 6 c8-* gates chạy song song | C3 Pass 5 |
 | `timing-report.sh` | Đọc manifest.timing và in bảng wall-time | regression check |
 | `timed-run.sh` | Helper của `timing-report.sh` — wrap command, record wall-time vào manifest.timing | per-step instrumentation |
