@@ -180,9 +180,9 @@ State storage:
 - `c3-pass2-diff.md` — current report; `c3-pass2-diff.attempt-N.md` — snapshots
 - `manifest.json → verification.c3Pass2.{lastAttempt, lastResult, highFailsHistory}`
 
-### 4.3 Pass 3 / 3b / 4 Part A — explicit fallback
+### 4.3 Pass 3 / 3b — explicit fallback
 
-Fast path: `bash ~/.claude/scripts/c3-static-checks.sh --files "<paths>" --target <iOS-major>`. Below is the explicit form when the script isn't available:
+Fast path: `bash ~/.claude/scripts/c3-static-checks.sh --files "<paths>"`. Below is the explicit form when the script isn't available:
 
 ```bash
 SWIFT_FILES="<your-generated-swift-files>"
@@ -195,12 +195,6 @@ HITS=$(grep -rnE 'Image\(systemName:' $SWIFT_FILES)
 # Pass 3b — System chrome redraws
 grep -rnE 'Text\("9:41"\)|FakeStatusBar|HomeIndicator|NotchView|DynamicIslandView|StatusBarView' $SWIFT_FILES
 grep -rnE 'Capsule\(\)\..+\.frame\([^)]*height:\s*[1-6][^0-9]' $SWIFT_FILES
-
-# Pass 4 Part A — swiftui-pro Review (12 checks): modern API hits, deprecated `cornerRadius()`,
-# iOS-version-gated APIs, `PreviewProvider`/`AnyView`, `DispatchQueue`/`Task.detached`,
-# manual `Binding(get:set:)`, deprecated navigation, image accessibility, force unwraps,
-# `Text + Text`, `.onTapGesture` for actions, iOS 16 fallback markers.
-# Full grep set: see backup or scripts/c3-static-checks.sh source.
 ```
 
 ---

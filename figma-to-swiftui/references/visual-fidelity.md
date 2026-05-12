@@ -125,12 +125,12 @@ primaryAxisAlignItems:      MIN | CENTER | MAX | SPACE_BETWEEN   → Spacer() pa
 - VStack/HStack default cross-axis is `.center` — must override if Figma says MIN/MAX.
 - `primaryAxisAlignItems` (CENTER/SPACE_BETWEEN/MAX) does NOT map to a stack init param — use `Spacer()` patterns.
 
-### Source-tag → swiftui-pro routing
+### Source-tag → SwiftUI routing
 
 | Tag | Example | Route |
 |---|---|---|
 | `tokens` | `--text-primary` | `IKCoreApp.colors.textPrimary` (preferred) OR `Color(.textPrimary)` |
-| `inline` | `font-weight: 700` | `.bold()` (swiftui-pro transform — never `.fontWeight(.bold)`) |
+| `inline` | `font-weight: 700` | `.bold()` (never `.fontWeight(.bold)`) |
 | `inline` | `padding: 24` | `Spacing.l24` if token matches; else `.padding(24)` |
 | `inline` | `font-size: 16` | Dynamic Type role → `.font(.body)`; IKFont match → preset; else `@ScaledMetric var fontSize: CGFloat = 16` |
 | `inline` | `#FF6600` | Token match → enum; else `Color(.brandOrange)` (asset symbol); else `Color(hex: "#FF6600")` |
@@ -343,7 +343,7 @@ Check if project has it; if not, use Asset Catalog or `Color(red: ..., green: ..
 
 ### iOS deployment target
 
-`IPHONEOS_DEPLOYMENT_TARGET` from `.pbxproj`. Baseline iOS 16+. iOS 17+ APIs (`@Observable`, `.rect(cornerRadius:)`, `.topBarLeading`, `Tab(...)`, `Color(.named)`) require gating or fallback. See [`swiftui-pro-bridge.md`](swiftui-pro-bridge.md) §6 for full table.
+`IPHONEOS_DEPLOYMENT_TARGET` from `.pbxproj`. Baseline iOS 16+. iOS 17+ APIs (`@Observable`, `.rect(cornerRadius:)`, `.topBarLeading`, `Tab(...)`, `Color(.named)`) require gating or fallback.
 
 ### Localization
 

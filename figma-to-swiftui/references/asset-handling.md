@@ -199,7 +199,7 @@ When `c1-conventions.json.usesIKCoreApp == true`:
 - **Dedup before adding:** look up hex in `xcassets/Colors/` first.
 - In code: `Color(.color0F0F0F)` (iOS 17+ auto-generated `ColorResource`). NEVER `Color(red:green:blue:)`, NEVER `Color(hex:)` if asset exists, NEVER string form `Color("color0F0F0F")`.
 
-For non-Ikame: fall back to `swiftui-pro-bridge.md` §1c. See [AP-14](anti-patterns.md) for SwiftUI built-in shadowing trap (banned names: `primary`, `secondary`, `accent`, etc).
+For non-Ikame: see [AP-14](anti-patterns.md) for the SwiftUI built-in shadowing trap (banned names: `primary`, `secondary`, `accent`, etc).
 
 Materialization: `colorset-codegen.sh` reads `tokens.json` + emits colorsets to xcassets. Ikame branch names new colorsets `color<HEX>`; generic branch uses semantic name.
 

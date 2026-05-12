@@ -74,7 +74,7 @@ ZStack {
 
 **Hard rules:**
 - Image MUST come from `Assets.xcassets`. If `manifest.rows[]` has no entry for this `nodeId`, STOP and add the row to Phase B before continuing — never `Image(uiImage: UIImage(contentsOfFile: ...))` from `fills.json.imageUrl` at runtime, never `AsyncImage(url:)` for a static design asset.
-- Use the iOS 17+ generated `ImageResource` symbol (`Image(.imageAIHeroBg)`), NOT the string form `Image("imageAIHeroBg")` — see [swiftui-pro-bridge.md §2 row 18](swiftui-pro-bridge.md).
+- Use the iOS 17+ generated `ImageResource` symbol (`Image(.imageAIHeroBg)`), NOT the string form `Image("imageAIHeroBg")`.
 - If the IMAGE fill has paint `opacity < 1.0`, add `.opacity(0.X)` on the Image — distinct from layer opacity.
 
 ## Recipe 2 — Gradient only
@@ -101,7 +101,7 @@ LinearGradient(
 ```swift
 .init(color: Color(red: 0xFF/255, green: 0x6B/255, blue: 0x6B/255, opacity: 0xCC/255), location: 0.0)
 ```
-Or, if `references/swiftui-pro-bridge.md §1c` resolves the color to an Asset Catalog entry, use that and add a comment noting the alpha came from the gradient stop.
+Or, if the color resolves to an Asset Catalog entry (`Color(.<name>)`) or a token extension (`Color.<name>`), use that and add a comment noting the alpha came from the gradient stop.
 
 ### Radial
 
@@ -200,7 +200,7 @@ If your B1 inventory has a container that visibly shows a background image or gr
 
 - **`AsyncImage(url: URL(string: fills.json.imageUrl))`** — fills.json.imageUrl is a short-lived Figma CDN URL meant for tool-side resolution, NOT for runtime image loading. Production code always uses `Assets.xcassets`.
 - **Hand-drawing the gradient with `Rectangle().fill(...)` + manual stops** — use `LinearGradient`/`RadialGradient` directly. They ARE the SwiftUI primitives.
-- **`Color(red:green:blue:)` for gradient stops when the color exists in `tokens.json`** — route through Asset Catalog (`Color(.X)`) or token extension (`Color.X`), see [swiftui-pro-bridge.md §1c](swiftui-pro-bridge.md). The gradient stop position is local; the color itself follows the same token-routing rules as everything else.
+- **`Color(red:green:blue:)` for gradient stops when the color exists in `tokens.json`** — route through Asset Catalog (`Color(.X)`) or token extension (`Color.X`). The gradient stop position is local; the color itself follows the same token-routing rules as everything else.
 - **"Simplified" gradient — fewer stops than Figma defined** — every stop in `fills.json.fills[i].stops[]` is required. Skipping stops is the same anti-pattern as "approximated" colors.
 - **Using `.background(LinearGradient(...))` when the design has `[IMAGE, GRADIENT]`** — `.background()` takes ONE shape; you need the explicit `ZStack` for layered fills.
 
