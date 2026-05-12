@@ -174,7 +174,7 @@ if [ $EXPLAIN -eq 1 ]; then
       echo "next: load conventions per references/ikame-decision-table.md"
       ;;
     brownfield-vanilla)
-      echo "next: run convention-probe and load conventions per references/swiftui-pro-bridge.md"
+      echo "next: run convention-probe and load conventions per references/adaptation-workflow.md §0"
       ;;
     ambiguous)
       echo "next: STOP and ask user. Do not scaffold over an existing project of unknown topology."
