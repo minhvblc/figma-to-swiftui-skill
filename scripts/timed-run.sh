@@ -26,8 +26,8 @@
 #   scripts/timed-run.sh --phase c5 --manifest .figma-cache/3166_70147/manifest.json \
 #     -- scripts/c5-capture.sh --cache .figma-cache/3166_70147 --udid <udid>
 #
-#   scripts/timed-run.sh --phase c8 --manifest .figma-cache/3166_70147/manifest.json \
-#     -- scripts/c8-all.sh --src ./Authenticator
+#   scripts/timed-run.sh --phase c3Pass3 --manifest .figma-cache/3166_70147/manifest.json \
+#     -- scripts/c3-static-checks.sh --files Sources/IntroScreen.swift
 #
 # Exit code: pass-through from the wrapped command.
 #   64 — bad usage (missing --phase / --manifest / command)

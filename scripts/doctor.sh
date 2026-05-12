@@ -543,13 +543,12 @@ sha() {
 
 if [ -d "$SCRIPTS_INSTALLED" ]; then
   for src in "$SCRIPTS_REPO"/c1-*.sh "$SCRIPTS_REPO"/c3-*.sh "$SCRIPTS_REPO"/c5-*.sh \
-             "$SCRIPTS_REPO"/c6-*.sh "$SCRIPTS_REPO"/c7-*.sh "$SCRIPTS_REPO"/c8-*.sh \
+             "$SCRIPTS_REPO"/c6-*.sh "$SCRIPTS_REPO"/c7-*.sh \
              "$SCRIPTS_REPO"/b0a-*.sh "$SCRIPTS_REPO"/b0b-*.sh \
-             "$SCRIPTS_REPO"/b0c-*.sh "$SCRIPTS_REPO"/b0d-*.sh \
              "$SCRIPTS_REPO"/preflight-*.sh "$SCRIPTS_REPO"/sync-check.sh \
              "$SCRIPTS_REPO"/mode-detect.sh "$SCRIPTS_REPO"/colorset-codegen.sh \
              "$SCRIPTS_REPO"/timing-report.sh "$SCRIPTS_REPO"/timed-run.sh \
-             "$SCRIPTS_REPO"/ikxcodegen-wrap.sh "$SCRIPTS_REPO"/ikxcodegen-scaffold.sh \
+             "$SCRIPTS_REPO"/ikxcodegen-scaffold.sh \
              "$SCRIPTS_REPO"/vanilla-scaffold.sh \
              "$SCRIPTS_REPO"/xcodeproj-add-files.sh; do
     [ -f "$src" ] || continue

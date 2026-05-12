@@ -119,7 +119,7 @@ Before generating any SwiftUI:
   - `usesIKMacros` (+ `apiRegistry`) — when true AND the flow needs new networking, generate `@APIProtocol` repositories and expose them through the `enum API` registry (`apiRegistry.registryFilePath`, typically `Core/Network/API.swift`). Inject `<sharedRepoExpr>` (e.g. `sharedRepo` or `AppAPIRepository.shared`). Call sites use `API.<name>Repository`, never `<Name>RepositoryImpl(...)` directly. See `../figma-to-swiftui/references/ikmacro-bridge.md` and `ikame-ios-coding/references/api-ikmacros.md`.
   - `fontModifier` (+ `fontFamily` + `additionalFontFamilies[]`), `spacingEnum`, `colorEnum` — token routing. Canonical Ikame typography uses `ikFont` preset family (`.ikLargeTitle()` / `.ikBody()` / `.ikFont(size:weight:)` escape hatch); brownfield projects with `fontModifier: "appFont"` use `.appFont*` wrappers. See `../figma-to-swiftui/references/fonts-styling-bridge.md` and `ikame-ios-coding/references/fonts-and-styling.md`.
   - **Ikame cascade flags** (set when `usesIKCoreApp == true`, i.e. project's Podfile has `pod 'IKCoreApp'` OR any Swift file imports it):
-    - `usesIKPopup` (+ `popupConfigurations[]` + `popupInvocationStyle`) — popups go through `await IKPopup.shared.popup { … }` / `.sheet { … }` / `.show(configuration:) { … }` (canonical closure form) or `IKPopup.shared.showPopup(swiftUIView:configuration:)` (brownfield named-args form). Vanilla `.sheet` / `.alert` require `// allow-vanilla-popup: <reason>` justification (D-507). See [`../figma-to-swiftui/references/ikpopup-bridge.md`](../figma-to-swiftui/references/ikpopup-bridge.md) and `ikame-ios-coding/references/ui-popup-toast-loading.md`.
+    - `usesIKPopup` (+ `popupConfigurations[]` + `popupInvocationStyle`) — popups go through `await IKPopup.shared.popup { … }` / `.sheet { … }` / `.show(configuration:) { … }` (canonical closure form) or `IKPopup.shared.showPopup(swiftUIView:configuration:)` (brownfield named-args form). Vanilla `.sheet` / `.alert` require `// allow-vanilla-popup: <reason>` justification. See [`../figma-to-swiftui/references/ikpopup-bridge.md`](../figma-to-swiftui/references/ikpopup-bridge.md).
     - `usesIKFeedback` (+ `toastApi` + `appToastWrapper`) — canonical toast `IKToast.show(.<id>, message:)`; brownfield wrapper `AppUtils.shared.showAppBottomToast(for: .<case>)` when C1 captures `toastApi: "appToastWrapper"`. Loading via `IKLoading.showLoading()` + `defer { dismissLoading() }`. Haptics via `IKHaptics.<api>`. See [`../figma-to-swiftui/references/ikfeedback-bridge.md`](../figma-to-swiftui/references/ikfeedback-bridge.md).
     - `usesIKAssetSymbol` — `Image(.<assetName>)` (iOS 17+ auto-generated `ImageResource`, also produced by Ikame's IKAssetSymbol macro). The legacy string form `Image("<assetName>")` is BANNED on the Xcode 15+ baseline regardless of this flag — the flag now only distinguishes Ikame's macro path from Apple's auto-gen path.
     - `entitiesPath` (+ `entitiesPrefix` + `entitiesSources`) — when the flow introduces a new app-wide model, place it at `<entitiesPath>/<source>/<entitiesPrefix><Domain>Model.swift` (or `<entitiesPath>/<entitiesPrefix><Domain>Model.swift` when project groups flat). Prefix is project-specific (`G` in authenv2 for GRDB; may be empty in other projects). Subagents emit delta-requests rather than write to `Entities/` directly.
@@ -262,34 +262,6 @@ Complete the non-visual behavior:
 
 Read [references/feature-completeness.md](references/feature-completeness.md) to avoid stopping at the happy path.
 
-### 6.5. Flow-level coding-conventions sweep (BASH, mandatory)
-
-Per-screen Phase C already runs Pass 5 (`scripts/c8-*.sh`) over each screen's generated files — see [`../figma-to-swiftui/SKILL.md`](../figma-to-swiftui/SKILL.md) Step C3 Pass 5. Step 6 added cross-screen router wiring + shared scaffolding (Step 4) which per-screen sweeps could not see, so a single flow-level sweep over the whole feature tree catches the rest.
-
-**Fast path (recommended):** `scripts/c8-all.sh --src "$SWIFT_SRC" --conventions .figma-cache/_shared/c1-conventions.json` runs all six c8-* sub-gates in parallel; same enforcement semantics as the sequential block below. The explicit form remains valid when the script is unavailable.
-
-```bash
-SWIFT_SRC="<project-root or feature-folder>"
-CONV=".figma-cache/_shared/c1-conventions.json"
-FAIL=0
-
-scripts/c8-conventions-gate.sh --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
-scripts/c8-vm-pattern.sh       --src "$SWIFT_SRC" || FAIL=1
-scripts/c8-func-length.sh      --src "$SWIFT_SRC" || FAIL=1
-scripts/c8-iknavigation.sh     --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
-scripts/c8-ikfont.sh           --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
-scripts/c8-ikpopup.sh          --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
-scripts/c8-ikfeedback.sh       --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
-scripts/c8-iktracking.sh       --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
-scripts/c8-iklocalized.sh      --src "$SWIFT_SRC" --conventions "$CONV" || FAIL=1
-scripts/c8-weak-self.sh        --src "$SWIFT_SRC"
-
-[ $FAIL -eq 0 ] && echo "GATE: PASS (Step 6.5 — flow-level coding conventions)" \
-                 || { echo "GATE: FAIL (Step 6.5) — fix violations before Step 7"; exit 1; }
-```
-
-The sweep is informed by `c1-conventions.json` written at Step 2 — gates auto-skip when the corresponding flag is off (e.g. IKNavigation gate is `SKIP` when `usesIKNavigation = false`; the four ik-* gates added for Ikame skip when `usesIKPopup` / `usesIKFeedback` / `usesIKTracking` / `usesIKLocalized = false`).
-
 ### 7. Verify at Feature Level
 
 **Step 7 has two halves: per-screen visual validation (7a) and feature-level wiring checks (7b). Both are mandatory; neither substitutes for the other. A clean compile is NOT proof the screens look right.**
@@ -298,7 +270,7 @@ The sweep is informed by `c1-conventions.json` written at Step 2 — gates auto-
 
 For every screen in the flow, run **Step C5** from the single-screen skill — see [`../figma-to-swiftui/SKILL.md`](../figma-to-swiftui/SKILL.md) Step C5 + [`../figma-to-swiftui/references/verification-loop.md`](../figma-to-swiftui/references/verification-loop.md) §5. C5 builds the project, boots a simulator, installs the app, screenshots each screen, and writes a visual diff vs the Figma render to `.figma-cache/<nodeId>/c5-visual-diff.md`. Persists `manifest.verification.c5.gate` per screen.
 
-The C5.6 visual-compare procedure is the **same 6-step structured walk** the single-screen skill uses — section inventory, element census, per-section crop pairs, free-form "what's wrong" pass, 3-axis diff table, negative spot-check, 4-anchor proportional check, attestation. See [`../figma-to-swiftui/references/verification-loop.md` §C5.6](../figma-to-swiftui/references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory). Run `scripts/c5-coverage-check.sh --cache .figma-cache/<nodeId>` per screen as part of Gate C5; the flow does not advance to 7b for any screen whose Gate C5 is not PASS or system-skipped. Cross-screen flow concerns (navigation, state) are 7b's job — they do not change C5.6 per-screen.
+The C5.6 visual-compare procedure is the **same 6-step structured walk** the single-screen skill uses — section inventory, element census, per-section crop pairs, free-form "what's wrong" pass, 3-axis diff table, negative spot-check, 4-anchor proportional check, attestation. See [`../figma-to-swiftui/references/verification-loop.md` §C5.6](../figma-to-swiftui/references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory). The flow does not advance to 7b for any screen whose Gate C5 is not PASS or system-skipped. Cross-screen flow concerns (navigation, state) are 7b's job — they do not change C5.6 per-screen.
 
 C5 is **mandatory**. The flow's **Done-Gate** (the feature-level analogue of `figma-to-swiftui` Key Principle #12) requires every screen to satisfy one of:
 - `manifest.verification.c5.gate == "PASS"`, OR
@@ -325,7 +297,7 @@ After 7a passes (or is skipped for a system reason), invoke the **`ios-simulator
 3. **Adding `#Preview` macros to drive each screen in Xcode previews and counting that as 7b.** Previews skip real navigation, real state, and real lifecycle events. Use them for design iteration, not for journey verification.
 4. **Reading the code and asserting transitions "from logic"** (e.g. *"matching confirm pushes Face ID — verified by reading `OnboardingState.handlePINComplete`"*). Code reading is C3 Pass 1, not 7b. 7b requires the simulator to actually transition.
 5. **Stopping at the build step and treating BUILD SUCCEEDED as 7b.** A clean compile (Engine A `BuildProject` returning no errors, or Engine B `xcodebuild build` exit 0) is not the journey — 7b requires the simulator to actually transition between screens. Fails 7b by definition.
-6. **Build → screenshot → "looks great" without running C5.6.** Capturing a simulator PNG and asserting visual fidelity from a glance is not C5. C5.6 requires `c5-sections.md` (≥ 4 sections), `c5-census.md` (element counts), per-section crop pairs, free-form "what's wrong first" pass, 3-axis diff table (≥ 3 × section count rows), negative spot-check, 4-anchor proportional check, and attestation. Skipping any of these → `c5-coverage-check.sh` fails → Stop hook blocks termination.
+6. **Build → screenshot → "looks great" without running C5.6.** Capturing a simulator PNG and asserting visual fidelity from a glance is not C5. C5.6 requires `c5-sections.md` (≥ 4 sections), `c5-census.md` (element counts), per-section crop pairs, free-form "what's wrong first" pass, 3-axis diff table (≥ 3 × section count rows), negative spot-check, 4-anchor proportional check, and attestation.
 
 The only allowed paths for 7b are:
 - `ios-simulator-verify` skill (preferred — drives via accessibility identifiers, no binary changes).

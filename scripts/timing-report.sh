@@ -16,7 +16,6 @@
 #       "c2":       { ... },
 #       "c3Pass2":  { ... },
 #       "c3Pass3":  { ... },
-#       "c3Pass5":  { ... },
 #       "c5":       { ... },
 #       "c5_6":     { ... },
 #       "gates": [
@@ -113,7 +112,6 @@ PHASE_KEYS = [
     ("c2",      "C2 — Implement"),
     ("c3Pass2", "  C3 Pass 2 (offline diff)"),
     ("c3Pass3", "  C3 Pass 3 + 3b (asset/chrome)"),
-    ("c3Pass5", "  C3 Pass 5 (c8 conventions)"),
     ("c5",      "C5 — Build + simulator"),
     ("c5_6",    "  C5.6 (6-step compare)"),
 ]

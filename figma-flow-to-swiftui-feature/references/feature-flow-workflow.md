@@ -90,11 +90,11 @@ Every screen runs the same 6-step C5.6 procedure as the single-screen skill — 
 ```bash
 for nodeId in <every screen nodeId in the flow>; do
   scripts/c5-crop-sections.sh   --cache .figma-cache/$nodeId
-  scripts/c5-coverage-check.sh  --cache .figma-cache/$nodeId
+  # C5.6 manual walk per ../../figma-to-swiftui/references/verification-loop.md §C5.6
 done
 ```
 
-The flow does not advance to journey-level verification (7b in `SKILL.md`) for any screen whose `c5-coverage-check.sh` exits non-zero. Cross-screen concerns (navigation, state) live in 7b — they do not change C5.6 per-screen.
+The flow does not advance to journey-level verification (7b in `SKILL.md`) for any screen whose C5.6 manual walk is incomplete. Cross-screen concerns (navigation, state) live in 7b — they do not change C5.6 per-screen.
 
 ### 8a. Mandatory cross-screen gates: C6 + C7
 

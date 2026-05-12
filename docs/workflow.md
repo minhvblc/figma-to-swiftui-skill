@@ -26,7 +26,6 @@ The doc is authoritative for **behavior and scope**. Figma is authoritative for 
                               ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │ Route: single screen vs feature flow                               │
-│   see figma-to-swiftui/references/source-document.md               │
 └──────────┬────────────────────────────┬────────────────────────────┘
            │                            │
    single screen                multi-screen / flow
@@ -81,7 +80,7 @@ Unclear: <items needing user confirmation>
 
 This contract drives every later step. It is also used to narrow Figma fetches — if the doc names 4 screens, the agent maps exactly 4 frames rather than enumerating the whole Figma tree.
 
-**Conflict rules** (`source-document.md`):
+**Conflict rules:**
 - Doc names a screen not in Figma → ask, don't invent.
 - Figma has a frame the doc doesn't mention → ask, don't silently add.
 - Doc specifies behavior (validation, timing) not visible in Figma → implement from the doc.

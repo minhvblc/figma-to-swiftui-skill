@@ -75,7 +75,7 @@ check_position_a() {
   local name="$1"
   local prefix="${name%%-*}"  # e.g. "c5-foo" → "c5", "preflight-bar" → "preflight"
   # Globs in install.sh: b0a-*.sh, b0b-*.sh, c1-*.sh, c3-*.sh, c5-*.sh,
-  # c6-*.sh, c7-*.sh, c8-*.sh — OR explicit script names.
+  # c6-*.sh, c7-*.sh, preflight-*.sh — OR explicit script names.
   if grep -qE "SCRIPTS_SRC.*${prefix}-\*\.sh|SCRIPTS_SRC.*${prefix}-" "$REPO_ROOT/scripts/install.sh" 2>/dev/null; then
     return 0
   fi

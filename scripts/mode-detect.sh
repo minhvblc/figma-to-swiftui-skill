@@ -171,7 +171,7 @@ if [ $EXPLAIN -eq 1 ]; then
       echo "next: run scripts/vanilla-scaffold.sh <ProjectName>"
       ;;
     brownfield-ikame)
-      echo "next: load conventions per references/ikame-decision-table.md"
+      echo "next: run scripts/c1-probe.sh <projectFolder> to emit c1-conventions.json"
       ;;
     brownfield-vanilla)
       echo "next: run scripts/c1-probe.sh <projectFolder> to emit c1-conventions.json"

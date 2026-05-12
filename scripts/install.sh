@@ -364,25 +364,20 @@ else
       echo "  $(green ✓) Installed hook: $name"
     done
 
-    # Also install all helper scripts (b0a-*/b0b-* codegen, c1-*/c3-*/c5-*/
-    # c6-*/c7-*/c8-* gates + drivers, colorset-codegen, timing-report,
-    # ikxcodegen-wrap, xcodeproj-add-files) to ~/.claude/scripts/, so the
-    # stop hook's fallback path resolution (see
-    # scripts/hooks/figma-to-swiftui-stop-gate.sh) can find them regardless
-    # of where the user runs the skill from. The driver scripts (c8-all.sh,
-    # c3-static-checks.sh, c5-capture.sh) are picked up by the same globs
-    # (c8-*.sh / c3-*.sh / c5-*.sh).
+    # Also install all helper scripts (b0a-/b0b- codegen, c1-/c3-/c5-/
+    # c6-/c7- gates + drivers, colorset-codegen, timing-report,
+    # xcodeproj-add-files) to ~/.claude/scripts/, so the stop hook's
+    # fallback path resolution (see scripts/hooks/figma-to-swiftui-stop-gate.sh)
+    # can find them regardless of where the user runs the skill from.
     mkdir -p "$SCRIPTS_DST"
     for src in "$SCRIPTS_SRC"/b0a-*.sh "$SCRIPTS_SRC"/b0b-*.sh \
-               "$SCRIPTS_SRC"/b0c-*.sh "$SCRIPTS_SRC"/b0d-*.sh \
                "$SCRIPTS_SRC"/c1-*.sh "$SCRIPTS_SRC"/c3-*.sh \
                "$SCRIPTS_SRC"/c5-*.sh "$SCRIPTS_SRC"/c6-*.sh \
-               "$SCRIPTS_SRC"/c7-*.sh "$SCRIPTS_SRC"/c8-*.sh \
+               "$SCRIPTS_SRC"/c7-*.sh \
                "$SCRIPTS_SRC"/preflight-*.sh \
                "$SCRIPTS_SRC"/sync-check.sh \
                "$SCRIPTS_SRC"/mode-detect.sh \
                "$SCRIPTS_SRC"/colorset-codegen.sh \
-               "$SCRIPTS_SRC"/ikxcodegen-wrap.sh \
                "$SCRIPTS_SRC"/ikxcodegen-scaffold.sh \
                "$SCRIPTS_SRC"/vanilla-scaffold.sh \
                "$SCRIPTS_SRC"/xcodeproj-add-files.sh \

@@ -5,7 +5,7 @@
 #
 # Use this for greenfield-ikame mode. For brownfield-ikame projects, do NOT
 # scaffold (project already exists) — just run the convention probe and let
-# c8-gate.sh detect Ikame from the Podfile.
+# C2 detect Ikame from the Podfile.
 #
 # Usage:
 #   scripts/ikxcodegen-scaffold.sh <ProjectName> [--output <path>]

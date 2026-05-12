@@ -242,18 +242,12 @@ repo-root/
   figma-to-swiftui/
     SKILL.md                              — Phase A → B → C with mandatory gates
     references/
-      source-document.md                  — Read .txt/.md brief before Figma; single vs flow routing
       fetch-strategy.md                   — Lazy fetch, circuit breaker, call budget
-      figma-mcp-setup.md                  — figma-desktop MCP setup + troubleshooting
       mcpfigma-setup.md                   — figma-assets (MCPFigma) setup + tool reference
-      screen-discovery.md                 — Registry-first screen detection, state-vs-screen disambiguation
-      adaptation-workflow.md              — Existing screen adaptation and diff audit
       visual-fidelity.md                  — Inventory codes, parsing rules, Pass 2 template
       verification-loop.md                — C3 Pass 2 + C5 build/screenshot/diff workflow
       layout-translation.md               — Auto Layout → Stacks, sizing, scroll
-      responsive-layout.md                — Size classes, adaptive layouts
       design-token-mapping.md             — Figma variables → Color/Font/Spacing
-      component-variants.md               — Figma variants → SwiftUI styles and enums
       asset-handling.md                   — Tagged path, fallback path, dedupe, naming
       lottie-placeholders.md              — eAnim* → LottieView stub codegen
   figma-flow-to-swiftui-feature/

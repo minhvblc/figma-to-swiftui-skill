@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # c1-probe.sh — emit `c1-conventions.json` from a Swift project in one call.
 #
-# Replaces the 11-step manual probe in figma-to-swiftui/SKILL.md Step C1 +
-# references/adaptation-workflow.md §0. Each detector is a deterministic
-# grep / find — same logic agents have been running by hand, just in a
-# single bash invocation. Output is the SAME JSON shape the c8-* gates
-# already read.
+# Replaces the 11-step manual probe in figma-to-swiftui/SKILL.md Step C1.
+# Each detector is a deterministic grep / find — same logic agents have
+# been running by hand, just in a single bash invocation. Output is the
+# JSON shape that C2 (Implement) reads for routing.
 #
 # Detectors (all read-only, fail open — every field is null/false when not
 # detected, so an empty project still yields a valid JSON):
@@ -52,7 +51,7 @@ usage: c1-probe.sh --project <root> --output <path>
                    [--asset-catalog <abs-path-to-.xcassets>]
 
 Walks the Swift project and writes c1-conventions.json — the single source
-of truth that C2 (implement) and Pass 5 (c8-* gates) read for routing.
+of truth that C2 (implement) reads for routing.
 
 When the project has multiple .xcassets, the script lists them and exits
 with status 0 + writes JSON with assetCatalogPath:null. Re-invoke with
