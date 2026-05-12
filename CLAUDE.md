@@ -130,6 +130,10 @@ C1 step **probe project conventions** rồi ghi `c1-conventions.json`. Mọi quy
 | `b0c-fonts-fetch.sh` | Download Inter / Playfair Display / ... từ curated mirror table | B0c |
 | `b0d-info-plist-fonts.sh` | Idempotent inject `UIAppFonts` vào Info.plist | B0d |
 | `b0a-tokens-from-design-context.sh` | Fallback path khi `figma_extract_tokens` 403 — parse hex từ design-context.md | B0a fallback |
+| `b0a-tokens-from-style-guide.sh` | Fallback bootstrap từ 1 design-context.md của style-guide page (đọc cả "Styles used" footer) — G24 | B0a fallback |
+| `b0a-token-coverage.sh` | Sau Phase A — walk per-screen design-context.md, union designer-named tokens, emit delta vs `_shared/tokens.json` (`--apply` để merge) — G25 | B0a coverage |
+| `c8-color-call-form.sh` | Verify `Color.X` (light-only) vs `Color(.X)` (dual-mode) call form đúng với token category — G28 | C3 Pass 5 |
+| `preflight-xcassets-init.sh` | Đảm bảo Assets.xcassets tồn tại tại canonical path, persist `assetCatalogPath` vào c1-conventions.json — auto-create khi missing | Phase 0 |
 | `sync-check.sh` | Verify mọi script trong scripts/ obeys 4-position cross-file sync rule | meta — anti-orphan |
 
 Driver scripts **không đổi semantics** — chỉ gộp call. Bash blocks gốc trong SKILL.md vẫn còn nguyên làm fallback explicit form. Khi sửa logic 1 gate, sửa ở **cả** sub-script gốc lẫn driver.

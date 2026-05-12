@@ -1,31 +1,46 @@
 #!/usr/bin/env bash
 # _figma-task-probe.sh — shared helper used by every figma-to-swiftui hook.
 #
-# Closes the chicken-and-egg gap: before this probe, hooks only fired when
-# .figma-cache/ already existed. An agent that skipped Phase A entirely
-# never created the cache → every gate slept → user got a "from Figma" run
-# with no Figma artifacts, no asset export, no visual diff.
+# Detection rule (single, strict):
 #
-# Detection signals — both must be transcript-derived to scope strictly to
-# the CURRENT session. Cache-existence is intentionally NOT a signal: a
-# stale .figma-cache/ from a prior session would otherwise false-positive
-# unrelated iOS work (the Gap C scenario — user runs the skill once, then
-# weeks later opens the same project for a networking refactor and hits
-# enforcement against work that has nothing to do with Figma).
+#   The user has pasted a real Figma file URL in one of their own chat
+#   messages. That's it. No tool_use signals, no Skill-invocation signals,
+#   no cache-existence signals.
 #
-#   (1) FIGMA URL — transcript contains a Figma app URL with one of the
-#       canonical paths (design/file/board/slides/make). The user pasting
-#       `https://www.figma.com/design/<fileKey>/...?node-id=...` is the
-#       primary entry to a figma-to-swiftui run.
+# Why strict — observed failure modes that broader signals caused:
 #
-#   (2) FIGMA TOOL / SKILL — transcript shows a tool_use of any
-#       mcp__figma* tool (figma-desktop, figma-assets) OR a direct
-#       figma_* tool call OR a Skill invocation of figma-to-swiftui /
-#       figma-flow-to-swiftui-feature. Covers the figma-desktop "current
-#       selection" path (no URL needed) AND the slash-command entry.
-#       Also covers any later turn in a multi-turn session — once the
-#       agent has called a figma tool, every subsequent hook fire still
-#       sees the signal in transcript.
+#   1. MCP figma server instructions ARE injected into every session that
+#      has the figma MCP registered globally. Those instructions contain
+#      example URLs like `figma.com/design/:fileKey/...` and tool-name
+#      listings. A loose grep over the raw transcript would flag every
+#      unrelated session that happened to have figma MCP installed.
+#
+#   2. Tool definitions in the system prompt (`mcp__figma-assets__*`,
+#      `mcp__figma-desktop__*`) appear as plain text in the system
+#      reminder, NOT as actual tool_use blocks. A tool_use-based signal
+#      that scanned raw text would still flag them.
+#
+#   3. Reading skill source files (`cat scripts/hooks/<name>.sh`,
+#      `Read SKILL.md`) puts figma references into tool_result content.
+#      That's documentation flowing through the agent, not user intent.
+#
+# Trade-off accepted by this rule: if the user invokes `/figma-to-swiftui`
+# (slash command / Skill tool) WITHOUT pasting a URL — relying instead on
+# the figma-desktop "current selection" — the hooks will NOT fire. In
+# practice the slash command always carries a URL (the canonical entry
+# pattern in SKILL.md Step A1), so the gap is narrow. Users on the
+# selection-only path can paste the URL alongside ("implement what I have
+# selected, file: https://figma.com/design/abc...") to re-enable hooks.
+#
+# Detection mechanics:
+#   - Scan ONLY user `text` content blocks in the transcript JSONL.
+#   - Strip `<system-reminder>` and `<command-name>` blocks before matching
+#     — system reminders contain MCP instructions and slash-command meta,
+#     neither is user-typed.
+#   - URL pattern requires an alphanumeric/dash character after the path
+#     segment, so template URLs like `figma.com/design/:fileKey` (from
+#     docs / MCP instructions inadvertently echoed into user text) don't
+#     match.
 #
 # Skill-repo bypass: when both `figma-to-swiftui/SKILL.md` AND
 # `figma-flow-to-swiftui-feature/SKILL.md` exist together up the tree, we
@@ -60,14 +75,60 @@ for _ in 1 2 3 4 5 6; do
   D="$PARENT"
 done
 
-# Transcript signals (1) + (2) — URL paste OR figma tool/skill use
+# Single signal — user pasted a Figma URL in their own chat text.
 TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null)
 if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
-  # Figma URL must use Figma's actual app paths (design/file/board/slides/make).
-  # Plain `figma.com/` substring would false-match URLs like
-  # `mycompany.com/figma.com/foo` or stray prose mentions.
-  FIGMA_SIGNAL='figma\.com/(design|file|board|slides|make)/|"skill":[[:space:]]*"figma-to-swiftui|"skill":[[:space:]]*"figma-flow-to-swiftui-feature|"name":[[:space:]]*"mcp__[A-Za-z0-9_]*[Ff]igma|"name":[[:space:]]*"figma_(extract_tokens|extract_fills|export_assets|export_assets_unified|build_registry|list_assets)'
-  if grep -qE "$FIGMA_SIGNAL" "$TRANSCRIPT_PATH" 2>/dev/null; then
+  RESULT=$(python3 - "$TRANSCRIPT_PATH" <<'PY' 2>/dev/null
+import json, re, sys
+
+TRANSCRIPT_PATH = sys.argv[1]
+
+# Real Figma URLs have an alphanumeric/dash fileKey after the path segment.
+# Template URLs `figma.com/design/:fileKey` (with `:` placeholder) don't
+# match — those only appear in MCP server instructions / docs.
+URL_RE = re.compile(r'figma\.com/(design|file|board|slides|make)/[A-Za-z0-9\-]')
+
+# Strip system-injected blocks before matching:
+#   - <system-reminder>...</system-reminder>: MCP server instructions, hook
+#     reminders, environment context. Never user-typed.
+#   - <command-name>...</command-name>: the slash-command name only
+#     (e.g. "figma-to-swiftui"). The actual URL the user typed lives in
+#     <command-args>, which we DO NOT strip — that IS user input.
+SYSTEM_REMINDER_RE = re.compile(r'<system-reminder>.*?</system-reminder>', re.DOTALL)
+COMMAND_NAME_RE    = re.compile(r'<command-name>.*?</command-name>',       re.DOTALL)
+
+try:
+    with open(TRANSCRIPT_PATH) as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            msg = entry.get("message") or {}
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if not content:
+                continue
+            blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "text":
+                    # Skip tool_result, image, etc. — only user-typed text counts.
+                    continue
+                text = block.get("text", "") or ""
+                text = SYSTEM_REMINDER_RE.sub('', text)
+                text = COMMAND_NAME_RE.sub('', text)
+                if URL_RE.search(text):
+                    print("yes")
+                    sys.exit(0)
+except (FileNotFoundError, PermissionError):
+    pass
+print("no")
+PY
+  )
+  if [ "$RESULT" = "yes" ]; then
     echo "yes"
     exit 0
   fi

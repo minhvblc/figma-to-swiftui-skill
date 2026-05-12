@@ -111,6 +111,7 @@ mkdir -p \
   "$PROJECT_NAME/Resources/Assets.xcassets/AppIcon.appiconset" \
   "$PROJECT_NAME/Resources/Assets.xcassets/AccentColor.colorset" \
   "$PROJECT_NAME/Resources/Assets.xcassets/AppBackground.colorset" \
+  "$PROJECT_NAME/Resources/Assets.xcassets/Colors" \
   ".figma-cache/_shared"
 
 # Asset catalog metadata.
@@ -135,6 +136,15 @@ cat > "$PROJECT_NAME/Resources/Assets.xcassets/AppBackground.colorset/Contents.j
   "colors": [{ "idiom": "universal", "color": { "color-space": "srgb",
     "components": { "alpha": "1.000", "red": "0x10", "green": "0x10", "blue": "0x10" } } }],
   "info": { "author": "xcode", "version": 1 }
+}
+JSON
+# Colors/ group with provides-namespace=false so colorset-codegen.sh emits flat
+# Color(.appPrimary) symbols rather than nested Color(.Colors.appPrimary).
+# Matches references/colorset-codegen.md.
+cat > "$PROJECT_NAME/Resources/Assets.xcassets/Colors/Contents.json" <<'JSON'
+{
+  "info": { "author": "xcode", "version": 1 },
+  "properties": { "provides-namespace": false }
 }
 JSON
 
@@ -231,6 +241,10 @@ struct RootView: View {
 EOF
 
 # ── Initial conventions doc ─────────────────────────────────────────────────
+# Resolve absolute path to assetCatalogPath so MCPFigma's
+# figma_export_assets_unified can consume it directly without re-deriving.
+PROJECT_FOLDER_ABS=$(cd "$PROJECT_FOLDER" && pwd)
+ASSET_CATALOG_PATH="$PROJECT_FOLDER_ABS/$PROJECT_NAME/Resources/Assets.xcassets"
 cat > .figma-cache/_shared/c1-conventions.json <<EOF
 {
   "screenFolderConvention": "ikame-feature-flat",
@@ -251,6 +265,7 @@ cat > .figma-cache/_shared/c1-conventions.json <<EOF
   "swiftMinTarget": "$IOS_MIN",
   "mode": "$MODE",
   "scaffoldVariant": "vanilla",
+  "assetCatalogPath": "$ASSET_CATALOG_PATH",
   "notes": "Greenfield-vanilla scaffold from vanilla-scaffold.sh. Switch mode to 'production' once assets exported and screens implemented per Figma."
 }
 EOF

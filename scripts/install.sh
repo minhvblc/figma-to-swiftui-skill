@@ -424,6 +424,9 @@ GATES = [
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-mode-gate.sh"),
     ("PreToolUse",  "Bash",       "~/.claude/hooks/figma-to-swiftui-engine-gate.sh"),
     ("PreToolUse",  "Bash",       "~/.claude/hooks/figma-to-swiftui-bundle-id-gate.sh"),
+    ("PreToolUse",  "Bash",       "~/.claude/hooks/figma-to-swiftui-scaffold-gate.sh"),
+    ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-asset-export-gate.sh"),
+    ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-asset-symbol-case-gate.sh"),
     ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-pass2-gate.sh"),
     ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-c8-gate.sh"),
     ("PostToolUse", "Write|Edit|MultiEdit", "~/.claude/hooks/figma-to-swiftui-ikonboarding-pattern-gate.sh"),
@@ -474,6 +477,15 @@ PY
     echo "       PreToolUse — bundle-id gate, blocks simctl install/launch/"
     echo "         uninstall/terminate when bundle ID doesn't match the"
     echo "         preflight-bundle-verify canonical;"
+    echo "       PreToolUse — scaffold gate, blocks vanilla-scaffold.sh when"
+    echo "         mode.json.mode == greenfield-ikame AND userOptOutIkame"
+    echo "         is not true (Ikame fleet → ikxcodegen is mandatory);"
+    echo "       PreToolUse — asset-export gate, blocks Image(.X) / Image(\"X\")"
+    echo "         writes when X is not in Assets.xcassets and not in any"
+    echo "         .figma-cache manifest (forces Phase B before code);"
+    echo "       PreToolUse — asset-symbol-case gate, catches Image(.NameWith"
+    echo "         inner-digit-x) — Xcode 15+ uppercases inner-digit 'x' in"
+    echo "         the auto-generated ImageResource symbol;"
     echo "       PostToolUse — auto-runs Gate C3-Pass2;"
     echo "       PostToolUse — C8 coding-conventions gate (folder/naming/"
     echo "         ViewModel pattern/function-length; conditional IKNavigation"

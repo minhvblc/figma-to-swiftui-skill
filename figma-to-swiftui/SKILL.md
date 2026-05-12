@@ -26,7 +26,7 @@ The full SKILL.md below is comprehensive but long. For a fast pass before starti
 ```
 1. Mode detect → scripts/mode-detect.sh <project>
      greenfield-vanilla       → scripts/vanilla-scaffold.sh
-     greenfield-ikame         → scripts/ikxcodegen-scaffold.sh (ASK USER first)
+     greenfield-ikame         → scripts/ikxcodegen-scaffold.sh (MANDATORY — no Y/n)
      brownfield-ikame         → load Ikame conventions, no scaffold
      brownfield-vanilla       → load vanilla conventions, no scaffold
      ambiguous                → STOP, ask user
@@ -207,11 +207,13 @@ Writes `<projectFolder>/.figma-cache/_shared/mode.json`. The mode-gate hook chec
 
 | mode | What it means | Required follow-up |
 |---|---|---|
-| `greenfield-ikame` | Empty folder + `ikxcodegen` on PATH (Ikame fleet detected) | **ASK USER** (one-line Y/n): *"Detected Ikame fleet (ikxcodegen on PATH). Scaffold via ikxcodegen? [Y/n]"*. On Y/default → `bash ~/.claude/scripts/ikxcodegen-scaffold.sh <ProjectName>`. On n → fall through to vanilla. |
-| `greenfield-vanilla` | Empty folder, no `ikxcodegen` (or user opted out) | `bash ~/.claude/scripts/vanilla-scaffold.sh <ProjectName>` |
+| `greenfield-ikame` | Empty folder + `ikxcodegen` on PATH (Ikame fleet detected) | **MANDATORY**: `bash ~/.claude/scripts/ikxcodegen-scaffold.sh <ProjectName>`. **No Y/n confirmation.** ikxcodegen on PATH means the user is on the Ikame fleet — the scaffold is the only correct path. Vanilla-scaffold for this mode is blocked by `figma-to-swiftui-scaffold-gate.sh`. To force vanilla anyway (rare — building a non-Ikame app on an Ikame-fleet machine), surface the choice to the user FIRST, then re-run mode-detect with `--opt-out-ikame` to persist `userOptOutIkame: true` in `mode.json`. |
+| `greenfield-vanilla` | Empty folder, no `ikxcodegen` on PATH (or `userOptOutIkame == true`) | `bash ~/.claude/scripts/vanilla-scaffold.sh <ProjectName>` |
 | `brownfield-ikame` | Existing project with `pod 'IKCoreApp'` (or any `import IKCoreApp`) | No scaffold needed. Load Ikame conventions per `~/.claude/skills/figma-to-swiftui/references/ikame-decision-table.md`. |
 | `brownfield-vanilla` | Existing project, no Ikame umbrella | No scaffold needed. Load vanilla conventions. |
 | `ambiguous` | Mixed signals / partial scaffold | **STOP.** Ask user before scaffolding over existing files. When OK'd, persist `userConfirmed: true` into `mode.json` (`jq '. + {userConfirmed: true}' mode.json > tmp && mv tmp mode.json`). |
+
+**Failure-mode self-check** (mandatory before running any scaffold script). If you catch yourself thinking *"the user might prefer vanilla so I'll ask first"*, *"I'll quickly run `vanilla-scaffold.sh` just to see what it produces"*, *"ikxcodegen requires a pod install so let's skip it for speed"*, *"the project doesn't use Firebase so xcconfig wiring is overkill"* — **STOP**. `greenfield-ikame` is mandatory because the Ikame umbrella (IKCoreApp, IKNavigation, IKMacros) requires the ikxcodegen template's Podfile + xcconfig + folder layout. Vanilla cannot reproduce those wirings; a vanilla scaffold on an Ikame-fleet machine produces a project the team cannot maintain. The `figma-to-swiftui-scaffold-gate.sh` PreToolUse hook blocks `vanilla-scaffold.sh` Bash invocations when `mode.json.mode == "greenfield-ikame"` and `userOptOutIkame != true`.
 
 **Banned at this step:** generating raw `.xcodeproj` / `Project.yml` for a greenfield Ikame run (the `mode-gate` hook also enforces this — if mode is `greenfield-ikame` and no `.xcodeproj` exists when Phase A is already done, Swift writes are blocked until scaffold runs).
 
@@ -472,12 +474,18 @@ The `registry.json` written in A2 already contains everything the old Step B0 pr
 
 1. **Surface designer warnings** from `registry.warnings` to the user once at the end of Phase B (e.g. `eIChome` lowercase → falls back to fallback path; user fixes name in Figma to use the MCPFigma fast path).
 
-2. **Pin `assetCatalogPath`** for this run (project-specific judgment, not in the tool):
-   - 0 `.xcassets` in project → ask user to create one before continuing.
-   - 1 `.xcassets` → silent default, tell user which one.
-   - N > 1 → interactive prompt; stash answer in `manifest.assetCatalogPath`.
+2. **Pin `assetCatalogPath`** via `scripts/preflight-xcassets-init.sh`. Both scaffold scripts (`vanilla-scaffold.sh` and `ikxcodegen-scaffold.sh`) run this automatically and persist the result to `.figma-cache/_shared/c1-conventions.json.assetCatalogPath`. For brownfield projects (or any case where the field is missing on first Phase B run), run:
 
-   On Phase B re-run, prefer the previously stashed value.
+   ```bash
+   bash ~/.claude/scripts/preflight-xcassets-init.sh --project <projectFolder>
+   ```
+
+   Behavior:
+   - **0 `.xcassets` in project** → CREATES one at the canonical path `<projectFolder>/<ProjectName>/Resources/Assets.xcassets` with `AppIcon.appiconset`, `AccentColor.colorset`, and a `Colors/` group (provides-namespace=false). Persists path. No user prompt.
+   - **1 `.xcassets`** → uses it, persists path. No user prompt.
+   - **N > 1 `.xcassets`** → FAIL with listed candidates; re-run with `--use <path>` to pin one explicitly.
+
+   On Phase B and beyond, read `c1-conventions.json.assetCatalogPath` directly — do NOT re-probe.
 
 ### Step B1 — Inventory (visual-first)
 

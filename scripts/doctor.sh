@@ -417,10 +417,13 @@ for script in c5-crop-sections.sh c5-coverage-check.sh c5-weasel-detect.sh \
               c8-color-name-collision.sh c8-fonts-registered.sh \
               c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
               c1-probe.sh c1-project-color-audit.sh \
+              c8-color-call-form.sh \
               b0a-extract-copy.sh b0a-tokens-from-design-context.sh \
+              b0a-tokens-from-style-guide.sh b0a-token-coverage.sh \
               b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
               b0c-fonts-fetch.sh b0d-info-plist-fonts.sh \
               preflight-bundle-verify.sh preflight-smoke-test.sh \
+              preflight-xcassets-init.sh \
               sync-check.sh \
               mode-detect.sh \
               colorset-codegen.sh timing-report.sh timed-run.sh \
@@ -452,10 +455,13 @@ if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
                 c8-color-name-collision.sh c8-fonts-registered.sh \
                 c8-all.sh c3-static-checks.sh c3-pass2-prefill.sh \
                 c1-probe.sh c1-project-color-audit.sh \
+                c8-color-call-form.sh \
                 b0a-extract-copy.sh b0a-tokens-from-design-context.sh \
+                b0a-tokens-from-style-guide.sh b0a-token-coverage.sh \
                 b0b-tokens-codegen.sh b0b-tokens-fallback.sh \
                 b0c-fonts-fetch.sh b0d-info-plist-fonts.sh \
                 preflight-bundle-verify.sh preflight-smoke-test.sh \
+                preflight-xcassets-init.sh \
                 sync-check.sh \
                 timing-report.sh timed-run.sh mode-detect.sh \
                 colorset-codegen.sh \
@@ -492,6 +498,9 @@ EXPECTED_HOOKS=(
   "figma-to-swiftui-mode-gate.sh:PreToolUse"
   "figma-to-swiftui-engine-gate.sh:PreToolUse"
   "figma-to-swiftui-bundle-id-gate.sh:PreToolUse"
+  "figma-to-swiftui-scaffold-gate.sh:PreToolUse"
+  "figma-to-swiftui-asset-export-gate.sh:PreToolUse"
+  "figma-to-swiftui-asset-symbol-case-gate.sh:PreToolUse"
   "figma-to-swiftui-pass2-gate.sh:PostToolUse"
   "figma-to-swiftui-c8-gate.sh:PostToolUse"
   "figma-to-swiftui-ikonboarding-pattern-gate.sh:PostToolUse"

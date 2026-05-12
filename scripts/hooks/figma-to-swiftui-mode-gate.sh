@@ -102,6 +102,7 @@ fi
 #       wrong). Previously this silently fell through and allowed the write.
 MODE=$(jq -r '.mode // empty' "$MODE_JSON" 2>/dev/null)
 CONFIRMED=$(jq -r '.userConfirmed // false' "$MODE_JSON" 2>/dev/null)
+OPT_OUT_IKAME=$(jq -r '.userOptOutIkame // false' "$MODE_JSON" 2>/dev/null)
 if [ -s "$MODE_JSON" ] && [ -z "$MODE" ]; then
   {
     echo "BLOCKED: mode.json exists but jq could not extract .mode."
@@ -139,50 +140,48 @@ if [ "$MODE" = "ambiguous" ] && [ "$CONFIRMED" != "true" ]; then
 fi
 
 # ── 4. mode == greenfield-* needs a scaffold to have produced an .xcodeproj ──
-# Skip this check when the agent is writing the very first scaffold-output
-# files — they MUST land before .xcodeproj exists on disk for a brief window.
-# Heuristic: scaffold writes happen inside the cache's parent project root and
-# do NOT require .xcodeproj. After scaffold, .xcodeproj is present. We only
-# enforce this rule when the agent has already begun feature Swift writes
-# (manifest.phaseA == "done" on any screen cache).
+# Scaffold scripts (vanilla-scaffold.sh, ikxcodegen-wrap.sh) write Swift files
+# via bash heredocs / CLI delegation, NOT via Write/Edit tool calls — so the
+# hook never sees those writes. Any Write/Edit on *.swift that DOES reach this
+# hook is the agent writing feature code, and that requires a real .xcodeproj
+# to live inside. We block immediately when no .xcodeproj exists, regardless
+# of phase: phase-gating leaked the failure mode where the agent started Phase
+# B / C without scaffolding first.
 case "$MODE" in
   greenfield-ikame|greenfield-vanilla)
     PROJECT_ROOT=$(dirname "$CACHE_ROOT")
-    # Look for any .xcodeproj under project root (max 4 levels).
     XCODEPROJ=$(find "$PROJECT_ROOT" -maxdepth 4 -type d -name '*.xcodeproj' 2>/dev/null | head -1)
     if [ -z "$XCODEPROJ" ]; then
-      # Are we past Phase A on any screen? If so, scaffold is overdue.
-      shopt -s nullglob
-      SCREEN_DIRS=( "$CACHE_ROOT"/*/ )
-      shopt -u nullglob
-      PAST_PHASE_A=0
-      for d in "${SCREEN_DIRS[@]}"; do
-        BASE=$(basename "$d")
-        [ "$BASE" = "_shared" ] && continue
-        PA=$(jq -r '.phaseA // empty' "$d/manifest.json" 2>/dev/null)
-        [ "$PA" = "done" ] && PAST_PHASE_A=1 && break
-      done
-      if [ "$PAST_PHASE_A" = "1" ]; then
-        {
-          echo "BLOCKED: greenfield mode ($MODE) but no .xcodeproj found under $PROJECT_ROOT."
-          echo ""
-          echo "Phase A is complete on at least one screen, so scaffold should already"
-          echo "have run. Run the scaffold step before any further Swift Write/Edit:"
-          echo ""
-          case "$MODE" in
-            greenfield-ikame)
+      {
+        echo "BLOCKED: greenfield mode ($MODE) but no .xcodeproj found under $PROJECT_ROOT."
+        echo ""
+        echo "Scaffold has not run yet. Feature Swift writes require a real Xcode"
+        echo "project. Run the scaffold step before any further Write/Edit:"
+        echo ""
+        case "$MODE" in
+          greenfield-ikame)
+            if [ "$OPT_OUT_IKAME" = "true" ]; then
+              echo "  scripts/vanilla-scaffold.sh <projectFolder>"
+              echo ""
+              echo "  (mode.json.userOptOutIkame = true is set, so vanilla path is allowed.)"
+            else
               echo "  scripts/ikxcodegen-scaffold.sh <ProjectName>"
               echo ""
-              echo "Confirm with the user first (Y/n) — ikxcodegen creates a Podfile,"
-              echo "runs pod install, and wires xcconfig + GoogleService-Info plist."
-              ;;
-            greenfield-vanilla)
-              echo "  scripts/vanilla-scaffold.sh <ProjectName>"
-              ;;
-          esac
-        } >&2
-        exit 2
-      fi
+              echo "  MANDATORY — ikxcodegen is on PATH, so this machine is on the Ikame"
+              echo "  fleet. ikxcodegen creates a Podfile + xcconfig + GoogleService-Info"
+              echo "  plist and runs pod install. No Y/n confirmation needed."
+              echo ""
+              echo "  To override (rare — non-Ikame app on an Ikame-fleet machine):"
+              echo "    scripts/mode-detect.sh <projectFolder> --write-cache --opt-out-ikame"
+              echo "  then re-attempt vanilla-scaffold.sh."
+            fi
+            ;;
+          greenfield-vanilla)
+            echo "  scripts/vanilla-scaffold.sh <projectFolder>"
+            ;;
+        esac
+      } >&2
+      exit 2
     fi
     ;;
 esac

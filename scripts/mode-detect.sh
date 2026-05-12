@@ -7,12 +7,20 @@
 # Modes:
 #   greenfield                Empty/non-existent project. Skill must scaffold.
 #                             Sub-types:
-#                               greenfield-ikame    when ikxcodegen is on PATH
-#                                                   AND the user explicitly opts
-#                                                   in (mode.json.userChose).
-#                               greenfield-vanilla  default for empty greenfield
-#                                                   when ikxcodegen unavailable
-#                                                   OR user opts out.
+#                               greenfield-ikame    MANDATORY when ikxcodegen is
+#                                                   on PATH. No Y/n prompt — the
+#                                                   skill runs ikxcodegen-scaffold
+#                                                   automatically. User opt-out
+#                                                   only via explicit flag
+#                                                   `--opt-out-ikame` which sets
+#                                                   mode.json.userOptOutIkame =
+#                                                   true (rare; documented as
+#                                                   "I really want vanilla here
+#                                                   despite the Ikame umbrella
+#                                                   being available").
+#                               greenfield-vanilla  Only when ikxcodegen is NOT
+#                                                   on PATH (non-Ikame fleet)
+#                                                   OR userOptOutIkame is set.
 #
 #   brownfield-ikame          Existing project with Podfile that lists IKCoreApp
 #                             OR any *.swift imports IKCoreApp. The Ikame
@@ -42,12 +50,14 @@ set -uo pipefail
 PROJECT=""
 EXPLAIN=0
 WRITE_CACHE=0
+OPT_OUT_IKAME=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --explain) EXPLAIN=1; shift ;;
     --write-cache) WRITE_CACHE=1; shift ;;
+    --opt-out-ikame) OPT_OUT_IKAME=1; shift ;;
     -h|--help)
-      sed -n '2,30p' "$0" >&2
+      sed -n '2,40p' "$0" >&2
       exit 0
       ;;
     *) [ -z "$PROJECT" ] && PROJECT="$1" && shift || { shift; } ;;
@@ -98,18 +108,24 @@ command -v ikxcodegen >/dev/null 2>&1 && IKXCODEGEN_AVAILABLE=1
 MODE=""
 CONFIDENCE="0.5"
 if [ $GREENFIELD -eq 1 ]; then
-  if [ $IKXCODEGEN_AVAILABLE -eq 1 ]; then
-    # Greenfield + ikxcodegen on PATH → user is on the Ikame fleet (the CLI
-    # ships only via gitlab.ikameglobal.com Mint install). Default to the
-    # Ikame scaffold path with high confidence; the skill still ASKS the user
-    # to confirm before running ikxcodegen (one-line Y/n), but it does NOT
-    # silently fall back to vanilla. Use --explain to see the next-step.
+  if [ $IKXCODEGEN_AVAILABLE -eq 1 ] && [ $OPT_OUT_IKAME -eq 0 ]; then
+    # Greenfield + ikxcodegen on PATH → MANDATORY Ikame scaffold path. The
+    # CLI ships only via gitlab.ikameglobal.com Mint install, so its presence
+    # is a strong fleet signal. No Y/n prompt: the skill runs
+    # ikxcodegen-scaffold automatically. Vanilla path requires the explicit
+    # --opt-out-ikame flag here (and persisting userOptOutIkame=true in
+    # mode.json), surfacing the choice instead of silently defaulting.
     MODE="greenfield-ikame"
-    CONFIDENCE="0.85"
-    add_signal "ikxcodegen_available — default path, confirm with user before scaffolding"
+    CONFIDENCE="1.00"
+    add_signal "ikxcodegen_available — MANDATORY scaffold path (vanilla requires explicit --opt-out-ikame)"
+  elif [ $IKXCODEGEN_AVAILABLE -eq 1 ] && [ $OPT_OUT_IKAME -eq 1 ]; then
+    MODE="greenfield-vanilla"
+    CONFIDENCE="0.95"
+    add_signal "user_opted_out_of_ikame — vanilla scaffold despite ikxcodegen on PATH"
   else
     MODE="greenfield-vanilla"
     CONFIDENCE="0.90"
+    add_signal "no_ikxcodegen — vanilla scaffold is the only path"
   fi
 elif [ $IKAME -eq 1 ]; then
   MODE="brownfield-ikame"
@@ -133,7 +149,9 @@ for s in "${SIGNALS[@]:-}"; do
   if [ -n "$SIGNALS_JSON" ]; then SIGNALS_JSON+=","; fi
   SIGNALS_JSON+="\"$(printf '%s' "$s" | sed 's/"/\\"/g')\""
 done
-OUT="{\"mode\":\"$MODE\",\"confidence\":$CONFIDENCE,\"signals\":[${SIGNALS_JSON}]}"
+OPT_OUT_JSON="false"
+[ $OPT_OUT_IKAME -eq 1 ] && OPT_OUT_JSON="true"
+OUT="{\"mode\":\"$MODE\",\"confidence\":$CONFIDENCE,\"signals\":[${SIGNALS_JSON}],\"userOptOutIkame\":$OPT_OUT_JSON}"
 
 if [ $EXPLAIN -eq 1 ]; then
   echo "mode-detect.sh report"
@@ -144,9 +162,10 @@ if [ $EXPLAIN -eq 1 ]; then
   echo ""
   case "$MODE" in
     greenfield-ikame)
-      echo "next: ASK USER (one-line Y/n): \"Detected Ikame fleet (ikxcodegen on PATH). Scaffold via ikxcodegen? [Y/n]\""
-      echo "      Y / default → scripts/ikxcodegen-scaffold.sh <ProjectName>"
-      echo "      n → scripts/vanilla-scaffold.sh <ProjectName> (rare — only when user opts out explicitly)"
+      echo "next: MANDATORY → scripts/ikxcodegen-scaffold.sh <ProjectName>"
+      echo "      No Y/n prompt — ikxcodegen on PATH means the user is on the Ikame fleet."
+      echo "      To force vanilla anyway (rare): re-run with --opt-out-ikame, then"
+      echo "      scripts/vanilla-scaffold.sh <ProjectName>."
       ;;
     greenfield-vanilla)
       echo "next: run scripts/vanilla-scaffold.sh <ProjectName>"

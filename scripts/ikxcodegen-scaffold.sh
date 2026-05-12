@@ -20,10 +20,34 @@
 
 set -uo pipefail
 
+# Early probe — refuse to run if ikxcodegen is not on PATH. The wrap script
+# delegates to ikxcodegen itself, so we need both. Surface the Mint install
+# command verbatim so the user can fix this in one paste.
+if ! command -v ikxcodegen >/dev/null 2>&1; then
+  {
+    echo "FAIL: ikxcodegen not on PATH."
+    echo ""
+    echo "ikxcodegen ships only via the Ikame fleet's Mint registry. If you"
+    echo "are on the Ikame fleet, install with:"
+    echo ""
+    echo "  mint install gitlab.ikameglobal.com/ios/ikxcodegen"
+    echo ""
+    echo "If you are NOT on the Ikame fleet, you should NOT have reached this"
+    echo "script — mode-detect.sh classifies your project as greenfield-vanilla"
+    echo "when ikxcodegen is absent, and the workflow routes you to"
+    echo "scripts/vanilla-scaffold.sh instead. Re-run:"
+    echo ""
+    echo "  scripts/mode-detect.sh <projectFolder> --write-cache"
+    echo ""
+    echo "then follow the printed 'next:' command."
+  } >&2
+  exit 65
+fi
+
 WRAP_SCRIPT="$HOME/.claude/scripts/ikxcodegen-wrap.sh"
 if [ ! -x "$WRAP_SCRIPT" ]; then
   echo "FAIL: $WRAP_SCRIPT not found or not executable" >&2
-  echo "      Install ikxcodegen and ensure ~/.claude/scripts/ikxcodegen-wrap.sh exists." >&2
+  echo "      Re-run scripts/install.sh to install ikxcodegen-wrap.sh into ~/.claude/scripts/." >&2
   exit 65
 fi
 
@@ -100,7 +124,12 @@ fi
 # enum is MainRoute at Core/Router/Main/MainRoute.swift; tracking enum and toast
 # enum names are the Ikame standards (TrackingScreen / AppToastType) — adjust
 # per project if your variant differs.
+#
+# assetCatalogPath is the canonical Ikame-template location. preflight-xcassets-
+# init.sh runs immediately after to verify the path exists OR repoint it if the
+# template variant differs.
 mkdir -p "$OUTPUT_DIR/.figma-cache/_shared"
+ASSET_CATALOG_PATH="$OUTPUT_DIR/$PROJECT_NAME/Resources/Assets.xcassets"
 cat > "$OUTPUT_DIR/.figma-cache/_shared/c1-conventions.json" <<EOF
 {
   "screenFolderConvention": "ikame-feature-flat",
@@ -129,6 +158,7 @@ cat > "$OUTPUT_DIR/.figma-cache/_shared/c1-conventions.json" <<EOF
   "swiftMinTarget": "17.0",
   "usesIKOnboardingFlow": $USES_IKONBOARDING,
   "bundleIdentifier": "$BUNDLE_ID",
+  "assetCatalogPath": "$ASSET_CATALOG_PATH",
   "smokeTestResult": null,
   "customFonts": [],
   "mode": "$MODE",
@@ -136,6 +166,22 @@ cat > "$OUTPUT_DIR/.figma-cache/_shared/c1-conventions.json" <<EOF
   "notes": "Ikame scaffold from ikxcodegen. All Ikame umbrella conventions active. Switch mode to 'production' before final review. Run scripts/preflight-bundle-verify.sh post-build to confirm bundleIdentifier matches Info.plist (it may differ from pbxproj when build settings interpolate)."
 }
 EOF
+
+# Pin / verify Assets.xcassets. If ikxcodegen's template variant put it
+# somewhere else (or didn't create one), preflight-xcassets-init.sh creates
+# a canonical one and re-writes assetCatalogPath in c1-conventions.json.
+PREFLIGHT_SCRIPT=""
+if [ -x "$HOME/.claude/scripts/preflight-xcassets-init.sh" ]; then
+  PREFLIGHT_SCRIPT="$HOME/.claude/scripts/preflight-xcassets-init.sh"
+elif [ -x "$(dirname "$0")/preflight-xcassets-init.sh" ]; then
+  PREFLIGHT_SCRIPT="$(dirname "$0")/preflight-xcassets-init.sh"
+fi
+if [ -n "$PREFLIGHT_SCRIPT" ]; then
+  "$PREFLIGHT_SCRIPT" --project "$OUTPUT_DIR" --name "$PROJECT_NAME" || \
+    echo "WARN: preflight-xcassets-init.sh exited non-zero — verify Assets.xcassets manually" >&2
+else
+  echo "WARN: preflight-xcassets-init.sh not found; assetCatalogPath written but not verified" >&2
+fi
 
 # After scaffold, emit pointer hints for the new preflight gates.
 if [ "$USES_IKONBOARDING" = "true" ]; then
