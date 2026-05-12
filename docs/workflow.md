@@ -231,9 +231,7 @@ User sends one Figma URL pointing at a single frame, asks to build it.
 
 - [figma-to-swiftui/SKILL.md](../figma-to-swiftui/SKILL.md) — single-screen workflow (Phase A/B)
 - [figma-flow-to-swiftui-feature/SKILL.md](../figma-flow-to-swiftui-feature/SKILL.md) — feature-flow orchestration (Phase A batch → Phase B per screen)
-- [figma-to-swiftui/references/source-document.md](../figma-to-swiftui/references/source-document.md) — doc extraction + routing decision
 - [figma-to-swiftui/references/fetch-strategy.md](../figma-to-swiftui/references/fetch-strategy.md) — metadata-first, Phase A batch, circuit breaker, manifest, call budget
-- [figma-to-swiftui/references/screen-discovery.md](../figma-to-swiftui/references/screen-discovery.md) — confidence table format
 - [figma-to-swiftui/references/asset-handling.md](../figma-to-swiftui/references/asset-handling.md) — PNG-only policy, format validation, no SF Symbols
 - [figma-flow-to-swiftui-feature/references/flow-input-contract.md](../figma-flow-to-swiftui-feature/references/flow-input-contract.md) — feature contract fields
 - [figma-flow-to-swiftui-feature/references/output-schema.md](../figma-flow-to-swiftui-feature/references/output-schema.md) — required pre-code output

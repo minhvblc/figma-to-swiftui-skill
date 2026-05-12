@@ -20,10 +20,10 @@ The user may provide:
 - One Figma file with multiple node IDs
 - Multiple Figma URLs, one per screen
 - A mixed list of URLs plus screen names in plain text
-- A `.txt` / `.md` / spec document plus one or more Figma nodes (read the doc first — see [../../figma-to-swiftui/references/source-document.md](../../figma-to-swiftui/references/source-document.md))
+- A `.txt` / `.md` / spec document plus one or more Figma nodes (read the doc first)
 - A behavior-only PM or product document plus a broad Figma root node
 
-When a document is present, extract the contract from it **before** fetching Figma. The document's screen list + actions + required states become the driver; Figma provides visuals inside that scope. See source-document.md for the extraction template and rules for resolving doc-vs-Figma conflicts.
+When a document is present, extract the contract from it **before** fetching Figma. The document's screen list + actions + required states become the driver; Figma provides visuals inside that scope. Doc-vs-Figma conflict: doc decides behavior (transitions, validation); Figma decides structure (layout, copy).
 
 Always normalize the combined input into a stable screen list:
 

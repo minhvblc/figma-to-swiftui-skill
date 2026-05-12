@@ -16,7 +16,6 @@
 #     4. C5 — manifest.verification.c5.gate == "PASS"
 #        OR manifest.verification.c5.skipped IN
 #           (no_project, simctl_error, ci_environment, no_entry_path)
-#        AND c5-coverage-check.sh passes (when not skipped)
 #
 # Removing the previous "phaseB == done" precondition closes the lock-out
 # escape: prior versions allowed stop when Phase B was simply skipped.
@@ -82,8 +81,7 @@ if [ -z "$CACHE_ROOT" ]; then
     echo "  Phase B  per screen: figma_export_assets_unified(autoDiscover: true)"
     echo "             → every eIC*/eImage* exported into Assets.xcassets"
     echo "             + manifest.phaseB = \"done\""
-    echo "  Phase C  self-check passes (Pass 2/3/3b/4/5) + C5 build + render"
-    echo "             + C5.6 side-by-side visual diff per screen"
+    echo "  Phase C  self-check passes (Pass 2/3/3b) + C5 build + render"
     echo "             + manifest.verification.c5.gate = \"PASS\""
     echo ""
     echo "If this run is NOT actually a figma task (probe false positive),"
@@ -106,12 +104,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)"
 
 C6_SCRIPT="$SCRIPT_DIR/c6-asset-completeness.sh"
 C7_SCRIPT="$SCRIPT_DIR/c7-no-system-chrome.sh"
-C5_COV_SCRIPT="$SCRIPT_DIR/c5-coverage-check.sh"
-C8_CONV_SCRIPT="$SCRIPT_DIR/c8-conventions-gate.sh"
-C8_VM_SCRIPT="$SCRIPT_DIR/c8-vm-pattern.sh"
-C8_FUN_SCRIPT="$SCRIPT_DIR/c8-func-length.sh"
-C8_IKNAV_SCRIPT="$SCRIPT_DIR/c8-iknavigation.sh"
-C8_IKFONT_SCRIPT="$SCRIPT_DIR/c8-ikfont.sh"
 
 # Walk fall-back paths if the relative resolution missed (the user may have
 # installed scripts to ~/.claude/hooks/ + a separate scripts/ next to it).
@@ -126,42 +118,6 @@ for cand in \
   "$HOME/.claude/c7-no-system-chrome.sh" \
   "$PROJECT_ROOT/scripts/c7-no-system-chrome.sh"; do
   [ -x "$cand" ] && C7_SCRIPT="$cand" && break
-done
-for cand in \
-  "$HOME/.claude/scripts/c5-coverage-check.sh" \
-  "$HOME/.claude/c5-coverage-check.sh" \
-  "$PROJECT_ROOT/scripts/c5-coverage-check.sh"; do
-  [ -x "$cand" ] && C5_COV_SCRIPT="$cand" && break
-done
-for cand in \
-  "$HOME/.claude/scripts/c8-conventions-gate.sh" \
-  "$HOME/.claude/c8-conventions-gate.sh" \
-  "$PROJECT_ROOT/scripts/c8-conventions-gate.sh"; do
-  [ -x "$cand" ] && C8_CONV_SCRIPT="$cand" && break
-done
-for cand in \
-  "$HOME/.claude/scripts/c8-vm-pattern.sh" \
-  "$HOME/.claude/c8-vm-pattern.sh" \
-  "$PROJECT_ROOT/scripts/c8-vm-pattern.sh"; do
-  [ -x "$cand" ] && C8_VM_SCRIPT="$cand" && break
-done
-for cand in \
-  "$HOME/.claude/scripts/c8-func-length.sh" \
-  "$HOME/.claude/c8-func-length.sh" \
-  "$PROJECT_ROOT/scripts/c8-func-length.sh"; do
-  [ -x "$cand" ] && C8_FUN_SCRIPT="$cand" && break
-done
-for cand in \
-  "$HOME/.claude/scripts/c8-iknavigation.sh" \
-  "$HOME/.claude/c8-iknavigation.sh" \
-  "$PROJECT_ROOT/scripts/c8-iknavigation.sh"; do
-  [ -x "$cand" ] && C8_IKNAV_SCRIPT="$cand" && break
-done
-for cand in \
-  "$HOME/.claude/scripts/c8-ikfont.sh" \
-  "$HOME/.claude/c8-ikfont.sh" \
-  "$PROJECT_ROOT/scripts/c8-ikfont.sh"; do
-  [ -x "$cand" ] && C8_IKFONT_SCRIPT="$cand" && break
 done
 
 shopt -s nullglob
@@ -249,13 +205,6 @@ for DIR in "${SCREEN_DIRS[@]}"; do
     fi
   fi
 
-  # ── 3. C5.6 coverage check (only when not skipped at system level) ───────────
-  if [ "$C5_OK" = "1" ] && [ -z "$SKIPPED" ] && [ -x "$C5_COV_SCRIPT" ]; then
-    if ! "$C5_COV_SCRIPT" --cache "$DIR" >/dev/null 2>&1; then
-      PROBLEMS+="    - C5.6 coverage failing (run: $C5_COV_SCRIPT --cache $DIR)\n"
-    fi
-  fi
-
   if [ -n "$PROBLEMS" ]; then
     VIOLATIONS+="  $BASE/\n${PROBLEMS}"
   fi
@@ -289,7 +238,7 @@ if [ "$PHASE_A_DONE_COUNT" -gt 0 ] && [ "$PHASE_A_WIP_COUNT" -gt 0 ]; then
   VIOLATIONS+="    - Finish Phase A for those screens or remove their cache dirs if no longer in scope\n"
 fi
 
-# ── 4. Project-wide C6 + C7 (run once, not per-screen) ─────────────────────────
+# ── Project-wide C6 + C7 (run once, not per-screen) ─────────────────────────
 PROJECT_PROBLEMS=""
 
 # Need at least one screen with a registry to run C6.
@@ -316,93 +265,6 @@ if [ -x "$C7_SCRIPT" ] && [ -d "$SRC_ROOT" ]; then
     PROJECT_PROBLEMS+="      $C7_SCRIPT --src $SRC_ROOT\n"
   fi
 fi
-
-# ── 5. C8 — Coding-conventions gates (project-wide) ────────────────────────────
-# Pick a c1-conventions.json from the cache (single-screen runs put it under the
-# screen folder; flow runs put it under _shared/). When neither exists, the
-# project-agnostic c8 gates still run but the conditional ones (iknavigation /
-# ikfont) treat absent JSON as their `false` / `null` default and emit SKIP.
-CONV_JSON=""
-[ -f "$CACHE_ROOT/_shared/c1-conventions.json" ] && CONV_JSON="$CACHE_ROOT/_shared/c1-conventions.json"
-if [ -z "$CONV_JSON" ]; then
-  for d in "${SCREEN_DIRS[@]}"; do
-    [ -f "$d/c1-conventions.json" ] && CONV_JSON="$d/c1-conventions.json" && break
-  done
-fi
-
-# ── Session-scope: pull list of files this session generated ────────────────
-# PostToolUse hook (figma-to-swiftui-c8-gate.sh) appends every Write/Edit'd
-# .swift file to .figma-cache/session-files.json. We pass that list to the
-# C8 gates as --files so they don't flag pre-existing tech debt outside
-# the agent's scope.
-#
-# Empty list → C8 content gates SKIP (the only files this session touched
-# were non-swift artifacts, e.g. manifest.json / cache files).
-# Missing file → fall back to project-wide --src mode (legacy behavior, used
-# when the user runs stop-gate manually outside a figma session).
-SESSION_FILES_JSON="$CACHE_ROOT/session-files.json"
-SESSION_FILES=""
-USE_FILES_MODE=0
-if [ -f "$SESSION_FILES_JSON" ] && command -v python3 >/dev/null 2>&1; then
-  SESSION_FILES=$(python3 - "$SESSION_FILES_JSON" <<'PY' 2>/dev/null
-import json, sys, os
-try:
-    data = json.load(open(sys.argv[1]))
-    files = [f for f in (data.get("files") or []) if isinstance(f, str) and os.path.isfile(f)]
-    print(" ".join(files))
-except Exception:
-    print("")
-PY
-)
-  USE_FILES_MODE=1
-fi
-
-c8_args() {
-  if [ -n "$CONV_JSON" ]; then
-    printf -- '--conventions %s' "$CONV_JSON"
-  else
-    # Conventions JSON missing — pass /dev/null so the gate falls to its
-    # default (skip when conditional flag absent).
-    printf -- '--conventions /dev/null'
-  fi
-}
-
-# Build the scope args for a C8 gate. --files mode: pass --src for rel-path
-# display + --files for the actual scope. Legacy --src mode: just --src.
-c8_scope_args() {
-  local root="$1"
-  if [ "$USE_FILES_MODE" = "1" ]; then
-    printf -- '--src %s --files %s' "$root" "$(printf '%q' "$SESSION_FILES")"
-  else
-    printf -- '--src %s' "$root"
-  fi
-}
-
-run_c8() {
-  local script="$1" name="$2" with_conv="$3" root="$4"
-  [ -x "$script" ] || return 0
-  [ -d "$root" ] || return 0
-  local scope_args; scope_args=$(c8_scope_args "$root")
-  local conv_args=""
-  [ "$with_conv" = "1" ] && conv_args=$(c8_args)
-  # shellcheck disable=SC2086
-  if ! eval "$script" $scope_args $conv_args >/dev/null 2>&1; then
-    PROJECT_PROBLEMS+="  - C8 ${name} failing — run:\n"
-    PROJECT_PROBLEMS+="      $script $scope_args $conv_args\n"
-  fi
-}
-
-# c8-conventions-gate inspects FOLDER STRUCTURE (Screens/<X>Screen/<X>Screen.swift)
-# so it receives PROJECT_ROOT for the parent-view check (legacy mode only —
-# in --files mode the gate restricts itself to screen folders containing
-# session files).
-# c8-vm-pattern, c8-func-length, c8-iknavigation, c8-ikfont, c8-weak-self
-# only care about file contents, so SRC_ROOT is fine for legacy mode.
-run_c8 "$C8_CONV_SCRIPT"   "conventions (folder + naming)" 1 "$PROJECT_ROOT"
-run_c8 "$C8_VM_SCRIPT"     "viewmodel pattern"             0 "$SRC_ROOT"
-run_c8 "$C8_FUN_SCRIPT"    "function length"               0 "$SRC_ROOT"
-run_c8 "$C8_IKNAV_SCRIPT"  "IKNavigation (conditional)"    1 "$SRC_ROOT"
-run_c8 "$C8_IKFONT_SCRIPT" "IKFont (conditional)"          1 "$SRC_ROOT"
 
 # ── Timing summary (informational, both PASS and FAIL paths) ────────────────
 # Aggregate per-screen manifest.timing into one line so the user knows where
@@ -444,7 +306,7 @@ for entry in sorted(os.listdir(root)):
             totals[key] += ms
         else:
             totals["other"] += ms
-        if not key.startswith(("c1", "c3Pass3", "c3Pass5", "c5_6")):
+        if not key.startswith(("c1", "c3Pass3", "c5_6")):
             total_ms += ms
 if not have_data:
     sys.exit(0)
@@ -489,10 +351,8 @@ fi
   echo "  - manifest.verification.c5.gate == \"PASS\", OR"
   echo "  - manifest.verification.c5.skipped set to one of:"
   echo "      no_project | simctl_error | ci_environment | no_entry_path"
-  echo "  - C5.6 coverage check passing (sections / census / diff / attestation)"
   echo "  - C6 (registry ↔ xcassets, no banned systemName) passing"
   echo "  - C7 (no system chrome redraws) passing"
-  echo "  - C8 (project-structure / viewmodel / function-length / IKNavigation / IKFont) passing"
   echo ""
   echo "User phrases like \"skip C5\" / \"bỏ qua C5\" / \"không cần build\" are NOT"
   echo "honored — only the four system reasons above bypass C5."

@@ -302,7 +302,7 @@ repo-root/
 | Hook blocks `Write` on a `.swift` file: "project mode not yet detected" | `scripts/mode-detect.sh` hasn't run for this project | Run `scripts/mode-detect.sh <projectFolder> --write-cache`. For `greenfield-ikame`, then `scripts/ikxcodegen-scaffold.sh <Name>` (ask user Y/n first). |
 | Agent claims done without C5 results | Done-Gate violation | Ask the agent to re-run; consider enabling the Stop hook (see "Strongly recommended hooks" in `figma-to-swiftui/SKILL.md`) |
 
-More: [`figma-to-swiftui/references/mcpfigma-setup.md`](figma-to-swiftui/references/mcpfigma-setup.md) and [`figma-to-swiftui/references/figma-mcp-setup.md`](figma-to-swiftui/references/figma-mcp-setup.md).
+More: [`figma-to-swiftui/references/mcpfigma-setup.md`](figma-to-swiftui/references/mcpfigma-setup.md).
 
 ## Contributing
 

@@ -113,4 +113,4 @@ done
 scripts/c7-no-system-chrome.sh --src <project-swift-src-root>
 ```
 
-Both gates are documented in [`../figma-to-swiftui/references/verification-loop.md`](../figma-to-swiftui/references/verification-loop.md) §6 and §7. Neither has a user opt-out. Failures block the Done-Gate the same way C5 does.
+Both gates are documented in [`../../figma-to-swiftui/references/verification-loop.md`](../../figma-to-swiftui/references/verification-loop.md) §6 and §7. Neither has a user opt-out. Failures block the Done-Gate the same way C5 does.
