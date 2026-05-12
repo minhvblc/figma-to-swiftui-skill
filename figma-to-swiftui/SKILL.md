@@ -69,7 +69,7 @@ When `c1-conventions.json.usesIKCoreApp == true`, **`ikame-ios-coding` skill is 
 
 **Conflicts resolve in favor of `ikame-ios-coding`.** Bridges below hold only the **delta** (figma-specific code-gen patterns, app-level extensions) `ikame-ios-coding` does not cover.
 
-For non-Ikame projects (`usesIKCoreApp == false`), use the vanilla conventions in [`swiftui-pro-bridge.md`](references/swiftui-pro-bridge.md), [`viewmodel-pattern.md`](references/viewmodel-pattern.md), [`project-structure.md`](references/project-structure.md).
+For non-Ikame projects (`usesIKCoreApp == false`), use the vanilla conventions in [`viewmodel-pattern.md`](references/viewmodel-pattern.md), [`project-structure.md`](references/project-structure.md).
 
 ---
 
@@ -372,13 +372,12 @@ Detects: deployment target, generated symbol flags, folder layout (`one-screen-p
 
 Both this skill and `figma-flow-to-swiftui-feature` read this single source of truth.
 
-**Project pre-flight checks** (see `references/visual-fidelity.md` §6 + `references/swiftui-pro-bridge.md` §3):
+**Project pre-flight checks** (see `references/visual-fidelity.md` §6):
 1. iOS deployment target (baseline iOS 16+)
 2. `Color(hex:)` extension presence
 3. Localization mode (`xcstrings` is canonical baseline)
 4. Dark mode scope — ask user if Figma is light-only
 5. Lottie SDK presence → flag `hasLottieSDK`
-6. swiftui-pro snapshot at `references/swiftui-pro-rules.md`
 
 **Visual Inventory (mandatory).** Follow [`visual-fidelity.md`](references/visual-fidelity.md) §1–3. Every visible element → row with source tag `[tokens|inline|class|screenshot]`. Never skip `lineHeight`, `letterSpacing`, `shadow`, `border`, `renderingMode`, `textAlign`, stack alignment (both axes).
 
@@ -399,7 +398,7 @@ Element-by-element ADD/UPDATE/REMOVE diff. Read existing file, compare against F
 6. Effects (blur, mask, blend) — last
 7. Interactions — `.buttonStyle(.plain)` for custom, navigation
 
-**Critical rules** (full list in [`swiftui-pro-bridge.md`](references/swiftui-pro-bridge.md) §2 transform table):
+**Critical rules:**
 
 - **Xcode MCP file family** (when available): `mcp__xcode__XcodeWrite` for new files, `XcodeUpdate` for edits, `XcodeRefreshCodeIssuesInFile` after every write for sub-second compile feedback. Fallback to vanilla `Write/Edit` when `c5-engine-select.sh` reports `xcodebuild` engine OR project uses Xcode 16+ synchronized folders.
 - **Tokens.** Use `tokens.json` directly — `swiftName`, `lightHex`, `darkHex`, `isCapsule`. Merge with project enums; prefer existing enum case → token → inline literal.
@@ -408,8 +407,6 @@ Element-by-element ADD/UPDATE/REMOVE diff. Read existing file, compare against F
 - **`Text` → `LocalizedStringKey`**; `Text(verbatim:)` for dynamic data.
 - **Use Figma assets only.** `Image(systemName:)` BANNED for Figma-designed icons. `Text("G")` / `Rectangle()` as logos BANNED.
 - **Lottie placeholders.** `strategy: "lottiePlaceholder"` → `LottieView` stub (Airbnb lottie-ios). Name is literal `"placeholder_animation"`. Add `import Lottie` once per file.
-- **swiftui-pro standards** (always-on): `.bold()` not `.fontWeight(.bold)`; `.foregroundStyle()` not `.foregroundColor()`; `Image(decorative:)` + `.accessibilityLabel`; `Button("Label", systemImage:, action:)` for icon-only; `.contentShape(.rect).frame(minWidth: 44, minHeight: 44)` for tap targets < 44pt; `#Preview` macro (mandatory, never `PreviewProvider`); ternary toggle never `if/else` view branching; animations carry `value:`; `NavigationStack` + `.navigationDestination(item:)` (Ikame projects use IKNavigation per `iknavigation-bridge.md`); no `Text + Text`; `Button` not `.onTapGesture` for actions.
-- **iOS 16 fallbacks** (baseline): `.clipShape(RoundedRectangle(cornerRadius:))` not `.rect(cornerRadius:)`; `.navigationBarLeading` not `.topBarLeading`; `tabItem { Label(...) }` not `Tab(...)`; `ObservableObject` + `@StateObject` not `@Observable` + `@Bindable`. Emit `// iOS 16 fallback — switch to <X> at iOS <N>+`.
 - **Project token routing** (read `c1-conventions.json`):
   - Spacing → `<spacingEnum>.<token>` first; inline literal when no token matches.
   - Typography (Ikame, `fontModifier == "ikFont"`) → `.ik<Preset>()` when matches; `.ikFont(<size>, weight:)` escape hatch when off-token; `.<family>(<size>, weight:)` for additional families. See [`fonts-styling-bridge.md`](references/fonts-styling-bridge.md).
@@ -430,25 +427,21 @@ Element-by-element ADD/UPDATE/REMOVE diff. Read existing file, compare against F
 
 **Translation references:**
 - [`visual-fidelity.md`](references/visual-fidelity.md) — read first, always
-- [`swiftui-pro-bridge.md`](references/swiftui-pro-bridge.md) — read second (transform tables + iOS 16 fallbacks + token routing)
-- [`swiftui-pro-rules.md`](references/swiftui-pro-rules.md) — consolidated swiftui-pro standards (api/views/data/accessibility/navigation/swift/perf)
 - [`layout-translation.md`](references/layout-translation.md) — Auto Layout, stacks, sizing, effects, variants, responsive
 - [`design-token-mapping.md`](references/design-token-mapping.md) — typography, colors, gradients
 - [`fills-handling.md`](references/fills-handling.md) — read when a container has non-trivial `fills.json`
 
-### Step C3 — Self-Check (4 passes + gates)
+### Step C3 — Self-Check (3 passes + gates)
 
 **Pass 1 — Code vs Inventory.** For each inventory row, verify code matches. Fix every ✗.
 
 **Pass 2 — Code vs Screenshot (structured diff).** Pass 2 produces `.figma-cache/<nodeId>/c3-pass2-diff.md`. Template + 6 anti-hallucination checks in [`verification-loop.md`](references/verification-loop.md) §"Pass 2".
 
 ```bash
-bash ~/.claude/scripts/c3-static-checks.sh --files "<swift files>" --target <iOS-major>
+bash ~/.claude/scripts/c3-static-checks.sh --files "<swift files>"
 ```
 
-Covers Pass 3 (asset grep — no `Image(systemName:)` outside allow-list), Pass 3b (system chrome grep — no "9:41"/wifi/battery redraws, no ~134×5pt Capsule), Pass 4 Part A (swiftui-pro Review — 12 checks). Driver writes `GATE: PASS/FAIL`. Explicit form fallback in [`verification-loop.md`](references/verification-loop.md) §"Pass 3/4 explicit".
-
-**Pass 4 Part B — Structural review (manual walk per file):** view body length, separate files per type, no inline business logic, `@Observable` + `@MainActor`, no `ObservableObject` on iOS 17+ projects. See [`swiftui-pro-bridge.md`](references/swiftui-pro-bridge.md) §4.
+Covers Pass 3 (asset grep — no `Image(systemName:)` outside allow-list) and Pass 3b (system chrome grep — no "9:41"/wifi/battery redraws, no ~134×5pt Capsule). Driver writes `GATE: PASS/FAIL`. Explicit form fallback in [`verification-loop.md`](references/verification-loop.md) §"Pass 3/3b explicit".
 
 **Two failure modes:**
 - **Gate FAIL** (report invalid) → regen report; no code edits. After 2 consecutive regen failures, ASK user.
@@ -544,7 +537,7 @@ See [`mcpfigma-setup.md`](references/mcpfigma-setup.md) §"Edge cases" for: toke
 4. **MCP output is a spec.** Parse values per `visual-fidelity.md` §1. Never port React/Tailwind to SwiftUI.
 5. **Every value must be traceable.** Trace to tokens, inline style, class, or design-context comment. Untraceable = guessed.
 6. **Visual Inventory first, every Phase C.** Never skip lineHeight/tracking/shadow/border/textAlign/stack alignment.
-7. **Self-check 4 passes + gates.** Pass 1 code-vs-inventory, Pass 2 code-vs-screenshot (writes diff), Pass 3/3b asset/chrome grep, Pass 4 swiftui-pro Review.
+7. **Self-check 3 passes + gates.** Pass 1 code-vs-inventory, Pass 2 code-vs-screenshot (writes diff), Pass 3/3b asset/chrome grep.
 8. **Beware SwiftUI defaults.** Always specify `.font(.system(size:))`, `VStack(spacing:)`, `.padding(X)`, `.buttonStyle(.plain)` for custom buttons.
 9. **Flatten composed artwork.** Don't reassemble atoms via `.offset()`. When in doubt → flatten.
 10. **Two-MCP split is mandatory.** `get_screenshot` (figma-desktop) = FRAME for Pass 2/C5 diff; per-asset PNG = `figma_export_assets_unified` (MCPFigma). Missing either → STOP.
@@ -560,7 +553,6 @@ Verification summary
 - C3 Pass 2 (offline diff):    PASS / FAIL (high: N, medium: N)
 - C3 Pass 3 (asset grep):      PASS / FAIL
 - C3 Pass 3b (chrome grep):    PASS / FAIL
-- C3 Pass 4 (swiftui-pro):     PASS / FAIL
 - C5 (build + simulator):      PASS / FAIL / SKIPPED (<reason>)
 - C5.6 (6-step compare):       PASS / FAIL (high: N, medium: N)
 - Variables source:            tokens.json (full) | inline-fallback (Variables API empty + warnings) | inline-fallback (file_variables:read scope unavailable)
