@@ -13,6 +13,10 @@
 #   (d) doctor.sh §9 — drift glob includes the script
 #   (e) Referenced in ≥1 SKILL.md / references/*.md (anti-orphan)
 #
+# Plus a markdown link-integrity check: every `](*.md)` link must resolve
+# (or be a documented external soft-dep to sibling skill repos). Catches the
+# trim-aftermath bug where deleted refs are still linked from callers.
+#
 # Meta scripts (install.sh, doctor.sh, bootstrap.sh, sync-check.sh) are
 # exempt — they ARE the wiring, not the wired.
 #
@@ -183,9 +187,42 @@ for hp in "$HOOKS_DIR"/*.sh; do
 done
 
 echo
-TOTAL_FAIL=$((FAIL_COUNT + HOOK_FAIL))
+echo "sync-check: scanning markdown link integrity..."
+LINK_FAIL=$(python3 - "$REPO_ROOT" <<'PY' 2>&1
+import re, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+broken = []
+for md in root.rglob('*.md'):
+    p = str(md)
+    if '/.git/' in p or '/worktrees/' in p or '/.claude/' in p: continue
+    text = md.read_text(errors='ignore')
+    for match in re.finditer(r'\]\(([^)]+\.md)(#[^)]*)?\)', text):
+        link = match.group(1)
+        if link.startswith('http'): continue
+        # External soft-dep: links to sibling skill repos (e.g. ikame-ios-coding)
+        # — these are documented dependencies, not internal bugs.
+        if 'ikame-ios-coding' in link: continue
+        target = (md.parent / link).resolve()
+        if not target.exists():
+            rel = md.relative_to(root)
+            line_num = text[:match.start()].count('\n') + 1
+            broken.append(f"  {rel}:{line_num} → {link}")
+for b in broken: print(b)
+sys.exit(1 if broken else 0)
+PY
+)
+LINK_RC=$?
+if [ $LINK_RC -eq 0 ]; then
+  echo "✓ all internal markdown links resolve"
+else
+  echo "✘ broken internal markdown links:"
+  echo "$LINK_FAIL"
+fi
+
+echo
+TOTAL_FAIL=$((FAIL_COUNT + HOOK_FAIL + LINK_RC))
 if [ $TOTAL_FAIL -eq 0 ]; then
-  echo "GATE: PASS ($PASS_COUNT scripts + $(ls "$HOOKS_DIR"/*.sh 2>/dev/null | wc -l | xargs) hooks all wired)"
+  echo "GATE: PASS ($PASS_COUNT scripts + $(ls "$HOOKS_DIR"/*.sh 2>/dev/null | wc -l | xargs) hooks + 0 broken links)"
   exit 0
 else
   echo "GATE: FAIL: $TOTAL_FAIL sync gaps detected"
