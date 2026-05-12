@@ -444,7 +444,7 @@ for entry in sorted(os.listdir(root)):
             totals[key] += ms
         else:
             totals["other"] += ms
-        if not key.startswith(("c1", "c3Pass3", "c3Pass4", "c3Pass5", "c5_6")):
+        if not key.startswith(("c1", "c3Pass3", "c3Pass5", "c5_6")):
             total_ms += ms
 if not have_data:
     sys.exit(0)
