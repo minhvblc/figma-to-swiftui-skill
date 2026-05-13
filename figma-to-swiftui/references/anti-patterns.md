@@ -219,6 +219,7 @@ For Ikame: `IKFontSystem.shared.configure(familyName:)` at app boot registers th
 
 **Caught by:** `c3-safearea-gate.sh` (run via `c3-driver.sh safearea` or `aggregate`) — emits `c3-safearea.json`. Codes:
 - `SA-1` (FAIL): `.ignoresSafeArea` on content container or `safeAreaPadding` mis-targeted.
+- `SA-1?` (FAIL — escalated, was WARN): `.ignoresSafeArea` whose target the audit could not trace from the chain, or whose target is an unrecognized custom view. Default FAIL because ambiguous targets are exactly the failure mode this rule guards against. **Bypass**: add `// safearea-target-confirmed: <Color|Image|Gradient|Rectangle|...>` on the SAME line when you have manually verified the target is a background primitive; the gate downgrades to WARN. Requires `--src-root` flag on the gate so it can read source lines (driver auto-passes when invoked correctly).
 - `SA-2` (FAIL): root `.frame(maxHeight: .infinity)` with zero safearea rows in the file.
 - `SA-3` (WARN): `.safeAreaInset` on a background primitive (likely belongs on container).
 
@@ -350,7 +351,10 @@ Every hook ships with opt-out paths so legitimate edge cases don't get blocked. 
 | same | Screen-root cornerRadius ≥ 30pt | `// allow-screen-corner-radius: <reason>` | Presented sheet/inner card with Figma-specified radius. NEVER on screen root. |
 | `entry-bypass-gate.sh` | `initialStep`/`VERIFY_ROUTE`/`#if DEBUG` deep-link in App/Root/ContentView | `// figma-entry-bypass-gate: legitimate-flow-state` on assignment line | Real flow state init, not verification jump. |
 | `c3-safearea-gate.sh` | Root `.frame(maxHeight: .infinity)` w/o `.ignoresSafeArea`/`.safeAreaInset` | `// allow-fullbleed-noinset: <reason>` on `.frame` line | Genuine intentional full-bleed without safe-area handling. Almost never correct — re-read AP-16 first. |
+| `c3-safearea-gate.sh` SA-1? | `.ignoresSafeArea` with target the audit couldn't trace from the chain | `// safearea-target-confirmed: <Color\|Image\|Gradient\|...>` on `.ignoresSafeArea` line | Target IS a background primitive but chain shape (wrapped in custom view, conditional, multi-line) hid that from the audit. Manually verify FIRST. |
 | `c3-safearea-gate.sh` NB-1 | `*Screen.swift` wraps content in NavigationStack/View w/o `.toolbar(.hidden, ...)`/`.navigationTitle(...)`/`.toolbarVisibility(...)` | `// nav-bar-intentional: <reason>` on NavigationStack line | Screen genuinely uses the iOS system nav bar with title + back chevron. Re-read AP-17 first — when Figma shows a custom header, this is NEVER the right answer. |
+| `c3-fills-coverage.sh` | `fills.json` has IMAGE / GRADIENT / stacked nodes but emitted source has no matching `Image()` / `LinearGradient(`/`RadialGradient(`/... | `// allow-no-bg-emit: <reason>` on `var body` line of the screen file | Design intentionally swapped Figma background for solid color AND `fills.json` is stale. Prefer re-running `figma_extract_fills` to regenerate `fills.json` over using this bypass. |
+| `c3-fills-coverage.sh` FC-4 | `fills.json` IMAGE node has no `manifest.rows[]` entry (exporter pipeline missed it) | `// allow-no-bg-emit: <reason>` on `var body` (same marker as FC-1/2/3) | Same as above — design intentionally dropped the background. Prefer re-running `figma_export_assets_unified(autoDiscover: true)` or adding a fallback row to `manifest.rows[]` over using the bypass. |
 | `stop-gate.sh` | C5/C6/C7 fail | `manifest.verification.c5.skipped` set to `no_project`/`simctl_error`/`ci_environment`/`no_entry_path` (auto-detected) | Genuine system reason. Never set manually. |
 
 **Comment-form rules:**
@@ -385,5 +389,8 @@ Before writing Verification summary, scan your draft for these phrases. Any hit 
 - "root VStack with `.frame(maxHeight: .infinity)`, no inset, should be fine" — see AP-16
 - "wrapped every screen in NavigationStack so push transitions work" — see AP-17
 - "the empty bar at the top is fine, user won't notice" — see AP-17 (it's 44pt of wrong)
+- "skipped the Figma background image — design context didn't show it / screenshot was ambiguous" — see [fills-handling.md](fills-handling.md). `fills.json` is the canonical source; if the agent didn't read it, that's the bug. `c3-fills-coverage.sh` FC-1 catches this.
+- "design used a solid color, so I ignored fills.json" — fills.json filters SOLID-100%; if the node IS in fills.json it has a NON-trivial paint. Re-read fills-handling.md Recipe 1/2/3.
+- "applied `.ignoresSafeArea` on the whole ZStack, content is fine" — content is NOT fine. ZStack is a content container per SA-1. Move `.ignoresSafeArea` onto the background primitive child only.
 
 These are the exact phrases the skill exists to make impossible. If your summary contains any, STOP. Re-do the bypassed step. Then write the real summary.

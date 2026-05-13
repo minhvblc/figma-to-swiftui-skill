@@ -295,6 +295,14 @@ bash ~/.claude/scripts/c2-typography-extract.sh --cache .figma-cache/<nodeId>
 #     gradients.
 bash ~/.claude/scripts/c2-fills-stops-index.sh --cache .figma-cache/<nodeId>
 
+# 1d. Prototype wires — captures Figma Prototype-mode interactions
+#     (button → screen edges) + FigJam-style CONNECTOR arrows into
+#     `prototype-wires.json`. Empty result is valid (designer hasn't
+#     wired prototype yet). Used downstream by figma-flow-to-swiftui-feature
+#     for the screen graph, and optionally by single-screen runs to
+#     inform per-button Action cases. See `references/prototype-wires.md`.
+bash ~/.claude/scripts/c2-prototype-extract.sh --cache .figma-cache/<nodeId>
+
 # 2. (Conditional) When tokens.json came back empty with _note (Variables 403):
 #    synthesize fallback tokens from c2-extracted.json hex literals
 bash ~/.claude/scripts/c2-tokens-synthesize.sh --cache .figma-cache/<nodeId>
@@ -495,6 +503,7 @@ L2 is deterministic + 0-token (script only) so the cost is ~1s per run. Catching
 - [`layout-translation.md`](references/layout-translation.md) — Auto Layout, stacks, sizing, effects, variants, responsive
 - [`design-token-mapping.md`](references/design-token-mapping.md) — typography, colors, gradients
 - [`fills-handling.md`](references/fills-handling.md) — read when a container has non-trivial `fills.json`
+- [`prototype-wires.md`](references/prototype-wires.md) — read when a button needs to navigate; the cached `prototype-wires.json` carries Figma Prototype-mode button → screen edges + FigJam CONNECTOR arrows
 
 **Pre-Xcode-16 brownfield projects (traditional `PBXGroup` layout):** after writing new `.swift` files, register them in the `.xcodeproj` so the build picks them up:
 
@@ -524,10 +533,13 @@ Covers Pass 3 (asset grep — no `Image(systemName:)` outside allow-list) and Pa
 **L2 — Static token trace (mandatory, Tier-1 co-equal with C5):**
 
 ```bash
-bash ~/.claude/scripts/c3-driver.sh trace     --cache .figma-cache/<nodeId>
-bash ~/.claude/scripts/c3-driver.sh safearea  --cache .figma-cache/<nodeId>
-bash ~/.claude/scripts/c3-driver.sh aggregate --cache .figma-cache/<nodeId>
+bash ~/.claude/scripts/c3-driver.sh trace           --cache .figma-cache/<nodeId>
+bash ~/.claude/scripts/c3-driver.sh safearea        --cache .figma-cache/<nodeId> --src-root "$PWD"
+bash ~/.claude/scripts/c3-driver.sh fills-coverage  --cache .figma-cache/<nodeId> --src-root "$PWD"
+bash ~/.claude/scripts/c3-driver.sh aggregate       --cache .figma-cache/<nodeId>
 ```
+
+`--src-root` must be the absolute path of the iOS project root so the gates can resolve audit-relative paths and honor inline bypass comments (`// safearea-target-confirmed:` / `// allow-no-bg-emit:`). Without it, ambiguous safearea targets escalate to FAIL with no bypass option and gradient-emission coverage is best-effort only.
 
 L2 cross-references the L1-auto-emitted `c2-audit.json` (every Color / Image / Text / Frame / Padding / Stack / **SafeArea** row from generated `*Screen.swift` + `*View.swift`) against `tokens.json`, `design-context.md`, `metadata.json`, `manifest.json`, `c2-typography-perline.json`, `c2-fills-stops.json`. Soft tolerance ±2pt frame/padding. Deterministic — no LLM judgment, no 2000px PNGs in context. Writes `c3-trace.md` (table) + `c3-gate.json` (aggregate gate).
 
@@ -535,13 +547,28 @@ L2 cross-references the L1-auto-emitted `c2-audit.json` (every Color / Image / T
 
 `c3-safearea-gate.sh` (run via `c3-driver.sh safearea`) reads the `kind: "safearea"` / `kind: "navbar"` / `kind: "stack"` rows from `c2-audit.json` and flags 4 violation classes — see [`anti-patterns.md`](references/anti-patterns.md) §AP-16 + §AP-17:
 - **SA-1 (FAIL)**: `.ignoresSafeArea(...)` on a content container (`ScrollView`, `VStack`, `HStack`, `ZStack`, `List`, `Form`, `LazyVStack`, ...). Only background primitives (`Color`, `Image`, `Rectangle`, `LinearGradient`, ...) may extend under system chrome.
+- **SA-1? (FAIL — escalated from prior WARN)**: `.ignoresSafeArea(...)` whose target the parser couldn't trace from the chain, or whose target is an unrecognized custom view. Default FAIL. Bypass: add `// safearea-target-confirmed: <Color|Image|Gradient|...>` on the same line when you have manually verified the target is a background primitive. The bypass requires `--src-root` so the gate can read source lines.
 - **SA-2 (FAIL)**: root `.frame(maxHeight: .infinity)` without any safearea row in the same file → content bleeds under status bar / home indicator. Override with `// allow-fullbleed-noinset: <reason>` only when genuinely intentional.
 - **SA-3 (WARN)**: `.safeAreaInset(edge: ...)` attached to a background primitive instead of a container.
 - **NB-1 (FAIL on `*Screen.swift`, WARN elsewhere)**: file wraps content in `NavigationStack` / `NavigationView` but has **zero nav-bar visibility modifiers** (no `.toolbar(.hidden, for: .navigationBar)`, no `.navigationTitle(...)`, no `.toolbarVisibility(...)`, no `.navigationBarHidden(...)`). When Figma's top zone is a custom header (X / title / icon row — the common pattern), the system nav bar adds ~44pt of empty chrome above the content. **This is the most common root cause of the user-reported "UI tràn ra ngoài safe area" bug.** See AP-17 for fix recipe.
 
 Writes `c3-safearea.json` + surfaces as `layers.l2_safearea.gate` in `c3-gate.json`.
 
-`c3-gate.json.layers.l2.gate == "PASS"` AND `layers.l2_safearea.gate == "PASS"` together satisfy Done-Gate (stop-gate accepts L2 + L2.5 PASS as co-equal with C5 PASS). Full reference: [`verification-loop.md`](references/verification-loop.md) §4b.
+**L2.6 — Fills coverage gate (mandatory, blocks "missing Figma background image" bug):**
+
+`c3-fills-coverage.sh` (run via `c3-driver.sh fills-coverage`) reads `fills.json.nodes[]` (from Phase A Step 5 `figma_extract_fills`) and cross-checks against generated source files + `c2-audit.json`. Flags screens that have non-trivial Figma fills (IMAGE / GRADIENT / stacked) but emit zero corresponding SwiftUI primitives — see [`fills-handling.md`](references/fills-handling.md) Recipe 1/2/3:
+
+- **FC-1 (FAIL)**: `fills.json` has ≥1 node carrying an IMAGE fill but generated source has zero `Image(.X)` / `Image("X")` constructors. Recipe 1 / Recipe 3 was skipped.
+- **FC-2 (FAIL)**: `fills.json` has ≥1 node carrying a GRADIENT_* fill but source has zero `LinearGradient` / `RadialGradient` / `AngularGradient` / `EllipticalGradient` / `MeshGradient` constructors. Recipe 2 was skipped.
+- **FC-3 (FAIL)**: `fills.json` has stacked `[IMAGE, GRADIENT_*]` nodes but the generated code emits image OR gradient, not both. Recipe 3 was half-applied.
+- **FC-4 (FAIL)**: `fills.json` declares an IMAGE fill on node X but `manifest.rows[]` has no `status=done` row for that same nodeId. The exporter pipeline missed the asset; even if the agent emits `Image(.something)` the reference points at the wrong asset (or a phantom one). Fix: re-run `figma_export_assets_unified(autoDiscover: true)`, OR manually add a fallback row to `manifest.rows[]` per [`asset-handling.md`](references/asset-handling.md) §6.
+- **FC-4? (WARN)**: `manifest.json` missing — FC-4 cannot run; surfaced so the agent knows to run the exporter first.
+
+Bypass: `// allow-no-bg-emit: <reason>` on the `var body` line (or anywhere) of any generated Swift file — downgrades affected findings to WARN. Use only when the design intentionally swapped the Figma background for a solid color and `fills.json` is stale.
+
+Writes `c3-fills-coverage.json` + surfaces as `layers.l2_fills_coverage.gate` in `c3-gate.json`.
+
+`c3-gate.json.layers.l2.gate == "PASS"` AND `layers.l2_safearea.gate == "PASS"` AND `layers.l2_fills_coverage.gate == "PASS"` together satisfy Done-Gate (stop-gate accepts L2 + L2.5 + L2.6 PASS as co-equal with C5 PASS). Full reference: [`verification-loop.md`](references/verification-loop.md) §4b.
 
 **Two failure modes:**
 - **Gate FAIL** (report invalid) → regen report; no code edits. After 2 consecutive regen failures, ASK user.

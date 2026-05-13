@@ -214,7 +214,7 @@ L2 is **mandatory** alongside C5 in Tier-1. Either gate passing satisfies stop-g
 | `design-context.md` | A3 `get_design_context` | Verbatim hex, Tailwind classes, text content |
 | `metadata.json` | A3 `get_metadata` | Frame bbox for `.frame(w,h)` tracing |
 | `manifest.json` | A3+/B3 `figma_export_assets_unified` | `manifest.rows[].exportName` for `Image(.X)` tracing |
-| `fills.json` | A3 `figma_extract_fills` | Source for per-node gradient stop comparison (via c2-fills-stops.json) |
+| `fills.json` | A3 `figma_extract_fills` | Source for per-node gradient stop comparison (via c2-fills-stops.json); also drives L2.6 fills-coverage gate (`c3-fills-coverage.sh`) — IMAGE/GRADIENT nodes here MUST have a corresponding `Image()` / `LinearGradient(`/... emission in source |
 | `c2-typography-perline.json` | Gate A `c2-typography-extract.sh` | Per-text-segment typography (leading/tracking/fontWeight from Tailwind classes); used by L2 to PASS/FAIL `.lineSpacing` / `.tracking` / `.kerning` / `.fontWeight` modifiers via `value.textHint` |
 | `c2-fills-stops.json` | Gate A `c2-fills-stops-index.sh` | Per-`nodeId` gradient stop list (color + position + opacity); used by L2 for `.background(LinearGradient(...))` rows that carry `// Figma: <nodeId>` |
 
@@ -321,11 +321,27 @@ Stop-by-stop comparison against Swift `LinearGradient(stops:)` literals is a fut
 
 Separate sub-gate. Reads `kind: "safearea"` / `kind: "navbar"` / `kind: "stack"` rows from `c2-audit.json` (emitted for `.ignoresSafeArea` / `.safeAreaInset` / `.safeAreaPadding` / `.toolbar` / `.toolbarVisibility` / `.navigationBarHidden` / `.navigationTitle` / `.navigationBarTitleDisplayMode` plus `NavigationStack` / `NavigationView` constructors) and checks placement rules from layout-translation.md + AP-16 + AP-17. See [`anti-patterns.md`](anti-patterns.md) §AP-16 / §AP-17 for the rule rationale + fix recipe.
 
-Run via `c3-driver.sh safearea` (also called from `aggregate`). FAIL violations:
+Run via `c3-driver.sh safearea --src-root <project root>` (also called from `aggregate`). FAIL violations:
 - **SA-1** — `.ignoresSafeArea` on content container (`ScrollView`/`VStack`/`HStack`/`ZStack`/`List`/`Form`/`LazyVStack`/`NavigationStack`/`TabView`). Allowed only on background primitives (`Color`/`Image`/`Rectangle`/`RoundedRectangle`/`Capsule`/`Ellipse`/`Circle`/`LinearGradient`/`RadialGradient`/`AngularGradient`/`EllipticalGradient`/`MeshGradient`).
+- **SA-1?** — `.ignoresSafeArea` whose target the audit couldn't trace from the chain, or whose target is an unrecognized custom view. **FAIL** by default (escalated from prior WARN — ambiguous targets ARE the failure mode this rule guards against). Override: `// safearea-target-confirmed: <Color|Image|Gradient|...>` comment on the SAME line after manual verification. Requires `--src-root` for the gate to read the source line.
 - **SA-2** — root `.frame(maxHeight: .infinity)` with zero safearea rows in the file. Override: `// allow-fullbleed-noinset: <reason>` on the `.frame` line.
 - **SA-3 (WARN)** — `.safeAreaInset` on a background primitive (likely belongs on the screen-root container).
 - **NB-1** — file wraps content in `NavigationStack`/`NavigationView` but has zero nav-bar visibility modifiers (`.toolbar(.hidden, for: .navigationBar)` / `.navigationTitle(...)` / `.toolbarVisibility(...)` / `.navigationBarHidden(...)`). **FAIL** on `*Screen.swift` (single-screen pattern where Figma custom top bar is the strong default), **WARN** elsewhere (App/Router files legitimately host the root NavigationStack without a toolbar — child views own that). Override: `// nav-bar-intentional: <reason>` comment on the NavigationStack line.
+
+### §4b.4 — Fills coverage gate (L2.6, new)
+
+Separate sub-gate. Reads `fills.json.nodes[]` (from Phase A Step 5 `figma_extract_fills`) and cross-references the generated screen source files (via `c2-audit.json.files`) for matching SwiftUI primitives. Closes the Bug-1 gap: agent skips [`fills-handling.md`](fills-handling.md) Recipe 1 / Recipe 3 entirely → screen ships without its Figma background image / gradient, every other gate silently passes (C6 only sees what IS referenced; L2 trace verifies emitted rows, not the reverse direction).
+
+Run via `c3-driver.sh fills-coverage --src-root <project root>` (also called from `aggregate`). FAIL violations:
+- **FC-1** — `fills.json` has ≥1 IMAGE-fill node but emitted source has zero `Image(.X)` / `Image("X")` constructors. Recipe 1 / Recipe 3 was skipped.
+- **FC-2** — `fills.json` has ≥1 GRADIENT-only node but source has zero `LinearGradient` / `RadialGradient` / `AngularGradient` / `EllipticalGradient` / `MeshGradient` constructors. Recipe 2 was skipped.
+- **FC-3** — `fills.json` has stacked `[IMAGE, GRADIENT_*]` node(s) but emitted code has only image, no gradient overlay. Recipe 3 was half-applied.
+- **FC-4** — `fills.json` declares an IMAGE fill on node X but `manifest.rows[]` has no `status=done` entry for that same nodeId. The exporter pipeline missed the asset; emitting `Image(.X)` would reference the wrong/phantom asset. Closes the gap FC-1 leaves: FC-1 catches "no Image emitted", FC-4 catches "asset never exported". Fix: re-run `figma_export_assets_unified(autoDiscover: true)` OR manually add a fallback row to `manifest.rows[]` per [`asset-handling.md`](asset-handling.md) §6.
+- **FC-4? (WARN)** — `manifest.json` missing entirely — can't run FC-4. Surfaced so the agent runs `figma_export_assets_unified` before relying on this gate.
+
+Override: `// allow-no-bg-emit: <reason>` on the `var body` line (or anywhere) of any generated Swift file — downgrades affected findings to WARN. Use sparingly: prefer re-running `figma_extract_fills` to refresh `fills.json` over using the bypass.
+
+Surfaces as `layers.l2_fills_coverage.gate` in `c3-gate.json`. PASS required for stop-gate Done-Gate co-equal release (L2 + L2.5 + L2.6 + C5).
 
 ---
 

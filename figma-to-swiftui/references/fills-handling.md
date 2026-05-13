@@ -217,3 +217,25 @@ fills (from fills.json):
 ```
 
 This makes the layered-fill plan explicit before any Swift is written. C3 Pass 1 (banned-phrase grep) plus C5 visual diff catch drift after the fact, but the inventory entry is where the discipline starts.
+
+## Coverage gate — `c3-fills-coverage.sh`
+
+Enforces this entire doc at C3. Reads `fills.json.nodes[]` and source-greps the audit's `*Screen.swift` / `*View.swift` files for `Image(.X)` / `LinearGradient(` / `RadialGradient(` / `AngularGradient(` / `EllipticalGradient(` / `MeshGradient(` constructors. Catches the most common Bug-1 failure mode: Recipe 1 or Recipe 3 skipped entirely (`fills.json` has an IMAGE node but emitted code has zero `Image()` references).
+
+| Code | Level | Triggers |
+|---|---|---|
+| **FC-1** | FAIL | ≥1 IMAGE-fill node in `fills.json` but 0 `Image(.X)` / `Image("X")` in source. Recipe 1/3 skipped. |
+| **FC-2** | FAIL | ≥1 GRADIENT-only node in `fills.json` but 0 gradient constructors in source. Recipe 2 skipped. |
+| **FC-3** | FAIL | ≥1 stacked `[IMAGE, GRADIENT_*]` node but emitted code has image only (gradient overlay dropped). Recipe 3 half-applied. |
+| **FC-4** | FAIL | ≥1 IMAGE-carrying node in `fills.json` but `manifest.rows[]` has no `status=done` entry for that nodeId. The exporter pipeline missed it — `Image(.X)` will reference the wrong asset or none at all. Fix: re-run `figma_export_assets_unified(autoDiscover: true)` OR manually add a fallback row for the node. |
+| **FC-4?** | WARN | `manifest.json` missing entirely — can't run FC-4. Run the exporter at Phase A first, then re-run this gate. |
+
+Invoke via the C3 driver:
+
+```bash
+bash ~/.claude/scripts/c3-driver.sh fills-coverage --cache .figma-cache/<nodeId> --src-root "$PWD"
+```
+
+**Bypass.** When the design legitimately swapped the Figma background for a solid color and `fills.json` is stale, add `// allow-no-bg-emit: <reason>` on the `var body` line (or any line) of the generated screen file. The gate downgrades the affected finding to WARN. **Do not** use the bypass to ship the bug — regenerate `fills.json` instead by re-running `figma_extract_fills` against the current root nodeId.
+
+Writes `.figma-cache/<nodeId>/c3-fills-coverage.json`. Aggregate gate surfaces it as `layers.l2_fills_coverage.gate` in `c3-gate.json`.

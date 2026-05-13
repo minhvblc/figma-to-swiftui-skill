@@ -27,6 +27,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 SUBCOMMAND=""
 CACHE=""
+SRC_ROOT=""
 TOLERANCE="soft"
 ACCEPT_PARTIAL=0
 STRICT=0
@@ -37,26 +38,35 @@ print_usage() {
 usage: c3-driver.sh <subcommand> --cache <.figma-cache/nodeId> [...]
 
 Subcommands:
-  validate     Run cache-integrity schema check (c2-cache-validate.sh)
-  trace        Run L2 static token trace, write c3-trace.md + c3-trace.json
-               (auto-runs validate first unless --skip-validate)
-  safearea     Run safe-area placement gate (c3-safearea-gate.sh), write
-               c3-safearea.json
-  residual     Compose L3 LLM judge prompt (NOT IMPLEMENTED — Phase 2)
-  ssim         Run L4 Engine-A SSIM gate  (NOT IMPLEMENTED — Phase 3)
-  aggregate    Read all layer artifacts, write c3-gate.json + final GATE
+  validate         Run cache-integrity schema check (c2-cache-validate.sh)
+  trace            Run L2 static token trace, write c3-trace.md + c3-trace.json
+                   (auto-runs validate first unless --skip-validate)
+  safearea         Run safe-area placement gate (c3-safearea-gate.sh), write
+                   c3-safearea.json
+  fills-coverage   Run fills.json → emitted-code coverage gate
+                   (c3-fills-coverage.sh), write c3-fills-coverage.json
+  residual         Compose L3 LLM judge prompt (NOT IMPLEMENTED — Phase 2)
+  ssim             Run L4 Engine-A SSIM gate  (NOT IMPLEMENTED — Phase 3)
+  aggregate        Read all layer artifacts, write c3-gate.json + final GATE
 
 Common flags:
+  --cache <path>              cache dir (.figma-cache/<nodeId>) — required
+  --src-root <path>           iOS project root; passed to safearea +
+                              fills-coverage so they can resolve audit's
+                              relative file paths to absolute. Without it,
+                              SA-1? cannot honor `// safearea-target-confirmed:`
+                              bypass and FC-2 / FC-3 gradient checks degrade.
   --tolerance soft|strict     L2 frame/padding tolerance (default soft)
   --accept-partial            validate PARTIAL → PASS (otherwise blocks trace)
   --strict                    validate PARTIAL → FAIL
   --skip-validate             trace runs without prior validate (NOT recommended)
 
 Examples:
-  c3-driver.sh validate  --cache .figma-cache/1234:5678
-  c3-driver.sh trace     --cache .figma-cache/1234:5678
-  c3-driver.sh safearea  --cache .figma-cache/1234:5678
-  c3-driver.sh aggregate --cache .figma-cache/1234:5678
+  c3-driver.sh validate        --cache .figma-cache/1234:5678
+  c3-driver.sh trace           --cache .figma-cache/1234:5678
+  c3-driver.sh safearea        --cache .figma-cache/1234:5678 --src-root /abs/project
+  c3-driver.sh fills-coverage  --cache .figma-cache/1234:5678 --src-root /abs/project
+  c3-driver.sh aggregate       --cache .figma-cache/1234:5678
 USAGE
 }
 
@@ -66,6 +76,7 @@ SUBCOMMAND="$1"; shift
 while [ $# -gt 0 ]; do
   case "$1" in
     --cache)            CACHE="${2:-}"; shift 2 ;;
+    --src-root)         SRC_ROOT="${2:-}"; shift 2 ;;
     --tolerance)        TOLERANCE="${2:-soft}"; shift 2 ;;
     --accept-partial)   ACCEPT_PARTIAL=1; shift ;;
     --strict)           STRICT=1; shift ;;
@@ -146,7 +157,21 @@ cmd_safearea() {
     echo "FAIL: c3-safearea-gate.sh not found (looked in $SCRIPT_DIR and ~/.claude/scripts/)" >&2
     exit 65
   }
-  bash "$sa_script" --cache "$CACHE"
+  local args=("--cache" "$CACHE")
+  [ -n "$SRC_ROOT" ] && args+=("--src-root" "$SRC_ROOT")
+  bash "$sa_script" "${args[@]}"
+}
+
+# ── fills-coverage ───────────────────────────────────────────────────────────
+cmd_fills_coverage() {
+  local fc_script
+  fc_script=$(resolve_script "c3-fills-coverage.sh") || {
+    echo "FAIL: c3-fills-coverage.sh not found (looked in $SCRIPT_DIR and ~/.claude/scripts/)" >&2
+    exit 65
+  }
+  local args=("--cache" "$CACHE")
+  [ -n "$SRC_ROOT" ] && args+=("--src-root" "$SRC_ROOT")
+  bash "$fc_script" "${args[@]}"
 }
 
 # ── residual (placeholder) ───────────────────────────────────────────────────
@@ -204,6 +229,7 @@ audit    = load("c2-audit.json")
 trace    = load("c3-trace.json")
 validate = load("c3-validate.json")
 safearea = load("c3-safearea.json")
+fillscov = load("c3-fills-coverage.json")
 
 layers = {}
 
@@ -253,7 +279,7 @@ if trace:
 else:
     layers["l2"] = {"gate": "SKIP", "reason": "c3-trace.json missing — run `c3-driver.sh trace` first"}
 
-# L2.5 — Safe-area placement gate (anti-patterns.md AP-13)
+# L2.5 — Safe-area placement gate (anti-patterns.md AP-16)
 if safearea:
     layers["l2_safearea"] = {
         "gate": safearea.get("gate"),
@@ -263,6 +289,19 @@ if safearea:
     }
 else:
     layers["l2_safearea"] = {"gate": "SKIP", "reason": "c3-safearea.json missing — run `c3-driver.sh safearea` first"}
+
+# L2.6 — Fills coverage gate (fills-handling.md Recipe 1/2/3)
+if fillscov:
+    layers["l2_fills_coverage"] = {
+        "gate": fillscov.get("gate"),
+        "summary": fillscov.get("summary"),
+        "findingsCount": len(fillscov.get("findings") or []),
+        "degraded": fillscov.get("degraded", False),
+        "bypass": fillscov.get("bypass") or {},
+        "artifact": "c3-fills-coverage.json",
+    }
+else:
+    layers["l2_fills_coverage"] = {"gate": "SKIP", "reason": "c3-fills-coverage.json missing — run `c3-driver.sh fills-coverage` first"}
 
 # L3/L4 — not implemented in MVP
 layers["l3"] = {"gate": "SKIP", "reason": "L3 residual judge not implemented in MVP (Phase 2)"}
@@ -291,7 +330,7 @@ with open(tmp, "w") as f:
 os.replace(tmp, out_path)
 
 print(f"GATE: {final_gate}")
-for name in ("l0", "l1", "l2", "l2_safearea", "l3", "l4"):
+for name in ("l0", "l1", "l2", "l2_safearea", "l2_fills_coverage", "l3", "l4"):
     l = layers[name]
     g = l.get("gate", "?")
     extra = ""
@@ -308,9 +347,18 @@ for name in ("l0", "l1", "l2", "l2_safearea", "l3", "l4"):
     elif name == "l2_safearea" and "summary" in l and l["summary"]:
         s = l["summary"]
         extra = f" (violations={s.get('violations', 0)}, warnings={s.get('warnings', 0)})"
+    elif name == "l2_fills_coverage" and "summary" in l and l["summary"]:
+        s = l["summary"]
+        degraded_tag = " ⚠degraded" if l.get("degraded") else ""
+        extra = (f" (imgNodes={s.get('imageNodes', 0)}, gradNodes={s.get('gradientNodes', 0)}, "
+                 f"stacked={s.get('stackedNodes', 0)}, emitImg={s.get('imageEmissions', 0)}, "
+                 f"emitGrad={s.get('gradientEmissions', 0)}, violations={s.get('violations', 0)}"
+                 f"{degraded_tag})")
     elif "reason" in l:
         extra = f" ({l['reason']})"
-    label = "L2.5" if name == "l2_safearea" else name.upper()
+    if   name == "l2_safearea":         label = "L2.5"
+    elif name == "l2_fills_coverage":   label = "L2.6"
+    else:                                label = name.upper()
     print(f"  {label}: {g}{extra}")
 
 sys.exit(0 if final_gate == "PASS" else 1)
@@ -318,12 +366,13 @@ PY
 }
 
 case "$SUBCOMMAND" in
-  validate)   cmd_validate ;;
-  trace)      cmd_trace ;;
-  safearea)   cmd_safearea ;;
-  residual)   cmd_residual ;;
-  ssim)       cmd_ssim ;;
-  aggregate)  cmd_aggregate ;;
-  -h|--help)  print_usage; exit 0 ;;
+  validate)         cmd_validate ;;
+  trace)            cmd_trace ;;
+  safearea)         cmd_safearea ;;
+  fills-coverage)   cmd_fills_coverage ;;
+  residual)         cmd_residual ;;
+  ssim)             cmd_ssim ;;
+  aggregate)        cmd_aggregate ;;
+  -h|--help)        print_usage; exit 0 ;;
   *) echo "unknown subcommand: $SUBCOMMAND" >&2; print_usage; exit 64 ;;
 esac

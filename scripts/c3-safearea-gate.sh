@@ -57,22 +57,29 @@
 set -uo pipefail
 
 CACHE=""
+SRC_ROOT=""
 
 print_usage() {
   cat <<'USAGE' >&2
-usage: c3-safearea-gate.sh --cache <.figma-cache/nodeId>
+usage: c3-safearea-gate.sh --cache <.figma-cache/nodeId> [--src-root <path>]
 
 Cross-references c2-audit.json safearea rows against placement rules.
 Flags .ignoresSafeArea on content containers (SA-1), full-bleed root
 frames without inset handling (SA-2), and .safeAreaInset on non-root
-targets (SA-3 warn). See anti-patterns.md §AP-13.
+targets (SA-3 warn). See anti-patterns.md §AP-16.
+
+--src-root resolves audit's relative file paths to absolute paths so the
+gate can read source lines and respect the `// safearea-target-confirmed:`
+bypass comment. Without --src-root, ambiguous target rows escalate to FAIL
+with no bypass option.
 USAGE
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --cache)   CACHE="${2:-}"; shift 2 ;;
-    -h|--help) print_usage; exit 0 ;;
+    --cache)    CACHE="${2:-}"; shift 2 ;;
+    --src-root) SRC_ROOT="${2:-}"; shift 2 ;;
+    -h|--help)  print_usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; print_usage; exit 64 ;;
   esac
 done
@@ -91,10 +98,10 @@ if [ ! -f "$AUDIT" ]; then
   exit 0
 fi
 
-python3 - "$AUDIT" "$OUT" <<'PY'
-import json, os, sys
+python3 - "$AUDIT" "$OUT" "$SRC_ROOT" <<'PY'
+import json, os, re, sys
 
-audit_path, out_path = sys.argv[1], sys.argv[2]
+audit_path, out_path, src_root = sys.argv[1], sys.argv[2], sys.argv[3]
 
 with open(audit_path) as f:
     audit = json.load(f)
@@ -122,6 +129,42 @@ CONTENT_CONTAINERS = {
 findings = []
 violations = 0
 warnings = 0
+
+# Bypass comment marker for ambiguous SA-1 targets. Agent must explicitly
+# confirm the `.ignoresSafeArea` target is a background primitive when the
+# audit can't trace it from the chain. See anti-patterns.md §AP-16.
+BYPASS_RE = re.compile(r"//\s*safearea-target-confirmed\s*:\s*\S")
+
+# Per-file line cache so we don't re-read source on every safearea row.
+_src_cache = {}
+def source_lines(rel):
+    """Return the file's line list, or None when --src-root not provided or
+    file cannot be read. Cached per rel path."""
+    if not src_root:
+        return None
+    if rel in _src_cache:
+        return _src_cache[rel]
+    abs_path = os.path.join(src_root, rel)
+    try:
+        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        lines = None
+    _src_cache[rel] = lines
+    return lines
+
+def has_target_bypass(rel, line):
+    """True when the source line at line# carries `// safearea-target-confirmed: <X>`.
+    Returns False when source isn't resolvable (no bypass possible → escalate)."""
+    if not line:
+        return False
+    lines = source_lines(rel)
+    if not lines:
+        return False
+    idx = int(line) - 1
+    if idx < 0 or idx >= len(lines):
+        return False
+    return bool(BYPASS_RE.search(lines[idx]))
 
 files = audit.get("files") or {}
 
@@ -161,34 +204,57 @@ for rel_path, file_data in files.items():
                 })
                 violations += 1
             elif target == "?" or target is None:
-                # Cannot determine target — treat as warning so we surface
-                # ambiguous chains the agent should clarify with a comment.
+                # Cannot determine target from chain. Default FAIL — the
+                # whole point of AP-16 is "STOP and confirm BEFORE acting,
+                # not confess after". Agent can bypass with an inline
+                # `// safearea-target-confirmed: <Color|Image|Gradient|...>`
+                # comment on the same line when they verified manually.
+                bypassed = has_target_bypass(rel_path, line)
+                lvl = "WARN" if bypassed else "FAIL"
                 findings.append({
                     "code":   "SA-1?",
-                    "level":  "WARN",
+                    "level":  lvl,
                     "file":   rel_path,
                     "line":   line,
                     "rule":   f".{owner} on unknown target",
-                    "detail": f".{owner}({edges}) — could not determine target type from chain; "
-                              f"verify it's a background-only primitive (Color/Image/Rectangle/...).",
+                    "detail": f".{owner}({edges}) — could not determine target type from chain. "
+                              f"Only visual background primitives (Color/Image/Rectangle/"
+                              f"RoundedRectangle/LinearGradient/RadialGradient/...) may "
+                              f"extend under system chrome. If this IS a background, add "
+                              f"`// safearea-target-confirmed: <Color|Image|Gradient|...>` "
+                              f"on this line. If it's a content container (ZStack/VStack/"
+                              f"ScrollView), move the modifier to the background sibling "
+                              f"inside the ZStack and let content respect the safe area.",
                 })
-                warnings += 1
+                if lvl == "FAIL":
+                    violations += 1
+                else:
+                    warnings += 1
             elif target in BACKGROUND_TARGETS:
                 # Allowed — no finding
                 pass
             else:
-                # Custom view type or third-party — surface as warning so the
-                # reviewer can confirm it's truly a background, not content.
+                # Custom view type or third-party — could be a wrapper around a
+                # background primitive OR a content composite. Default FAIL so
+                # the agent has to confirm with `safearea-target-confirmed:`.
+                bypassed = has_target_bypass(rel_path, line)
+                lvl = "WARN" if bypassed else "FAIL"
                 findings.append({
                     "code":   "SA-1?",
-                    "level":  "WARN",
+                    "level":  lvl,
                     "file":   rel_path,
                     "line":   line,
                     "rule":   f".{owner} on non-standard target",
-                    "detail": f".{owner}({edges}) on {target} — unrecognized as visual background; "
-                              f"verify it's not a content container.",
+                    "detail": f".{owner}({edges}) on {target} — unrecognized as visual "
+                              f"background. If this is a wrapper around a background "
+                              f"primitive, add `// safearea-target-confirmed: <kind>` "
+                              f"on this line. If it's a content composite, move the "
+                              f"modifier off and onto a background sibling.",
                 })
-                warnings += 1
+                if lvl == "FAIL":
+                    violations += 1
+                else:
+                    warnings += 1
 
         # SA-3: safeAreaInset target sanity — must be a screen-root container.
         # We can't strictly verify "root" without inventory, but at minimum

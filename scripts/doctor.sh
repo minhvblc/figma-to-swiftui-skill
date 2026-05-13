@@ -437,9 +437,11 @@ for script in c5-capture.sh c5-engine-select.sh \
               c6-asset-completeness.sh c7-no-system-chrome.sh \
               c3-static-checks.sh c3-token-trace.sh c3-driver.sh \
               c3-cross-screen-drift.sh c3-safearea-gate.sh \
+              c3-fills-coverage.sh \
               c2-cache-validate.sh c2-extract-design-context.sh \
               c2-build-bbox-index.sh c2-tokens-synthesize.sh \
               c2-typography-extract.sh c2-fills-stops-index.sh \
+              c2-prototype-extract.sh \
               c1-probe.sh \
               b0a-extract-copy.sh b0b-tokens-codegen.sh \
               preflight-bundle-verify.sh preflight-smoke-test.sh \
@@ -468,9 +470,11 @@ if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
                 c6-asset-completeness.sh c7-no-system-chrome.sh \
                 c3-static-checks.sh c3-token-trace.sh c3-driver.sh \
                 c3-cross-screen-drift.sh c3-safearea-gate.sh \
+                c3-fills-coverage.sh \
                 c2-cache-validate.sh c2-extract-design-context.sh \
                 c2-build-bbox-index.sh c2-tokens-synthesize.sh \
                 c2-typography-extract.sh c2-fills-stops-index.sh \
+                c2-prototype-extract.sh \
                 c1-probe.sh \
                 b0a-extract-copy.sh b0b-tokens-codegen.sh \
                 preflight-bundle-verify.sh preflight-smoke-test.sh \

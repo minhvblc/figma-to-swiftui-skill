@@ -13,6 +13,7 @@ End-to-end workflow for turning Figma assets into Asset Catalog entries and usin
 | **FLATTEN** — export region as 1 PNG via `get_screenshot(regionNodeId)` | Non-interactive, composed artwork (3+ overlapping layers), effects SwiftUI can't reproduce (complex masks, blend modes, layered shadows on gradients, patterned fills), designer-authored as a unit, static content (no localization) | Onboarding hero, empty-state scene, splash artwork, promo card background, branded section header, full-width banner |
 | **DECOMPOSE** — atomic pieces + SwiftUI stacks | Interactive children, dynamic/localized text, independent animation/state, reusable component pattern | List rows, form sections, tab bars, navigation headers, button groups, card grids |
 | **CODE** — pure SwiftUI shapes | Trivial geometric shape, solid/gradient backgrounds (no artwork on top), blur/material backgrounds, UI affordances | Rounded rect, circle, divider, dot indicator, badge circle |
+| **SKIP** — do NOT export, capture as navigation metadata | Figma `CONNECTOR` nodes (designer-drawn arrows wiring button → screen) and other prototype-wiring annotations. These look like graphics in the screenshot but carry no UI semantics — they live in `prototype-wires.json` (see [`prototype-wires.md`](prototype-wires.md)), not in `Assets.xcassets`. | Flow arrows between frames, "after login →" annotation lines, prototype hotspot indicators |
 
 ### Mixed regions — flatten artwork, overlay UI
 
@@ -48,6 +49,7 @@ ZStack(alignment: .bottom) {
 | Elements uniform in size/style, arranged in grid or list with labels? | DECOMPOSE |
 | Distinct UI affordances (each tappable, different purpose)? | DECOMPOSE |
 | Trivial geometric shape? | CODE |
+| Arrow between two frames with an "after X" label, or `metadata.json` says `type=CONNECTOR`? | SKIP — it's a prototype-wiring annotation, not a graphic. See [`prototype-wires.md`](prototype-wires.md). |
 
 **Heuristic:** would a designer describe this as "the hero illustration" (1 thing) or "a row of action icons" (N things)? First → flatten. Second → decompose.
 
@@ -60,6 +62,10 @@ Common false-positive: photo background + gradient overlay (hero banner, onboard
 ### Anti-pattern
 
 Downloading 5 small icons from a composed illustration and stacking with `.offset(x:, y:)` in ZStack. Drifts on different screen sizes, misses shadow/blur/blend layers, breaks when tokens change. **When in doubt: flatten.**
+
+### Anti-pattern (prototype arrows mistaken for graphics)
+
+`get_screenshot` on a flow root that includes prototype arrows between frames will return PNGs that look like part of the design. Exporting these as flattened illustration → bloated `Assets.xcassets` with weird thin-line PNG strokes that mean nothing at runtime. **Always check `metadata.json` for `type=CONNECTOR` first**, then read `prototype-wires.json` — those nodes are the *flow definition*, not artwork. They never go into `Assets.xcassets`.
 
 ---
 
