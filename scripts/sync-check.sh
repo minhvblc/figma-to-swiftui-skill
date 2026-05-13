@@ -195,6 +195,9 @@ broken = []
 for md in root.rglob('*.md'):
     p = str(md)
     if '/.git/' in p or '/worktrees/' in p or '/.claude/' in p: continue
+    # Skip SPM build checkout directories — vendored SwiftSyntax (figma-audit
+    # dependency) ships its own intra-doc anchors that aren't our concern.
+    if '/.build/' in p: continue
     text = md.read_text(errors='ignore')
     for match in re.finditer(r'\]\(([^)]+\.md)(#[^)]*)?\)', text):
         link = match.group(1)

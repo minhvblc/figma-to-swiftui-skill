@@ -184,6 +184,9 @@ For single-color icons, rarely need dark variants — use template mode + semant
 ### Naming
 
 - **Tagged-path**: `icAI<Name>` for icons, `imageAI<Name>` for images. Fixed convention — tool owns. `<Name>` from Figma node name (`eICHome` → `icAIHome`).
+  - **Size suffix.** When the Figma node has a bounding box, MCPFigma appends a `WxH` suffix to the renamed value: `eICArrow` at 24×24 → registry/manifest say `icAIArrow24x24`. Always use the **suffixed name from `manifest.rows[].exportName` verbatim** — `Image(.icAIArrow24x24)`, NOT `Image(.icAIArrow)`. Stripping the suffix produces `ImageResource not found`, and the agent's common "fix" is to fall back to `Image(systemName:)` (banned per [AP-1](anti-patterns.md)). `c6-asset-completeness.sh` Check C flags stripped references against the registry.
+  - **Two sizes = two assets.** A Figma `eICArrow` instance at 24×24 and another at 32×32 export as `icAIArrow24x24` AND `icAIArrow32x32`. Both are in the registry, both have their own `.imageset` directory, both must be referenced by their full suffixed names. Asset Catalog scales @1x/@2x/@3x within each asset; it does NOT scale across sizes.
+  - **Prefix case.** Designer typos (`EICHome`, `eIcHome`, `eichome`) → MCPFigma v0.4.0+ emits a warning to `registry.warnings[]` and falls through to the canonical `eIC*` normalization. On v0.3.x and earlier, mis-cased prefixes are silently dropped — the icon won't be in registry, won't be in xcassets, and the agent will reach for `Image(systemName:)`. Update MCPFigma if you see icons silently disappearing.
 - **Fallback-path**:
   - Match project's existing case style (camelCase or kebab-case — don't mix)
   - Global icons (shared across screens): no prefix. `close`, `chevronRight`, `search`

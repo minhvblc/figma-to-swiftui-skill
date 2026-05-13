@@ -186,6 +186,31 @@ except Exception:
   fi
 fi
 
+# ── 3b. figma-audit binary (SwiftSyntax-based L1 audit parser) ──────────────
+# Required for L1 audit emission (PostToolUse hook on *Screen.swift / *View.swift).
+# Without it, c2-audit.json is emitted in regex-fallback / missing degraded mode,
+# and the L2 gate (c3-token-trace.sh) auto-fails until repaired.
+echo
+echo "3b. figma-audit binary (L1 audit parser)"
+AUDIT_BIN="$HOME/.local/share/figma-audit/bin/figma-audit"
+if [ ! -e "$AUDIT_BIN" ]; then
+  bad "figma-audit binary not found at $AUDIT_BIN"
+  hint "Build it: cd scripts/figma-audit-src && swift build -c release"
+  hint "Or re-run scripts/install.sh — installs the binary as step 2b"
+  hint "Without it, L1 audit runs in degraded mode and L2 gate FAILs."
+elif [ ! -x "$AUDIT_BIN" ]; then
+  bad "figma-audit at $AUDIT_BIN is not executable"
+  hint "Fix: chmod +x \"$AUDIT_BIN\""
+else
+  AUDIT_VER=$("$AUDIT_BIN" --version 2>/dev/null || echo "?")
+  if "$AUDIT_BIN" --self-test >/dev/null 2>&1; then
+    ok "figma-audit binary OK (v$AUDIT_VER, self-test passed)"
+  else
+    bad "figma-audit binary present (v$AUDIT_VER) but --self-test failed"
+    hint "Toolchain may have changed since build. Re-build: cd scripts/figma-audit-src && swift build -c release"
+  fi
+fi
+
 # ── 4. FIGMA_ACCESS_TOKEN works ───────────────────────────────────────────────
 echo
 echo "4. FIGMA_ACCESS_TOKEN"
@@ -404,13 +429,18 @@ if [ "$SKILL_FOUND" -eq 0 ]; then
   hint "Run scripts/install.sh, or copy figma-to-swiftui/ and figma-flow-to-swiftui-feature/ to ~/.claude/skills/"
 fi
 
-# ── 7. Verification gate scripts (C5 + C6 + C7 + C8) ─────────────────────────
+# ── 7. Verification gate scripts (C5 + C6 + C7 + drivers/codegen) ────────────
 echo
 echo "7. Verification gate scripts"
 SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 for script in c5-capture.sh c5-engine-select.sh \
               c6-asset-completeness.sh c7-no-system-chrome.sh \
-              c3-static-checks.sh c1-probe.sh \
+              c3-static-checks.sh c3-token-trace.sh c3-driver.sh \
+              c3-cross-screen-drift.sh c3-safearea-gate.sh \
+              c2-cache-validate.sh c2-extract-design-context.sh \
+              c2-build-bbox-index.sh c2-tokens-synthesize.sh \
+              c2-typography-extract.sh c2-fills-stops-index.sh \
+              c1-probe.sh \
               b0a-extract-copy.sh b0b-tokens-codegen.sh \
               preflight-bundle-verify.sh preflight-smoke-test.sh \
               sync-check.sh mode-detect.sh \
@@ -436,7 +466,12 @@ INSTALLED_SCRIPTS_DIR="$HOME/.claude/scripts"
 if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
   for script in c5-capture.sh c5-engine-select.sh \
                 c6-asset-completeness.sh c7-no-system-chrome.sh \
-                c3-static-checks.sh c1-probe.sh \
+                c3-static-checks.sh c3-token-trace.sh c3-driver.sh \
+                c3-cross-screen-drift.sh c3-safearea-gate.sh \
+                c2-cache-validate.sh c2-extract-design-context.sh \
+                c2-build-bbox-index.sh c2-tokens-synthesize.sh \
+                c2-typography-extract.sh c2-fills-stops-index.sh \
+                c1-probe.sh \
                 b0a-extract-copy.sh b0b-tokens-codegen.sh \
                 preflight-bundle-verify.sh preflight-smoke-test.sh \
                 sync-check.sh mode-detect.sh \
@@ -451,6 +486,24 @@ if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
     fi
   done
 fi
+
+# Shared helper library (_lib/cache-io.sh) for c2-*/c3-* scripts
+for lib in cache-io.sh; do
+  src_lib="$SCRIPTS_DIR/_lib/$lib"
+  if [ ! -f "$src_lib" ]; then
+    bad "_lib/$lib missing at $src_lib"
+    hint "Restore from the skill repo: scripts/_lib/$lib"
+  else
+    ok "_lib/$lib present"
+  fi
+  if [ -d "$INSTALLED_SCRIPTS_DIR" ]; then
+    inst_lib="$INSTALLED_SCRIPTS_DIR/_lib/$lib"
+    if [ ! -f "$inst_lib" ]; then
+      bad "_lib/$lib not installed at $inst_lib"
+      hint "Re-run scripts/install.sh — it installs _lib/ alongside gate scripts"
+    fi
+  fi
+done
 
 # Image cropping tool — c5-crop-sections.sh prefers ImageMagick, falls back
 # to macOS sips. macOS always ships sips, so this is a soft check that warns
@@ -472,6 +525,7 @@ EXPECTED_HOOKS=(
   "figma-to-swiftui-gate.sh:PreToolUse"
   "figma-to-swiftui-banned-pattern-gate.sh:PreToolUse"
   "figma-to-swiftui-entry-bypass-gate.sh:PreToolUse"
+  "figma-to-swiftui-audit-emit.sh:PostToolUse"
   "figma-to-swiftui-stop-gate.sh:Stop"
 )
 
@@ -542,7 +596,8 @@ sha() {
 }
 
 if [ -d "$SCRIPTS_INSTALLED" ]; then
-  for src in "$SCRIPTS_REPO"/c1-*.sh "$SCRIPTS_REPO"/c3-*.sh "$SCRIPTS_REPO"/c5-*.sh \
+  for src in "$SCRIPTS_REPO"/c1-*.sh "$SCRIPTS_REPO"/c2-*.sh \
+             "$SCRIPTS_REPO"/c3-*.sh "$SCRIPTS_REPO"/c5-*.sh \
              "$SCRIPTS_REPO"/c6-*.sh "$SCRIPTS_REPO"/c7-*.sh \
              "$SCRIPTS_REPO"/b0a-*.sh "$SCRIPTS_REPO"/b0b-*.sh \
              "$SCRIPTS_REPO"/preflight-*.sh "$SCRIPTS_REPO"/sync-check.sh \

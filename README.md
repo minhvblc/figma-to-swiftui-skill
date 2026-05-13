@@ -73,7 +73,7 @@ The installer is idempotent and safe to re-run. It will:
 3. Prompt for your `FIGMA_ACCESS_TOKEN` (with step-by-step instructions) and validate it against the Figma API
 4. Back up your existing Claude config, then patch in the `figma-assets` MCP entry — **user-level (`~/.claude.json`) by default**. Use `--project` to register inside a specific iOS project's `.claude/mcp.json` instead.
 5. Copy the two skill folders into `~/.claude/skills/` (use `--symlink` if you want to `git pull` to update later)
-6. Install + register 6 enforcement hooks (PreToolUse / PostToolUse / Stop) into `~/.claude/settings.json` — disable with `--no-hooks`
+6. Install + register 4 enforcement hooks (3 PreToolUse Write|Edit gates + 1 Stop gate) into `~/.claude/settings.json` — disable with `--no-hooks`
 7. Detect Figma.app + run `scripts/doctor.sh` + print a copy-paste test command
 
 Useful flags:

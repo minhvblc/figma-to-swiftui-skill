@@ -365,6 +365,38 @@ while IFS= read -r line; do
   add_violation "line $lineno: cornerRadius=${val}pt ≥ 30 — likely copies iPhone bezel, remove or add // allow-screen-corner-radius:"
 done <<< "$BEZEL_HITS"
 
+# ─── Check 9: #Preview must pin canvas size (L4 SSIM determinism) ─────────────
+# When the agent emits a `#Preview { Screen() }` block, Xcode renders it at
+# whatever canvas size the preview pane happens to be — non-deterministic,
+# breaks L4 SSIM compare against the Figma frame. Require explicit
+# `.fixedLayout(width:height:)` with a known iPhone size.
+#
+# Allow-comment escape: `// allow-unpinned-preview: <reason>` on the #Preview line.
+#
+# Only enforces for files that DECLARE `#Preview` AND are *Screen.swift /
+# *View.swift (skip everything else — including ViewModel/Preview helpers).
+
+case "$FILE_PATH" in
+  *Screen.swift|*View.swift)
+    PREVIEW_HITS=$(awk '
+      /^[[:space:]]*#Preview/ {
+        line = $0
+        # Already pinned via .fixedLayout(width: N, height: N)? OK
+        if (line ~ /traits:[[:space:]]*\.fixedLayout/) next
+        # Multi-trait form: `#Preview(traits: .fixedLayout(...), ...)` also OK
+        if (line ~ /\.fixedLayout\(/) next
+        print NR ":" $0
+      }
+    ' "$TMP" 2>/dev/null || true)
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      lineno="${line%%:*}"
+      has_allow_comment "$lineno" '// *allow-unpinned-preview:' && continue
+      add_violation "line $lineno: #Preview missing .fixedLayout(width:height:) — required for L4 SSIM determinism. Use #Preview(traits: .fixedLayout(width: 393, height: 852)) { ... } or add // allow-unpinned-preview: <reason>"
+    done <<< "$PREVIEW_HITS"
+    ;;
+esac
+
 # Done.
 if [ -z "$VIOLATIONS" ]; then
   exit 0

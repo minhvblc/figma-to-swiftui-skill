@@ -199,6 +199,136 @@ grep -rnE 'Capsule\(\)\..+\.frame\([^)]*height:\s*[1-6][^0-9]' $SWIFT_FILES
 
 ---
 
+## 4b. L2 Token Trace (static — Tier-1, mandatory)
+
+C5 (build + simulator/render) is expensive: subjective compare, 15-30K tokens/screen, 30-90s sim cold start. L2 trace is the **deterministic** static counterpart — every value in the generated Swift file traces to a Figma source or fails.
+
+L2 is **mandatory** alongside C5 in Tier-1. Either gate passing satisfies stop-gate Done-Gate (`(a) C5 PASS, OR (b) L2 PASS, OR (c) system-skip reason`).
+
+### Inputs (all already exist after Phase A+B+C2)
+
+| File | Source | Used for |
+|---|---|---|
+| `.figma-cache/<nodeId>/c2-audit.json` | L1 PostToolUse hook auto-emits on every Write/Edit of `*Screen.swift` / `*View.swift` | Rows from generated code: color/font/padding/frame/image/text/stack/**safearea** |
+| `tokens.json` | A3 `figma_extract_tokens` | Color swiftName, typography preset, spacing/radius values |
+| `design-context.md` | A3 `get_design_context` | Verbatim hex, Tailwind classes, text content |
+| `metadata.json` | A3 `get_metadata` | Frame bbox for `.frame(w,h)` tracing |
+| `manifest.json` | A3+/B3 `figma_export_assets_unified` | `manifest.rows[].exportName` for `Image(.X)` tracing |
+| `fills.json` | A3 `figma_extract_fills` | Source for per-node gradient stop comparison (via c2-fills-stops.json) |
+| `c2-typography-perline.json` | Gate A `c2-typography-extract.sh` | Per-text-segment typography (leading/tracking/fontWeight from Tailwind classes); used by L2 to PASS/FAIL `.lineSpacing` / `.tracking` / `.kerning` / `.fontWeight` modifiers via `value.textHint` |
+| `c2-fills-stops.json` | Gate A `c2-fills-stops-index.sh` | Per-`nodeId` gradient stop list (color + position + opacity); used by L2 for `.background(LinearGradient(...))` rows that carry `// Figma: <nodeId>` |
+
+### Run
+
+```bash
+bash ~/.claude/scripts/c3-driver.sh trace --cache .figma-cache/<nodeId>
+bash ~/.claude/scripts/c3-driver.sh aggregate --cache .figma-cache/<nodeId>
+```
+
+`trace` invokes `c3-token-trace.sh` and writes `c3-trace.md` + `c3-trace.json`. `aggregate` reads all layer artifacts and writes `c3-gate.json` with the final `GATE: PASS|FAIL`.
+
+### Match rules (soft tolerance, ±2pt frame/padding/spacing)
+
+| Kind | Match against | Tolerance |
+|---|---|---|
+| `color` (tokenRef) | `tokens.json.colors[].swiftName` (exact) | 0 |
+| `color` (literal hex) | hex string VERBATIM in `design-context.md` | 0 |
+| `font` (preset) | preset name in typography whitelist OR `tokens.json.typography[].swiftName` | 0 |
+| `font` (size+weight) | tuple in `tokens.json.typography[]` matching exact size + weight | 0 |
+| `padding`/`spacing` | `tokens.json.spacing[]` OR Tailwind `p-N`/`gap-N` (4×N pt) in design-context.md | ±2pt |
+| `frame` (w/h) | metadata.json node `absoluteBoundingBox` (any node, both dims match) | ±2pt |
+| `image` (assetRef) | `manifest.rows[].exportName` or `friendlyName` (exact) | 0 |
+| `stack.spacing` | `tokens.json.spacing[]` OR Tailwind `gap-N` | ±2pt |
+| `text` (literal) | substring in `design-context.md` OR `Strings.<Screen>.<key>` reference | 0 |
+
+### Coverage gate (anti-silent-pass)
+
+L2 emits `GATE: FAIL` when:
+- `parserMode` is `"missing"` or `"regex-fallback"` (figma-audit binary failed) → `PARSER_DEGRADED`
+- Per-file `unknownModifierCount > 3` (parser couldn't classify too many modifiers) → block
+- Any FAIL row in trace
+
+Override: set `manifest.json.verification.c3.layers.l1.acceptUnknown = true` (explicit risk acceptance).
+
+### Self-fix loop semantics
+
+L2 is **deterministic** — same audit + same Figma artifacts → same trace. Wedge detection:
+
+```
+if iteration > 0 and L2_FAILS[i] >= L2_FAILS[i-1] and no_cited_file_was_edited:
+    ASK_USER (wedged)
+```
+
+Default `MAX_RETRIES = 2`. Each iteration: fix the file:line cited in FAIL rows (use the **Suggested** column), Write/Edit the file → PostToolUse hook re-emits audit → re-run trace.
+
+### Skill how-to (per-screen)
+
+After C2 write (and Phase B done), do this **before** C5:
+
+```bash
+bash ~/.claude/scripts/c3-driver.sh trace --cache .figma-cache/<nodeId>
+# If GATE: FAIL with suggestions → fix file:line, repeat
+# If GATE: PASS → move to C5 (or skip C5 in Tier-1 default when L2 PASS)
+bash ~/.claude/scripts/c3-driver.sh aggregate --cache .figma-cache/<nodeId>
+```
+
+`c3-gate.json` is what the stop-gate hook reads to release Done-Gate.
+
+### What L2 does NOT cover (delegate to L3/C5)
+
+L2 is structural + token-level only. The following live in L3 (focused LLM judge, Phase 2) or C5 (sim render):
+- Shadow blur radius / offset / color
+- Gradient angle / center / transform (per-stop colors + positions ARE checked when `// Figma: <nodeId>` is present — see §4b.2)
+- Text alignment in compound layouts (Button { HStack {...} })
+- Blend mode, opacity stacking
+- Border-radius shape semantics (Capsule vs RoundedRectangle on non-square)
+- Composite button internal layout (icon-text spacing)
+
+When L2 row is `kind: color, owner: shadow|opacity|blendMode` it auto-marks `N/A` — these axes pass through to L3.
+
+### §4b.1 — Typography per-line (new)
+
+`c2-typography-extract.sh` walks `design-context.md` as JSX, attributes each text-bearing element to its enclosing class stack, and resolves Tailwind typography utilities into normalized values per text segment:
+
+| Tailwind class | Resolved field | Units |
+|---|---|---|
+| `text-xs ... text-9xl` or `text-[14px]` | `fontSize` | pt |
+| `font-light ... font-black` | `fontWeight` | SwiftUI weight keyword |
+| `leading-tight ... leading-loose` or `leading-[1.4]` | `leading` | ratio (or pt for `leading-[Npx]`) |
+| `tracking-tighter ... tracking-widest` or `tracking-[-0.5px]` | `tracking` | em (auto-converted to pt via fontSize) or pt |
+| `uppercase` / `lowercase` / `capitalize` | `textCase` | enum |
+| `italic` / `not-italic` | `italic` | bool |
+| `text-left ... text-justify` | `textAlign` | enum |
+
+L1 audit attaches `value.textHint` to every `font`/`fontWeight`/`tracking`/`kerning`/`lineSpacing` row by walking down the modifier chain to the closest `Text("…")` literal. L2 looks up `byTextNormalized[hint]` and:
+
+- `.lineSpacing(N)` — flag obvious mismatch (Tailwind `leading-tight` (1.25) paired with `.lineSpacing(>=6)` → FAIL); compatible otherwise.
+- `.tracking(N)` / `.kerning(N)` — convert Tailwind em-tracking to pt via fontSize, compare ±0.5pt.
+- `.fontWeight(.X)` — string equality against Tailwind weight keyword.
+
+When the per-line map has no entry for the textHint, row degrades to N/A (safe — no false positive).
+
+### §4b.2 — Gradient stops (new)
+
+`c2-fills-stops-index.sh` flattens `fills.json` into `byNodeId[<id>] → [{type, opacity, stops:[{pos, hex, opacity}]}]`. L2 looks up the gradient row's `nodeIdHint` (set via `// Figma: <id>` trailing comment on the `.background(...)` line) and:
+
+- Verifies the matching node has a GRADIENT_* fill (not SOLID — `FAIL` with type mismatch detail).
+- Surfaces the stop list in the PASS reason: `fills-stops nodeId X has 3-stop gradient: [#1a1a1a@0.00,#ffffff@0.50,#0066ff@1.00]`.
+
+Stop-by-stop comparison against Swift `LinearGradient(stops:)` literals is a future enhancement — for now Pass 2 visual diff catches stop divergence. Adding `// Figma: <nodeId>` to gradient lines is recommended (single-source-of-truth comment).
+
+### §4b.3 — Safe-area + nav-bar placement gate (L2.5, new)
+
+Separate sub-gate. Reads `kind: "safearea"` / `kind: "navbar"` / `kind: "stack"` rows from `c2-audit.json` (emitted for `.ignoresSafeArea` / `.safeAreaInset` / `.safeAreaPadding` / `.toolbar` / `.toolbarVisibility` / `.navigationBarHidden` / `.navigationTitle` / `.navigationBarTitleDisplayMode` plus `NavigationStack` / `NavigationView` constructors) and checks placement rules from layout-translation.md + AP-16 + AP-17. See [`anti-patterns.md`](anti-patterns.md) §AP-16 / §AP-17 for the rule rationale + fix recipe.
+
+Run via `c3-driver.sh safearea` (also called from `aggregate`). FAIL violations:
+- **SA-1** — `.ignoresSafeArea` on content container (`ScrollView`/`VStack`/`HStack`/`ZStack`/`List`/`Form`/`LazyVStack`/`NavigationStack`/`TabView`). Allowed only on background primitives (`Color`/`Image`/`Rectangle`/`RoundedRectangle`/`Capsule`/`Ellipse`/`Circle`/`LinearGradient`/`RadialGradient`/`AngularGradient`/`EllipticalGradient`/`MeshGradient`).
+- **SA-2** — root `.frame(maxHeight: .infinity)` with zero safearea rows in the file. Override: `// allow-fullbleed-noinset: <reason>` on the `.frame` line.
+- **SA-3 (WARN)** — `.safeAreaInset` on a background primitive (likely belongs on the screen-root container).
+- **NB-1** — file wraps content in `NavigationStack`/`NavigationView` but has zero nav-bar visibility modifiers (`.toolbar(.hidden, for: .navigationBar)` / `.navigationTitle(...)` / `.toolbarVisibility(...)` / `.navigationBarHidden(...)`). **FAIL** on `*Screen.swift` (single-screen pattern where Figma custom top bar is the strong default), **WARN** elsewhere (App/Router files legitimately host the root NavigationStack without a toolbar — child views own that). Override: `// nav-bar-intentional: <reason>` comment on the NavigationStack line.
+
+---
+
 ## 5. C5 Simulator Workflow
 
 **C5 is mandatory.** Runs after Gate C3-Pass2 PASSes. No user opt-out phrases. Skip only on 4 system reasons:

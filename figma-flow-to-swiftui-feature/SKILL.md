@@ -1,6 +1,6 @@
 ---
 name: figma-flow-to-swiftui-feature
-description: "Orchestrate one or more Figma nodes plus a user-provided feature flow brief into a production-ready SwiftUI feature. Trigger when the user wants a full user journey, end-to-end flow, or multi-screen feature in an iOS project, including navigation, state handling, validation, loading/error/success states, and project-aware integration. Requires BOTH the figma-desktop MCP (get_metadata / get_design_context / get_screenshot) AND the MCPFigma server (figma_build_registry / figma_extract_tokens / figma_export_assets_unified) — STOP if either is missing, never improvise. Use together with figma-to-swiftui when pixel-accurate screen generation is also required."
+description: "Orchestrate one or more Figma nodes plus a user-provided feature flow brief into a production-ready SwiftUI feature. Trigger when the user wants a full user journey, end-to-end flow, or multi-screen feature in an iOS project, including navigation, state handling, validation, loading/error/success states, and project-aware integration. Also trigger on Vietnamese phrases like 'làm flow này', 'làm feature này theo Figma', 'code flow iOS từ Figma', 'làm cả flow này', 'làm nhiều màn theo Figma', 'orchestrate nhiều màn Figma thành feature'. Requires BOTH the figma-desktop MCP (get_metadata / get_design_context / get_screenshot) AND the MCPFigma server (figma_build_registry / figma_extract_tokens / figma_export_assets_unified) — STOP if either is missing, never improvise. Use together with figma-to-swiftui when pixel-accurate screen generation is also required. Do NOT trigger for React, web, or Android."
 ---
 
 # Figma Flow to SwiftUI Feature Skill
@@ -11,13 +11,21 @@ Turn one or more Figma nodes plus a feature-flow brief into a complete SwiftUI f
 
 ## Mandatory Output Checklist
 
-Every flow run MUST satisfy these five items. Cite each item by number in the verification report.
+Every flow run MUST satisfy these seven items. Cite each item by number in the verification report.
 
 1. **Every visible icon, logo, illustration, and image is sourced from Figma.** No `Image(systemName:)` or hand-drawn `Path` / `Shape` substituting for a Figma node. Allow-list exceptions documented in [`../figma-to-swiftui/references/verification-loop.md` §6](../figma-to-swiftui/references/verification-loop.md#6-c6--asset-completeness-mandatory). Enforced per screen by `scripts/c6-asset-completeness.sh` AND at write-time by `scripts/hooks/figma-to-swiftui-banned-pattern-gate.sh`.
 2. **No iOS system chrome is redrawn in SwiftUI.** Status bar, home indicator, Dynamic Island, notch are rendered by iOS — and the iPhone bezel (the rounded outline of the entire frame, ~47–55pt) is rendered by the hardware itself. Drawing any of them is a bug; on real devices the user gets duplicates or a "double bezel" gutter. Enforced by `scripts/c7-no-system-chrome.sh` over the entire feature src tree (status-bar / home-indicator / Dynamic Island redraws AND screen-root `.cornerRadius`/`.clipShape(.rect(cornerRadius:))` ≥ 30pt without `// allow-screen-corner-radius:` justification) — see [`../figma-to-swiftui/references/verification-loop.md` §7](../figma-to-swiftui/references/verification-loop.md#7-c7--no-system-chrome-mandatory) + [`../figma-to-swiftui/references/anti-patterns.md` §11](../figma-to-swiftui/references/anti-patterns.md).
 3. **Asset export is exhaustive on every screen.** Each `figma_export_assets_unified` call passes `autoDiscover: true` so the server scans the subtree under that screen's `nodeId` and auto-builds rows for every `eIC*` / `eImage*` found. The response's `coverage` block is the proof. See [`../figma-to-swiftui/references/mcpfigma-setup.md` §"figma_export_assets_unified"](../figma-to-swiftui/references/mcpfigma-setup.md). Enforced at write-time by `scripts/hooks/figma-to-swiftui-gate.sh`: every `registry.taggedAssets[].nodeId` MUST appear in `manifest.rows[]` with `status: "done"` before any `*.swift` Write/Edit is allowed.
 4. **Visual diff is decisive, not weasel-worded — per screen.** Every screen's C5.6 must produce `c5-sections.md`, `c5-census.md`, per-section crop pairs, free-form "what's wrong" paragraph, 3-axis diff table, negative spot-check, 4-anchor proportional check, and attestation. No "approximately", "roughly", "close enough" in PASS rows. See [`../figma-to-swiftui/references/verification-loop.md` §C5.6](../figma-to-swiftui/references/verification-loop.md#c56--side-by-side-compare-6-step-procedure-mandatory).
 5. **Every screen follows the project's coding conventions.** The flow-level convention probe at Step 2 (see `scripts/c1-probe.sh`) writes `.figma-cache/_shared/c1-conventions.json`. Folder layout, ViewModel pattern (State + Action + `send(_:)` reducer), function size, and (when project uses them) IKNavigation / IKMacros / IKPopup / IKFeedback routing apply per screen. Reference files: [`../figma-to-swiftui/references/project-structure.md`](../figma-to-swiftui/references/project-structure.md), [`../figma-to-swiftui/references/viewmodel-pattern.md`](../figma-to-swiftui/references/viewmodel-pattern.md), [`../figma-to-swiftui/references/swift-style.md`](../figma-to-swiftui/references/swift-style.md), [`../figma-to-swiftui/references/iknavigation-bridge.md`](../figma-to-swiftui/references/iknavigation-bridge.md), [`../figma-to-swiftui/references/ikmacro-bridge.md`](../figma-to-swiftui/references/ikmacro-bridge.md), [`../figma-to-swiftui/references/ikpopup-bridge.md`](../figma-to-swiftui/references/ikpopup-bridge.md), [`../figma-to-swiftui/references/ikfeedback-bridge.md`](../figma-to-swiftui/references/ikfeedback-bridge.md). Phase 0 mode detection: `scripts/mode-detect.sh`.
+
+6. **L2 token trace passes per screen.** After each screen's C2 (Implement) lands its `*Screen.swift` + `*View.swift` files, the L1 PostToolUse hook auto-emits `.figma-cache/<nodeId>/c2-audit.json`. Before C5, run `bash ~/.claude/scripts/c3-driver.sh trace --cache .figma-cache/<nodeId>` then `aggregate`. `c3-gate.json layers.l2.gate == "PASS"` is co-equal with C5 PASS at stop-gate (Tier-1). L2 catches token mis-application (made-up swiftName, wrong frame, untraced text) deterministically — no sim build needed. Full reference: [`../figma-to-swiftui/references/verification-loop.md` §4b](../figma-to-swiftui/references/verification-loop.md#4b-l2-token-trace-static--tier-1-mandatory).
+
+7. **Cross-screen drift check (flow-level, mandatory after all per-screen L2 PASS).** Same hex literal duplicated across multiple screens, asset name collisions with different bytes, and spacing literal repeats are flow-wide consistency issues that per-screen L2 cannot catch. Before declaring the flow done, run:
+   ```bash
+   bash ~/.claude/scripts/c3-cross-screen-drift.sh --cache-root .figma-cache
+   ```
+   This emits `.figma-cache/_shared/c3-cross-screen-drift.md` with three sections (color drift, asset collisions, spacing repeats) and exits non-zero if drift detected. Fix by either: (a) promoting the repeated literal to a Figma variable and re-fetching `tokens.json`, OR (b) normalizing the code to use a single tokenRef. Drift is the canonical signal of "I cut-and-pasted between screens instead of using the design system".
 
 **Concrete failure modes catalogued:** [`../figma-to-swiftui/references/anti-patterns.md`](../figma-to-swiftui/references/anti-patterns.md) lists the exact agent justifications that produced broken multi-screen runs ("downloaded major assets, built the rest with shapes", "build → screenshot → looks great without C5.6", "edit ContentView to jump between screens for verification"). Read once before Phase B and once before writing the Flow Verification summary.
 
@@ -40,6 +48,24 @@ This skill is responsible for:
 - Ensuring the feature includes required states and transitions, not just happy-path UI
 
 This skill is not responsible for pixel-level Figma-to-view translation. If `figma-to-swiftui` is available in the session, use it for each screen. If it is not available, follow the same principles locally and still treat Figma output as design specification, not code to port.
+
+## Skill boundaries — when to switch / delegate
+
+This skill owns **multi-screen orchestration**: contract → screen graph → integration → per-screen handoff → cross-screen consistency. Adjacent concerns delegate to sibling skills:
+
+| If the user wants... | Switch to |
+|---|---|
+| Single screen / one component (not a flow) | [`figma-to-swiftui`](../figma-to-swiftui/SKILL.md) directly — skip the flow overhead |
+| iOS project that uses `IKCoreApp` / `IKNavigation` / `IKMacros` | [`ikame-ios-coding`](../ikame-ios-coding/SKILL.md) — flow skill calls into Ikame conventions when `c1-conventions.json.usesIKCoreApp == true` |
+| VoiceOver / Dynamic Type / a11y audit on the flow | `ios-accessibility` skill — run as post-flow step on every interactive screen |
+| Navigation patterns (`NavigationStack`, `NavigationSplitView`, deep linking) | `swiftui-navigation` skill — typically called from Step 4 (shared scaffolding) of this skill |
+| Animation / transitions between screens (`matchedGeometryEffect`, springs) | `swiftui-animation` skill |
+| Liquid Glass effects (iOS 26+) on flow chrome (toolbar, tab bar) | `swiftui-liquid-glass` skill |
+| Drag / tap / magnify gestures across the flow | `swiftui-gestures` skill |
+| Multi-language flow (String Catalog, locale-aware formatting) | `ios-localization` skill |
+| Paywall / subscription / IAP screens in the flow | `storekit` skill — typically a leaf screen in conversion flows |
+
+**Rule of thumb.** Flow-level decisions (screen graph, shared scaffolding, navigation, cross-screen consistency) live here. Per-screen pixel work delegates to `figma-to-swiftui`. Animation / a11y / IAP wiring delegate to their respective skills AFTER per-screen Phase C lands.
 
 ## Inputs
 
@@ -205,6 +231,21 @@ If `figma_build_registry` returns auth error or is not registered, surface and s
 
 **Dedup the file-scoped data.** `figma_extract_tokens` is per `fileKey`, not per node. If all screens come from the same Figma file, fetch tokens once and copy/symlink the same `tokens.json` into each screen's cache folder.
 
+**Shared-tokens integrity gate (mandatory before per-screen Phase A).** Because `_shared/tokens.json` is a flow-wide singleton, a silent failure (Variables API 403, plan-gated empty) propagates to ALL screens. Verify ONCE before spawning per-screen Phase A:
+
+```bash
+# After figma_extract_tokens writes _shared/tokens.json:
+# 1. If tokens empty AND _shared/<rootNode>/c2-extracted.json exists, synthesize fallback
+bash ~/.claude/scripts/c2-tokens-synthesize.sh --cache .figma-cache/_shared
+
+# 2. Schema validate — refuses to advance if tokens.json is empty-without-note
+bash ~/.claude/scripts/c2-cache-validate.sh --cache .figma-cache/_shared --accept-partial
+# Exit 0 → advance to per-screen Phase A. Exit 1 → STOP, surface the reason to user
+# (likely token regeneration needed with file_variables:read scope).
+```
+
+This converts "1 screen sees empty tokens" into "flow STOPs at root with actionable error" — the per-screen loop doesn't waste 5+ minutes only to fail at C3.
+
 **If a Phase A fetch fails** on a screen: the manifest records it as `failed`; continue with the next screen, then retry failed ones at the end. Do NOT retry the same node on timeout — apply the circuit breaker from fetch-strategy.md and split the screen into sections.
 
 **No Phase A shortcut — design-context.md and screenshot.png are mandatory per screen.** Common failure modes that this rule exists to prevent:
@@ -345,6 +386,27 @@ Artifacts:
 ```
 
 Stating "done" / "xong" / "BUILD SUCCEEDED, closing out" without this block — or with a fabricated PASS in it — is a Done-Gate violation. If you find yourself thinking *"a clean compile felt like enough proof"* or *"runtime behavior wasn't observed but the build links"*, **STOP**. That is the exact failure mode this gate exists to prevent. Run C5 now.
+
+## Worked example — onboarding flow (6 screens)
+
+**User says:** *"Build the entire onboarding flow: https://figma.com/design/aBc123/Onboarding?node-id=1-2 (this is the root frame containing 6 screens). Project is Ikame fleet."*
+
+**Actions:**
+
+1. **Step 0 — Source doc:** none attached. Proceed with Figma-only.
+2. **Step 1 — Normalize request:** input contains "entire flow" + root nodeId → confirms multi-screen, not single. Output: feature contract `{ name: "Onboarding", scope: "6-screen sign-up", states: ["loading","input","error","success"] }`.
+3. **Step 2 — Audit codebase + convention probe:** `c1-probe.sh <project>` → `_shared/c1-conventions.json` (`usesIKCoreApp: true, usesIKNavigation: true, ikFontEnum: "ikFont", routerName: "AppRouter"`). `mode-detect.sh` → `brownfield-ikame`.
+4. **Step 3 — Screen graph:** `figma_build_registry(nodeId=1:2, depth=10)` → `screens[]` = 6 nodes. Build graph: `Welcome → Email → CodeVerify → ProfileSetup → AvatarPick → Success`. Persist to `_shared/registry.json`.
+5. **Step 4 — Shared scaffolding:** extend existing `AppRouter` (per `iknavigation-bridge.md`) with 6 new `IKRouteID` cases. Generate ViewModels skeleton + flow state machine in `Features/Onboarding/`.
+6. **Step 5 — Per-screen Phase A (clustered, parallelBudget=3):** for each of 6 screens, fire A3 batch in clusters of 3 (so cluster 1 = 3 screens × 5 MCP calls = 15 in flight). Wait, fire cluster 2 (3 remaining screens). On cluster done: run `c2-extract-design-context.sh` + `c2-build-bbox-index.sh` per-screen, then `c2-cache-validate.sh _shared` for flow-wide tokens integrity gate. Synthesize tokens if Variables 403 (one-time, flow-wide).
+7. **Per-screen Phase B + C:** delegate to `figma-to-swiftui` for each screen in graph order. Each does Phase B (asset export with autoDiscover) + Phase C (Implement → L1 audit auto-emit → incremental L2 trace → C5 Engine A render). Reuse fallback assets via `_shared/assets/` dedup.
+8. **Step 7 — Cross-screen drift check:** after all 6 screens have `c3-gate.json.layers.l2.gate == "PASS"`, run `c3-cross-screen-drift.sh --cache-root .figma-cache` → exits 0 with no drift OR exits 1 with literal-hex collisions (e.g. `#1A1A1A` used inline in 3 screens — promote to token).
+9. **Step 8 — Integration verify:** open ProjectName.xcodeproj, BuildProject succeeds, simctl smoke-test launch onboarding entry point reaches Welcome screen. Run `ios-simulator-verify` skill (optional) for tap-walk through all 6 screens.
+10. **Step 9 — Flow Verification summary:** print 7-item Mandatory Output Checklist + per-screen verification status + cross-screen drift report path. Surface a11y delegation recommendation if any interactive screens.
+
+**Final**: every screen `verification.c5.gate == "PASS"` AND flow-level `c3-cross-screen-drift.md GATE: PASS`. Stop-gate releases per-screen + flow-level. User can then run `ios-accessibility` skill on the flow as a separate sweep.
+
+**Key insight**: this skill orchestrates; per-screen pixel work is delegated. Flow-wide concerns (shared tokens integrity, drift, navigation) live here. Per-screen concerns (visual fidelity, asset export, C5 render) live in `figma-to-swiftui`.
 
 ## Non-Negotiable Rules
 

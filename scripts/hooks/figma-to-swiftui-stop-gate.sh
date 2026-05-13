@@ -13,9 +13,11 @@
 #        (every tagged asset landed; no banned Image(systemName:))
 #     3. C7 — c7-no-system-chrome.sh passes against src
 #        (no status-bar / home-indicator redraws)
-#     4. C5 — manifest.verification.c5.gate == "PASS"
-#        OR manifest.verification.c5.skipped IN
-#           (no_project, simctl_error, ci_environment, no_entry_path)
+#     4. Done-gate — at least ONE of:
+#          (a) manifest.verification.c5.gate == "PASS"          (sim-build path)
+#          (b) c3-gate.json layers.l2.gate == "PASS"            (L2 static trace — Tier-1)
+#          (c) manifest.verification.c5.skipped IN system-skip set
+#              (no_project, simctl_error, ci_environment, no_entry_path)
 #
 # Removing the previous "phaseB == done" precondition closes the lock-out
 # escape: prior versions allowed stop when Phase B was simply skipped.
@@ -176,7 +178,12 @@ for DIR in "${SCREEN_DIRS[@]}"; do
     PROBLEMS+="    - rows[] empty (no assets exported — Figma icons will be missing)\n"
   fi
 
-  # ── 2. C5 — Done-Gate ────────────────────────────────────────────────────────
+  # ── 2. Done-Gate — C5 OR L2 (Tier-1 transition) ─────────────────────────────
+  # Two acceptable paths to mark this screen "verified":
+  #   (a) C5 simulator build + render gate PASS (legacy path)
+  #   (b) L2 static token trace gate PASS (Tier-1 co-equal path)
+  # Both can run; either passing is enough to release the stop hook.
+  # System-skip reasons for C5 also pass.
   GATE=$(jq -r '.verification.c5.gate // empty' "$MANIFEST" 2>/dev/null)
   SKIPPED=$(jq -r '.verification.c5.skipped // empty' "$MANIFEST" 2>/dev/null)
   C5_OK=0
@@ -184,8 +191,33 @@ for DIR in "${SCREEN_DIRS[@]}"; do
   case "$SKIPPED" in
     no_project|simctl_error|ci_environment|no_entry_path) C5_OK=1 ;;
   esac
+
+  # L2 path — c3-gate.json sits next to manifest.json in the screen cache dir.
+  # IMPORTANT: L2 PASS is only accepted when the cache integrity gate
+  # (L0 = c3-validate.json) ALSO passes — refuse to trust L2 on a corrupt
+  # cache (empty tokens, manifest failed rows, etc.) per plan §D2.
+  L2_GATE=""
+  L0_GATE=""
+  C3_GATE_FILE="$(dirname "$MANIFEST")/c3-gate.json"
+  C3_VALIDATE_FILE="$(dirname "$MANIFEST")/c3-validate.json"
+  if [ -f "$C3_GATE_FILE" ]; then
+    L2_GATE=$(jq -r '.layers.l2.gate // empty' "$C3_GATE_FILE" 2>/dev/null)
+  fi
+  if [ -f "$C3_VALIDATE_FILE" ]; then
+    L0_GATE=$(jq -r '.gate // empty' "$C3_VALIDATE_FILE" 2>/dev/null)
+  fi
+  # Accept L2 path only when cache validate PASS or PARTIAL (corrupt cache → refuse)
+  if [ "$L2_GATE" = "PASS" ]; then
+    case "$L0_GATE" in
+      PASS|PARTIAL) C5_OK=1 ;;
+      *) :;;  # L2 PASS but validate didn't pass → don't accept
+    esac
+  fi
+
   if [ "$C5_OK" = "0" ]; then
-    PROBLEMS+="    - C5 not satisfied (gate=${GATE:-unset}, skipped=${SKIPPED:-unset})\n"
+    PROBLEMS+="    - Neither C5 nor L2 verified — C5 gate=${GATE:-unset}, skipped=${SKIPPED:-unset}, L2 gate=${L2_GATE:-unset}, cache validate=${L0_GATE:-unset}\n"
+    PROBLEMS+="      Fix one of: (a) C5 — run mcp__xcode__BuildProject + RenderPreview, or\n"
+    PROBLEMS+="      (b) L2 — run scripts/c3-driver.sh validate + trace + aggregate (require both validate AND trace PASS)\n"
   fi
 
   # ── 2b. Engine choice regression check ───────────────────────────────────────
@@ -348,9 +380,10 @@ fi
   fi
   echo "A task is NOT complete until each screen has:"
   echo "  - phaseB == \"done\" with rows[] non-empty (assets exported)"
-  echo "  - manifest.verification.c5.gate == \"PASS\", OR"
-  echo "  - manifest.verification.c5.skipped set to one of:"
-  echo "      no_project | simctl_error | ci_environment | no_entry_path"
+  echo "  - At least ONE of:"
+  echo "      (a) manifest.verification.c5.gate == \"PASS\" (sim-build path)"
+  echo "      (b) c3-gate.json layers.l2.gate == \"PASS\"    (L2 static trace path — Tier-1)"
+  echo "      (c) manifest.verification.c5.skipped IN no_project|simctl_error|ci_environment|no_entry_path"
   echo "  - C6 (registry ↔ xcassets, no banned systemName) passing"
   echo "  - C7 (no system chrome redraws) passing"
   echo ""

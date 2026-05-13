@@ -68,8 +68,20 @@ size:           W x H  (fixed / fill-width / fill-height / hug)
 frameSize:      Wf x Hf
 deviceClass:    iPhone X/11 Pro/12 mini/13 mini (812) | 12/13/14 (844) | 14 Pro/15 Pro (852)
                 | 14 Pro Max/15 Pro Max/16 Pro Max (932) | older (568/667/736) | n/a
-safeAreaInsets: top=N, bottom=M
+safeAreaInsets: top=N, bottom=M    [MANDATORY when deviceClass != n/a — drives c3-safearea-gate.sh SA-5;
+                                    SwiftUI map per layout-translation.md §"Safe Area Normalization"]
 mockupChrome:   true | false       [true if frame H matches deviceClass list AND screenshot shows status-bar mockup]
+stickyBottom:   true | false       [true if Figma has an element at y >= frameH - 120 anchored to bottom
+                                    (CTA bar, dock, footer button) — drives placement of .safeAreaInset(edge: .bottom)]
+bgIgnoresSafeArea: top | bottom | both | none   [which edges the background extends under; only background
+                                                primitives (Color/Image/Gradient) may carry .ignoresSafeArea per AP-16.
+                                                Content layers ALWAYS respect safe area]
+topBar:         system | custom | none           [system: iOS-style nav bar with title + back chevron, code uses
+                                                  .navigationTitle("…") + .navigationBarTitleDisplayMode(.inline);
+                                                  custom: Figma-designed top row (X/title/icon, custom header),
+                                                  code MUST use .toolbar(.hidden, for: .navigationBar) inside any
+                                                  NavigationStack to suppress 44pt of system chrome — see AP-17;
+                                                  none: no top bar at all, status bar only]
 deviceBezel:    true | false       [true if mockupChrome=true AND frame outline shows ~47-55pt rounded corners.
                                     HARDWARE bezel — NOT a UI corner radius. When true, screen-root cornerRadius=0]
 background:     <hex or token>   [source: tokens | inline | class | fills.json]
@@ -121,7 +133,7 @@ primaryAxisAlignItems:      MIN | CENTER | MAX | SPACE_BETWEEN   → Spacer() pa
 **Rules:**
 - Every visible element → an entry with source tag `[tokens | inline | class | screenshot]`.
 - Unknown field → `[estimate]`, never omit.
-- Never skip: `lineHeight`, `letterSpacing`, `shadow`, `border`, `textAlign`, stack alignment (both axes), image `contentMode`, container `safeAreaInsets`/`mockupChrome`/`deviceBezel`.
+- Never skip: `lineHeight`, `letterSpacing`, `shadow`, `border`, `textAlign`, stack alignment (both axes), image `contentMode`, container `safeAreaInsets`/`mockupChrome`/`stickyBottom`/`bgIgnoresSafeArea`/`topBar`/`deviceBezel`.
 - VStack/HStack default cross-axis is `.center` — must override if Figma says MIN/MAX.
 - `primaryAxisAlignItems` (CENTER/SPACE_BETWEEN/MAX) does NOT map to a stack init param — use `Spacer()` patterns.
 

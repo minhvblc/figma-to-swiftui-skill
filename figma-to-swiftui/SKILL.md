@@ -29,7 +29,7 @@ Turn Figma nodes into production SwiftUI with pixel-matching fidelity. **Three p
      brownfield-vanilla   → load vanilla conventions, no scaffold
      ambiguous            → STOP, ask user
 2. Pin Figma file → figma_build_registry
-3. For each screen → Phase A → Phase B → Phase C → C5
+3. For each screen → Phase A → Phase B → Phase C (C1 audit → C2 implement → C3 self-check → C4 copy assets → C5 build/diff → C6 asset completeness → C7 no system chrome)
 ```
 
 **References, by trigger:**
@@ -50,6 +50,18 @@ Turn Figma nodes into production SwiftUI with pixel-matching fidelity. **Three p
 **The two most common failure modes** (gate `figma-to-swiftui-banned-pattern-gate.sh` catches both):
 1. **SwiftUI shapes for icons.** Hook blocks `Image(systemName:)` outside the system-chrome allow-list. Bypass with `// allow-systemName: <reason>` only for genuine iOS HIG glyphs.
 2. **Template-from-doc on multi-screen flows.** Each screen needs its own Phase A artifact (per-screen `get_design_context`). The flow skill must reject templates built from doc wording.
+
+## Common issues + fixes (quick reference)
+
+| Issue | Symptom | Fix |
+|---|---|---|
+| **`get_design_context` truncation** | Response cut mid-section; `design-context.md` ends in `…` or short | Don't retry. Call `get_metadata` to enumerate children, then fetch each child node individually with `get_design_context(nodeId=<child>)`. Full protocol: [`references/fetch-strategy.md`](references/fetch-strategy.md) §"Circuit breaker". |
+| **Variables API empty / 403** | `figma_extract_tokens` returns 200-empty + warnings, OR 403 `file_variables:read` scope | Run `scripts/c2-extract-design-context.sh` then `scripts/c2-tokens-synthesize.sh` — synthesizes `tokens.json.colors[]` from inline hex literals in `design-context.md`. Disclose verbatim 403 in Verification summary under `Variables source: inline-fallback (...)`. |
+| **Asset missing from `manifest.json`** | Visible icon in screenshot but no row in `manifest.rows[]`, or row has `status: "failed"` | Re-run `figma_export_assets_unified(autoDiscover: true)` — scans subtree, picks up missed nodes. C6 + L2 both filter `status == "done"` only. |
+| **L2 trace FAIL on legitimate code** | Code uses `Color.figmaGray400` matching Figma value but L2 says "not in tokens.json" | Run `c2-cache-validate.sh` first — likely `tokens.json` is degraded (empty + no `_note`). Fix by re-running Phase A or synth. |
+| **iOS system chrome redraw blocked** | Hook rejects `Text("9:41")` / `Capsule().frame(height: 5)` / `cornerRadius >= 30pt` | Delete the redraw. iOS renders status bar / home indicator / device bezel. Add `// allow-screen-corner-radius: <reason>` only when intentional non-bezel curve. |
+
+Deep dive: [`references/anti-patterns.md`](references/anti-patterns.md) catalogues real-run failure modes.
 
 ---
 
@@ -153,6 +165,26 @@ Other inputs:
 | Multiple nodes / root page / journey | `figma-flow-to-swiftui-feature` (delegates back per screen) |
 | Ambiguous | Phase 0 + A2 first, then decide |
 
+## Skill boundaries — when to switch / delegate
+
+This skill owns Figma → SwiftUI **view code** for 1 screen. Adjacent concerns delegate to sibling skills (don't try to do them here):
+
+| If the user wants... | Switch to |
+|---|---|
+| Multi-screen feature / flow / end-to-end journey | [`figma-flow-to-swiftui-feature`](../figma-flow-to-swiftui-feature/SKILL.md) |
+| iOS project that uses `IKCoreApp` / `IKNavigation` / `IKMacros` (full convention canonical) | [`ikame-ios-coding`](../ikame-ios-coding/SKILL.md) — this skill calls into Ikame conventions when `c1-conventions.json.usesIKCoreApp == true` |
+| VoiceOver labels, Dynamic Type, accessibilityFocusState, audit a11y after build | `ios-accessibility` skill — run as post-C7 step on screens with controls |
+| `NavigationStack` / `NavigationSplitView` / deep linking design | `swiftui-navigation` skill |
+| Animations, transitions, `matchedGeometryEffect`, springs, keyframes | `swiftui-animation` skill |
+| Liquid Glass effects (iOS 26+), `glassEffect`, `GlassEffectContainer` | `swiftui-liquid-glass` skill |
+| Drag/tap/magnify/rotate gestures, `@GestureState`, gesture composition | `swiftui-gestures` skill |
+| Paywall, in-app purchase UI, `SubscriptionStoreView`, `ProductView` | `storekit` skill |
+| String Catalog (`.xcstrings`), Dynamic Type Pluralization, locale formatting | `ios-localization` skill |
+| Chart / data viz from Figma (line / bar / pie) | `swift-charts` skill |
+| Write back to Figma canvas / create / edit Figma nodes | (out of scope — none of our skills do this; use Figma's official tools) |
+
+**Rule of thumb.** Figma node → SwiftUI struct lives here. Anything happening AFTER the struct compiles (interactive states, animations between screens, a11y audit, in-app purchase wiring) delegates.
+
 ---
 
 # Phase 0 — Pre-flight (MANDATORY)
@@ -247,7 +279,32 @@ On truncation: don't retry — fall back to metadata + per-section fetch. See [`
 ### Gate A — Phase A Exit
 
 ```bash
-bash ~/.claude/scripts/c5-engine-select.sh --gate-a --cache .figma-cache/<nodeId>
+# 1. Normalize design-context.md + build bbox index (Phase 2 layers)
+bash ~/.claude/scripts/c2-extract-design-context.sh --cache .figma-cache/<nodeId>
+bash ~/.claude/scripts/c2-build-bbox-index.sh        --cache .figma-cache/<nodeId>
+
+# 1b. Per-text-segment typography index — bridges L2 trace for
+#     .lineSpacing / .tracking / .kerning / .fontWeight rows so they
+#     PASS/FAIL against design-context Tailwind (leading-*, tracking-*,
+#     font-*) instead of degrading to N/A.
+bash ~/.claude/scripts/c2-typography-extract.sh --cache .figma-cache/<nodeId>
+
+# 1c. Per-node gradient-stop index — flattens fills.json so L2 trace
+#     can do stop-by-stop comparison via `// Figma: <nodeId>` hint on
+#     `.background(LinearGradient(...))`. No-op when fills.json has no
+#     gradients.
+bash ~/.claude/scripts/c2-fills-stops-index.sh --cache .figma-cache/<nodeId>
+
+# 2. (Conditional) When tokens.json came back empty with _note (Variables 403):
+#    synthesize fallback tokens from c2-extracted.json hex literals
+bash ~/.claude/scripts/c2-tokens-synthesize.sh --cache .figma-cache/<nodeId>
+
+# 3. Schema gate — verify every Phase A artifact is present + parseable + non-degraded.
+#    Also validates c2-typography-perline.json (required if design-context
+#    has text) and c2-fills-stops.json (required if fills.json has gradients).
+bash ~/.claude/scripts/c2-cache-validate.sh --cache .figma-cache/<nodeId>
+# Exit 0 → PASS, 1 → FAIL (corrupt/missing), 2 → PARTIAL (acceptable gap with explanation)
+# `c3-driver.sh trace` will refuse to run if validate FAILs.
 ```
 
 (Or run the full bash check inline — see `references/verification-loop.md` §"Gate A".)
@@ -398,6 +455,14 @@ Element-by-element ADD/UPDATE/REMOVE diff. Read existing file, compare against F
 6. Effects (blur, mask, blend) — last
 7. Interactions — `.buttonStyle(.plain)` for custom, navigation
 
+**Incremental L2 trace (recommended).** L1 audit auto-emits `c2-audit.json` on every Write/Edit. After each major section (e.g. header done, hero illustration done, CTA done — not necessarily after every modifier), run:
+
+```bash
+bash ~/.claude/scripts/c3-driver.sh trace --cache .figma-cache/<nodeId>
+```
+
+L2 is deterministic + 0-token (script only) so the cost is ~1s per run. Catching `Color.madeUpToken` or `.frame(width: 99)` (no Figma node) mid-implementation is much cheaper than dumping at the end and self-fix-looping through 10 cascading FAILs. Pattern: write 1 section → run trace → fix any FAIL → next section.
+
 **Critical rules:**
 
 - **Xcode MCP file family** (when available): `mcp__xcode__XcodeWrite` for new files, `XcodeUpdate` for edits, `XcodeRefreshCodeIssuesInFile` after every write for sub-second compile feedback. Fallback to vanilla `Write/Edit` when `c5-engine-select.sh` reports `xcodebuild` engine OR project uses Xcode 16+ synchronized folders.
@@ -431,17 +496,52 @@ Element-by-element ADD/UPDATE/REMOVE diff. Read existing file, compare against F
 - [`design-token-mapping.md`](references/design-token-mapping.md) — typography, colors, gradients
 - [`fills-handling.md`](references/fills-handling.md) — read when a container has non-trivial `fills.json`
 
-### Step C3 — Self-Check (3 passes + gates)
+**Pre-Xcode-16 brownfield projects (traditional `PBXGroup` layout):** after writing new `.swift` files, register them in the `.xcodeproj` so the build picks them up:
+
+```bash
+bash ~/.claude/scripts/xcodeproj-add-files.sh \
+  --project <path>/<ProjectName>.xcodeproj \
+  --target <TargetName> \
+  --files "$(find <path>/<ProjectName>/Screens/<ScreenName> -name '*.swift')"
+```
+
+No-op on Xcode 16+ "synchronized folder" projects (`PBXFileSystemSynchronizedRootGroup` — files on disk under the target folder are auto-included). Skip entirely when using the Xcode MCP file family (`mcp__xcode__XcodeWrite` / `XcodeUpdate`) — Xcode handles registration. Greenfield scaffolds (`ikxcodegen-scaffold.sh` / `vanilla-scaffold.sh`) produce synchronized-folder projects, so this step only matters for brownfield Xcode 14/15 projects.
+
+### Step C3 — Self-Check (3 passes + L2 + gates)
 
 **Pass 1 — Code vs Inventory.** For each inventory row, verify code matches. Fix every ✗.
 
 **Pass 2 — Code vs Screenshot (structured diff).** Pass 2 produces `.figma-cache/<nodeId>/c3-pass2-diff.md`. Template + 6 anti-hallucination checks in [`verification-loop.md`](references/verification-loop.md) §"Pass 2".
+
+**Pass 3 / 3b — Asset + system-chrome grep:**
 
 ```bash
 bash ~/.claude/scripts/c3-static-checks.sh --files "<swift files>"
 ```
 
 Covers Pass 3 (asset grep — no `Image(systemName:)` outside allow-list) and Pass 3b (system chrome grep — no "9:41"/wifi/battery redraws, no ~134×5pt Capsule). Driver writes `GATE: PASS/FAIL`. Explicit form fallback in [`verification-loop.md`](references/verification-loop.md) §"Pass 3/3b explicit".
+
+**L2 — Static token trace (mandatory, Tier-1 co-equal with C5):**
+
+```bash
+bash ~/.claude/scripts/c3-driver.sh trace     --cache .figma-cache/<nodeId>
+bash ~/.claude/scripts/c3-driver.sh safearea  --cache .figma-cache/<nodeId>
+bash ~/.claude/scripts/c3-driver.sh aggregate --cache .figma-cache/<nodeId>
+```
+
+L2 cross-references the L1-auto-emitted `c2-audit.json` (every Color / Image / Text / Frame / Padding / Stack / **SafeArea** row from generated `*Screen.swift` + `*View.swift`) against `tokens.json`, `design-context.md`, `metadata.json`, `manifest.json`, `c2-typography-perline.json`, `c2-fills-stops.json`. Soft tolerance ±2pt frame/padding. Deterministic — no LLM judgment, no 2000px PNGs in context. Writes `c3-trace.md` (table) + `c3-gate.json` (aggregate gate).
+
+**L2.5 — Safe-area + nav-bar placement gate (mandatory, blocks `.ignoresSafeArea` misuse + system nav bar overlap):**
+
+`c3-safearea-gate.sh` (run via `c3-driver.sh safearea`) reads the `kind: "safearea"` / `kind: "navbar"` / `kind: "stack"` rows from `c2-audit.json` and flags 4 violation classes — see [`anti-patterns.md`](references/anti-patterns.md) §AP-16 + §AP-17:
+- **SA-1 (FAIL)**: `.ignoresSafeArea(...)` on a content container (`ScrollView`, `VStack`, `HStack`, `ZStack`, `List`, `Form`, `LazyVStack`, ...). Only background primitives (`Color`, `Image`, `Rectangle`, `LinearGradient`, ...) may extend under system chrome.
+- **SA-2 (FAIL)**: root `.frame(maxHeight: .infinity)` without any safearea row in the same file → content bleeds under status bar / home indicator. Override with `// allow-fullbleed-noinset: <reason>` only when genuinely intentional.
+- **SA-3 (WARN)**: `.safeAreaInset(edge: ...)` attached to a background primitive instead of a container.
+- **NB-1 (FAIL on `*Screen.swift`, WARN elsewhere)**: file wraps content in `NavigationStack` / `NavigationView` but has **zero nav-bar visibility modifiers** (no `.toolbar(.hidden, for: .navigationBar)`, no `.navigationTitle(...)`, no `.toolbarVisibility(...)`, no `.navigationBarHidden(...)`). When Figma's top zone is a custom header (X / title / icon row — the common pattern), the system nav bar adds ~44pt of empty chrome above the content. **This is the most common root cause of the user-reported "UI tràn ra ngoài safe area" bug.** See AP-17 for fix recipe.
+
+Writes `c3-safearea.json` + surfaces as `layers.l2_safearea.gate` in `c3-gate.json`.
+
+`c3-gate.json.layers.l2.gate == "PASS"` AND `layers.l2_safearea.gate == "PASS"` together satisfy Done-Gate (stop-gate accepts L2 + L2.5 PASS as co-equal with C5 PASS). Full reference: [`verification-loop.md`](references/verification-loop.md) §4b.
 
 **Two failure modes:**
 - **Gate FAIL** (report invalid) → regen report; no code edits. After 2 consecutive regen failures, ASK user.
@@ -460,6 +560,13 @@ Per row in `manifest.rows`:
 **Lottie rows** skipped here — codegen in C2.
 
 **SwiftUI call-site:** `Image(.<exportName>)` for tagged, `Image(.<friendlyName>)` for fallback (iOS 17+ auto-generated `ImageResource`, never string form). Always `.resizable()` + explicit `.frame()`. Single-color → `.renderingMode(.template) + .foregroundStyle()`.
+
+> **Size-suffix awareness (MCPFigma tagged path).** The tagged exporter **appends a `WxH` suffix** to the exportName when the node has a bounding box — e.g. `eICArrow` at 24×24 → registry says `icAIArrow24x24`. Two consequences:
+>
+> 1. **Use the suffixed name verbatim from `manifest.rows[].exportName`** — `Image(.icAIArrow24x24)`, NOT `Image(.icAIArrow)`. Stripping the suffix produces `ImageResource not found` at build time and the agent often "fixes" that by falling back to `Image(systemName:)` (banned).
+> 2. **Two sizes of the same icon → two assets**. A Figma `eICArrow` instance at 24×24 and another at 32×32 export as `icAIArrow24x24` AND `icAIArrow32x32`. Two Swift references, two `.imageset` directories. They are NOT interchangeable — Asset Catalog scales the @1x/@2x/@3x bitmap variants of each asset, not the asset as a whole.
+>
+> `c6-asset-completeness.sh` Check C catches `Image(.icAIArrow)` references when the registry has `icAIArrow24x24` and flags the mismatch.
 
 Verification: every `Image(.X)` in code is in manifest; every manifest non-lottie row is referenced; every Lottie row → matching `LottieView` call; `import Lottie` present in files using `LottieView`. Full bash block in [`verification-loop.md`](references/verification-loop.md) §"Step C4".
 
@@ -504,8 +611,53 @@ Engine A eliminates: `previewEntry` prompt, simctl boot cold start (~30-90s), `x
 
 Then run **Gate C5**. Full block in [`verification-loop.md`](references/verification-loop.md) §5.7. High-severity diffs feed same self-fix loop as Pass 2 (shared counter, `MAX_RETRIES=2`).
 
-### Step C6 — Register Code Connect (optional)
-If your Figma MCP exposes Code Connect, register new reusable components.
+### Step C6 — Asset Completeness (mandatory)
+
+```bash
+bash ~/.claude/scripts/c6-asset-completeness.sh \
+  --registry .figma-cache/<nodeId>/registry.json \
+  --xcassets <project>/Resources/Assets.xcassets \
+  --src <project-swift-src-root>
+```
+
+Cross-checks every `registry.taggedAssets[].nodeId` landed in `Assets.xcassets` AND is referenced from a `.swift` file, AND that no banned `Image(systemName:)` substitute exists outside the allow-list. **`GATE: PASS` is the only acceptable outcome before declaring done** — also enforced reactively by the Stop gate, but run it explicitly here so failures surface before the stop hook fires. Full reference: [`verification-loop.md`](references/verification-loop.md) §6.
+
+### Step C7 — No System Chrome (mandatory)
+
+```bash
+bash ~/.claude/scripts/c7-no-system-chrome.sh --src <project-swift-src-root>
+```
+
+Greps the project src for status-bar / home-indicator / Dynamic Island / notch redraws and screen-root `.cornerRadius` / `.clipShape(.rect(cornerRadius:))` ≥ 30pt without `// allow-screen-corner-radius:` justification. **`GATE: PASS` mandatory before declaring done.** Full reference: [`verification-loop.md`](references/verification-loop.md) §7.
+
+### Step C8 — Accessibility delegation (recommended, not blocking)
+
+After C7 PASSes and the view compiles, if the screen has any of: `Button`, `TextField` / `SecureField`, `Toggle`, `Picker`, `NavigationLink`, custom interactive component, **delegate to `ios-accessibility` skill** for VoiceOver labels, Dynamic Type scaling, focus order, and accessibility traits.
+
+This skill does NOT audit a11y itself (out of scope — Figma rarely encodes a11y semantics deterministically). But surface the delegation in the final summary:
+
+> *"Done-Gate satisfied. Screen has interactive controls — recommend running `ios-accessibility` audit before ship."*
+
+For screens with zero controls (pure decorative splash, marketing card), the delegation is optional. Skip silently.
+
+### Optional — Register Code Connect
+If your Figma MCP exposes Code Connect, register new reusable components. Not numbered; runs at any point after Phase B.
+
+### Optional — Wall-time instrumentation
+Wrap any phase/step with `scripts/timed-run.sh` to record wall-time into `manifest.timing.<key>`, then read it back with `scripts/timing-report.sh`. Use when investigating slow runs or comparing Engine A vs Engine B latency.
+
+```bash
+# Time a single step
+bash ~/.claude/scripts/timed-run.sh --phase c5 \
+  --manifest .figma-cache/<nodeId>/manifest.json \
+  -- bash ~/.claude/scripts/c5-capture.sh --cache .figma-cache/<nodeId> --udid <udid>
+
+# Read the breakdown
+bash ~/.claude/scripts/timing-report.sh --cache .figma-cache/<nodeId>
+bash ~/.claude/scripts/timing-report.sh --flow  .figma-cache              # aggregate across screens
+```
+
+Strictly informational — no gate, no auto-run. Skip unless the user asks for a perf trace.
 
 ---
 
@@ -519,15 +671,85 @@ See [`mcpfigma-setup.md`](references/mcpfigma-setup.md) §"Edge cases" for: toke
 
 ## Hooks (PreToolUse + Stop)
 
-`scripts/install.sh` registers 4 hooks idempotently in `~/.claude/settings.json`:
+`scripts/install.sh` registers 5 hooks idempotently in `~/.claude/settings.json`:
 
 1. **`figma-to-swiftui-gate.sh`** (PreToolUse Write/Edit) — Phase A+B coverage gate. Blocks Swift Write when any screen-cache lacks Phase A artifacts or Phase B incomplete (failed rows, missing tagged-asset coverage). Closes "downloaded hero, built rest with SwiftUI shapes" failure mode.
 
-2. **`figma-to-swiftui-banned-pattern-gate.sh`** (PreToolUse Write/Edit) — Scans Swift content. Blocks `Image(systemName:)` outside allow-list, `Text("9:41")`, `Capsule()` ≤6pt (home-indicator clone), `FakeStatusBar`/`HomeIndicator`/`NotchView`/`DynamicIslandView` struct names, letter-as-logo, `Text(...).frame(width: <num>)` without `// Figma fixed-width:`, screen-root `.padding(.top, 44|47|59|64|67|79|88)` without `// safe-area-adjusted`, `Image(...)` chains missing `.resizable()`, `cornerRadius` ≥ 30pt without `// allow-screen-corner-radius:`, `Text(...).frame(maxWidth: .infinity)` inside `Button { }` without `// allow-text-fill:`.
+2. **`figma-to-swiftui-banned-pattern-gate.sh`** (PreToolUse Write/Edit) — Scans Swift content. Blocks `Image(systemName:)` outside allow-list, `Text("9:41")`, `Capsule()` ≤6pt (home-indicator clone), `FakeStatusBar`/`HomeIndicator`/`NotchView`/`DynamicIslandView` struct names, letter-as-logo, `Text(...).frame(width: <num>)` without `// Figma fixed-width:`, screen-root `.padding(.top, 44|47|59|64|67|79|88)` without `// safe-area-adjusted`, `Image(...)` chains missing `.resizable()`, `cornerRadius` ≥ 30pt without `// allow-screen-corner-radius:`, `Text(...).frame(maxWidth: .infinity)` inside `Button { }` without `// allow-text-fill:`, **`#Preview` block in `*Screen.swift`/`*View.swift` without `.fixedLayout(width:height:)` pinning** (required for L4 SSIM determinism — bypass with `// allow-unpinned-preview:`).
 
 3. **`figma-to-swiftui-entry-bypass-gate.sh`** (PreToolUse Write/Edit) — Blocks edits to `*App.swift` / `*ContentView.swift` / `*RootView.swift` / `*AppRouter.swift` that set `initialStep`/`currentStep` to a screen literal, look up `VERIFY_ROUTE` env vars, or add `#if DEBUG` deep-link parsers. Closes C5 verification-integrity bypass. Legitimate flow-state initialization carries `// figma-entry-bypass-gate: legitimate-flow-state`.
 
-4. **`figma-to-swiftui-stop-gate.sh`** (Stop) — For every screen-cache with `phaseA == "done"`, requires `phaseB == "done"` + `rows[]` non-empty + `verification.c5.gate == "PASS"` (or one of four system skip reasons) + project-wide C6 (asset completeness) + C7 (no system chrome) passing.
+4. **`figma-to-swiftui-audit-emit.sh`** (PostToolUse Write/Edit) — **L1 audit emission.** After every successful Write/Edit of `*Screen.swift` or `*View.swift` in a Figma task, runs the SwiftSyntax `figma-audit` binary on the just-written file and appends rows (color, font, padding, frame, image, text, stack) to `.figma-cache/<nodeId>/c2-audit.json`. Feeds L2 token trace. Hook never blocks; emits a degraded marker if the parser binary is missing.
+
+5. **`figma-to-swiftui-stop-gate.sh`** (Stop) — For every screen-cache with `phaseA == "done"`, requires `phaseB == "done"` + `rows[]` non-empty + **at least one** of: (a) `verification.c5.gate == "PASS"`, (b) `c3-gate.json layers.l2.gate == "PASS"` (Tier-1 co-equal), (c) one of four C5 system skip reasons. Plus project-wide C6 (asset completeness) + C7 (no system chrome) passing.
+
+## Worked examples
+
+Concrete walkthroughs to calibrate flow. Same skill, different project shape.
+
+### Example 1 — Single vanilla SwiftUI screen
+
+**User says:** *"Implement this Figma screen: https://figma.com/design/aBc123/Onboarding?node-id=42-15"*
+
+Project: vanilla SwiftUI, no IKCoreApp, no IKMacros, iOS 17+.
+
+**Actions:**
+
+1. **Phase 0**: `mode-detect.sh` → `brownfield-vanilla`. Open Xcode early.
+2. **Phase A**: Parse URL → `fileKey=aBc123`, `nodeId=42:15` (note URL `-` → `:`). Single parallel batch:
+   - `get_design_context` → `design-context.md`
+   - `get_screenshot` (scale 3) → `screenshot.png`; `sips -Z 2000` → `screenshot-cmp.png`
+   - `figma_extract_tokens` → `tokens.json` (full schema — Variables OK)
+   - `get_metadata` → `metadata.json`
+   - `figma_extract_fills` → `fills.json`
+   - `figma_export_assets_unified(autoDiscover: true)` → `manifest.json` (rides along)
+3. **Gate A**: `c2-extract-design-context.sh` + `c2-build-bbox-index.sh` + `c2-cache-validate.sh` → PASS
+4. **Phase B**: B0a copy → `Strings.swift`. B0b token codegen → `Color+Tokens.swift`, `AppFont.swift`, `Spacing.swift`, dual-mode colorsets. B1 inventory cross-ref against `manifest.rows[]` — every visible element accounted for. Gate B PASS.
+5. **Phase C**: `c1-probe.sh` writes `c1-conventions.json` (`usesIKCoreApp: false`, `viewModelPattern: "MVVM"`, `xcstringsPath: "Resources/Localizable.xcstrings"`). C2 builds `OnboardingScreen.swift` outside-in:
+   - VStack(spacing: `.md`) → header section → run `c3-driver.sh trace` (incremental) → PASS
+   - Hero illustration `Image(.heroOnboarding)` + frame from `metadata.json` bbox via nodeId hint → trace → PASS
+   - CTA Button with `.frame(maxWidth: .infinity)` and primary color `Color.appAccent` → trace → PASS
+6. **C3**: Pass 1/2 + L2 token trace → 0 FAIL. C4 copy assets to xcassets.
+7. **C5**: Engine A `BuildProject` + `RenderPreview` → `c5-render.png`. SSIM 0.96 ≥ 0.92 → PASS.
+8. **C6/C7**: asset completeness + no system chrome → PASS.
+
+**Final**: `manifest.verification.c5.gate == "PASS"` AND `c3-gate.json.layers.l2.gate == "PASS"`. Stop-gate releases. Report Verification summary.
+
+### Example 2 — Single Ikame project screen (with IKNavigation)
+
+**User says:** *"làm màn PIN setup này: https://figma.com/design/xY9aB7/AuthFlow?node-id=110-42"*
+
+Project: Ikame fleet, `IKCoreApp` ✓, `IKNavigation` ✓, `ikFont` typography.
+
+**Actions:**
+
+1. **Phase 0**: `mode-detect.sh` → `brownfield-ikame`. `c1-probe.sh` detects `usesIKCoreApp: true, usesIKNavigation: true, usesIKMacros: false, ikFontEnum: "ikFont"`.
+2. **Phase A**: Same 5 parallel calls as Example 1. `tokens.json.typography[]` populated with ikFont presets.
+3. **Phase B**: B0b skips `AppFont.swift` (Ikame uses `ikFont` family directly per `fonts-styling-bridge.md` §3). Colorsets + Spacing emitted as usual.
+4. **Phase C**: Reads `c1-conventions.json` → routes typography to `.ikFont(.bodySemi)` / `.ikFont(16, weight: .semibold)`. Builds `PINSetupScreen.swift` in `Screens/Auth/PINSetup/` folder. ViewModel uses `@MainActor + ObservableObject + enum Action + send(_:)` per Ikame canonical convention.
+5. **Routing**: Screen registered in feature router (IKNavigation) — agent extends existing router with `case pinSetup` rather than building a new one.
+6. **C3/C5/C6/C7**: same as Example 1.
+
+**Key delta from Example 1**: convention probe routes typography, naming, folder layout — agent doesn't hardcode "use AppFont" — reads from `c1-conventions.json`.
+
+### Example 3 — Multi-screen flow (delegate to figma-flow-to-swiftui-feature)
+
+**User says:** *"Build the entire onboarding flow: https://figma.com/design/aBc123/Onboarding?node-id=1-2 (this is the root frame containing 6 screens)"*
+
+**This skill detects the input is a flow root, NOT a single screen, and hands off.**
+
+**Actions:**
+
+1. Parse URL → `figma_build_registry(nodeId=1:2, depth=10)`. Response: `screens.length == 6`. Multiple screens → handoff.
+2. Invoke `figma-flow-to-swiftui-feature`. Pass `fileKey` + `nodeId` of the root. Flow skill takes over:
+   - Step 2: convention probe + mode detection (once for whole flow)
+   - Step 3: build screen graph (6 nodes + navigation edges from doc / heuristic)
+   - Step 4: implement shared feature scaffolding (router, models, services)
+   - Step 5: per-screen — delegates BACK to `figma-to-swiftui` for each of the 6 screens (Phase A → B → C as in Example 1/2)
+   - Step 7: cross-screen drift check (`c3-cross-screen-drift.sh`)
+3. Flow skill's stop-gate aggregates per-screen `c3-gate.json` + checks 7-item Mandatory Output Checklist.
+
+**Key insight**: this skill is per-screen; do NOT try to do flow orchestration. Detect at A2 (`screens.length > 1`) → hand off.
 
 ## Key Principles
 
@@ -542,7 +764,7 @@ See [`mcpfigma-setup.md`](references/mcpfigma-setup.md) §"Edge cases" for: toke
 9. **Flatten composed artwork.** Don't reassemble atoms via `.offset()`. When in doubt → flatten.
 10. **Two-MCP split is mandatory.** `get_screenshot` (figma-desktop) = FRAME for Pass 2/C5 diff; per-asset PNG = `figma_export_assets_unified` (MCPFigma). Missing either → STOP.
 11. **Verification produces artifacts.** Pass 2 writes diff report; C5 captures simulator screenshot + visual diff. Gated, self-fix loop.
-12. **Done-Gate.** Task NOT complete until `manifest.verification.c5.gate == "PASS"` OR `verification.c5.skipped` is one of `no_project` / `simctl_error` / `ci_environment` / `no_entry_path`. Stating "done"/"xong"/"ship it" without one is a protocol violation. Surface C5 status in final user-facing message.
+12. **Done-Gate.** Task NOT complete until at least ONE of: (a) `manifest.verification.c5.gate == "PASS"` (sim-render path), (b) `c3-gate.json layers.l2.gate == "PASS"` (L2 static-trace path — Tier-1 co-equal), (c) `verification.c5.skipped` is one of `no_project` / `simctl_error` / `ci_environment` / `no_entry_path`. Stating "done"/"xong"/"ship it" without one is a protocol violation. Surface gate status in final user-facing message.
 
 ## Verification summary (mandatory final block)
 
@@ -553,13 +775,19 @@ Verification summary
 - C3 Pass 2 (offline diff):    PASS / FAIL (high: N, medium: N)
 - C3 Pass 3 (asset grep):      PASS / FAIL
 - C3 Pass 3b (chrome grep):    PASS / FAIL
+- L2 (token trace, static):    PASS / FAIL (pass: N, fail: N, na: N) — c3-gate.json
 - C5 (build + simulator):      PASS / FAIL / SKIPPED (<reason>)
 - C5.6 (6-step compare):       PASS / FAIL (high: N, medium: N)
+- C6 (asset completeness):     PASS / FAIL
+- C7 (no system chrome):       PASS / FAIL
 - Variables source:            tokens.json (full) | inline-fallback (Variables API empty + warnings) | inline-fallback (file_variables:read scope unavailable)
 Artifacts:
+  .figma-cache/<nodeId>/c2-audit.json       (L1 audit rows)
+  .figma-cache/<nodeId>/c3-trace.md         (L2 trace report)
+  .figma-cache/<nodeId>/c3-gate.json        (L2 aggregate)
   .figma-cache/<nodeId>/c3-pass2-diff.md
   .figma-cache/<nodeId>/c5-build.log
-  .figma-cache/<nodeId>/c5-simulator.png  (or c5-render.png on Engine A)
+  .figma-cache/<nodeId>/c5-simulator.png    (or c5-render.png on Engine A)
   .figma-cache/<nodeId>/c5-visual-diff.md
 ```
 

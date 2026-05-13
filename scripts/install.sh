@@ -14,7 +14,7 @@
 #      skill repo. (Auto-detect of project-level was removed because the skill
 #      repo itself contains a .claude/ dev config that misled the heuristic.)
 #   5. Install skills into ~/.claude/skills/ (copy by default; --symlink for dev)
-#   6. Install enforcement hooks (PreToolUse / PostToolUse / Stop) and register
+#   6. Install enforcement hooks (3 PreToolUse Write|Edit + 1 Stop) and register
 #      them in ~/.claude/settings.json. Skip with --no-hooks.
 #   7. Detect Figma.app + run doctor.sh + print test command
 #
@@ -75,6 +75,13 @@ MCPFIGMA_REPO_URL="https://github.com/minhvblc/MCPFigma.git"
 MCPFIGMA_RELEASES_API="https://api.github.com/repos/minhvblc/MCPFigma/releases"
 MCPFIGMA_BUILD_DIR="${REPO_ROOT}/../MCPFigma"
 BINARY_INSTALL_DIR="${HOME}/.local/share/mcp-figma"
+
+# figma-audit (SwiftSyntax-based L1 parser for c2-audit.json — built locally,
+# ships only as Swift source in this repo). Different binary install dir from
+# MCPFigma so doctor / install can audit each independently.
+AUDIT_SRC_DIR="${REPO_ROOT}/scripts/figma-audit-src"
+AUDIT_INSTALL_DIR="${HOME}/.local/share/figma-audit"
+AUDIT_BIN_PATH="${AUDIT_INSTALL_DIR}/bin/figma-audit"
 
 echo
 bold "figma-to-swiftui installer"
@@ -187,6 +194,37 @@ else
     build_from_source
   fi
 fi
+
+# ── 2b. figma-audit binary (SwiftSyntax-based L1 parser) ────────────────────
+say "2b/6  figma-audit binary (L1 audit parser)"
+
+build_audit_binary() {
+  command -v swift >/dev/null 2>&1 || { warn "swift not found — figma-audit binary will not be built"; return 1; }
+  [ -d "$AUDIT_SRC_DIR" ] || { warn "audit source dir missing: $AUDIT_SRC_DIR — repo may be incomplete"; return 1; }
+
+  echo "  Building figma-audit (first build pulls SwiftSyntax, ~30-60s)..."
+  ( cd "$AUDIT_SRC_DIR" && swift build -c release 2>&1 | tail -10 | sed 's/^/    /' ) || {
+    warn "swift build failed for figma-audit — L1 audit will run in degraded mode"
+    return 1
+  }
+  local built="$AUDIT_SRC_DIR/.build/release/figma-audit"
+  [ -x "$built" ] || { warn "build finished but binary missing at $built"; return 1; }
+
+  mkdir -p "$(dirname "$AUDIT_BIN_PATH")"
+  cp "$built" "$AUDIT_BIN_PATH"
+  chmod +x "$AUDIT_BIN_PATH"
+
+  # Smoke test
+  if "$AUDIT_BIN_PATH" --self-test >/dev/null 2>&1; then
+    echo "  $(green ✓) Installed: $AUDIT_BIN_PATH ($("$AUDIT_BIN_PATH" --version 2>/dev/null))"
+  else
+    warn "figma-audit binary installed but self-test failed — L1 audit may be unreliable"
+  fi
+  return 0
+}
+
+warn() { echo "  $(yellow ⚠) $1"; }
+build_audit_binary || true   # never fatal — L1 falls back to degraded mode
 
 # ── 3. FIGMA_ACCESS_TOKEN ─────────────────────────────────────────────────────
 say "3/6  Figma access token"
@@ -371,7 +409,8 @@ else
     # can find them regardless of where the user runs the skill from.
     mkdir -p "$SCRIPTS_DST"
     for src in "$SCRIPTS_SRC"/b0a-*.sh "$SCRIPTS_SRC"/b0b-*.sh \
-               "$SCRIPTS_SRC"/c1-*.sh "$SCRIPTS_SRC"/c3-*.sh \
+               "$SCRIPTS_SRC"/c1-*.sh "$SCRIPTS_SRC"/c2-*.sh \
+               "$SCRIPTS_SRC"/c3-*.sh \
                "$SCRIPTS_SRC"/c5-*.sh "$SCRIPTS_SRC"/c6-*.sh \
                "$SCRIPTS_SRC"/c7-*.sh \
                "$SCRIPTS_SRC"/preflight-*.sh \
@@ -390,6 +429,17 @@ else
       chmod +x "$dst"
       echo "  $(green ✓) Installed gate script: $name"
     done
+
+    # Install _lib/ shared helpers (sourced by c2-* / c3-* scripts).
+    if [ -d "$SCRIPTS_SRC/_lib" ]; then
+      mkdir -p "$SCRIPTS_DST/_lib"
+      for src in "$SCRIPTS_SRC/_lib"/*.sh; do
+        [ -f "$src" ] || continue
+        name=$(basename "$src")
+        cp "$src" "$SCRIPTS_DST/_lib/$name"
+        echo "  $(green ✓) Installed lib: _lib/$name"
+      done
+    fi
 
     # Backup + patch ~/.claude/settings.json to register the three hooks.
     if [ -f "$SETTINGS" ]; then
@@ -416,6 +466,7 @@ GATES = [
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-gate.sh"),
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-banned-pattern-gate.sh"),
     ("PreToolUse",  "Write|Edit", "~/.claude/hooks/figma-to-swiftui-entry-bypass-gate.sh"),
+    ("PostToolUse", "Write|Edit", "~/.claude/hooks/figma-to-swiftui-audit-emit.sh"),
     ("Stop",        None,         "~/.claude/hooks/figma-to-swiftui-stop-gate.sh"),
 ]
 
@@ -448,38 +499,27 @@ print(f"REGISTERED {added}")
 PY
     TOTAL_GATES=$(cat "$GATES_COUNT_FILE")
     rm -f "$GATES_COUNT_FILE"
-    echo "  $(green ✓) Patched $SETTINGS — gates run automatically next session"
-    echo "      (PreToolUse — Phase A+B coverage gate, blocks .swift writes when"
-    echo "         assets missing or registry coverage incomplete;"
-    echo "       PreToolUse — banned-pattern detector, blocks Image(systemName:),"
-    echo "         status-bar/home-indicator redraws, letter-as-logo, screen-bezel"
-    echo "         radius, button-bloat, .frame(width:) on Text;"
-    echo "       PreToolUse — entry-path bypass detector, blocks edits that set"
-    echo "         initial route on App.swift/ContentView.swift for verification;"
-    echo "       PreToolUse — mode gate, blocks .swift writes until mode-detect"
-    echo "         has run (mode.json present; ambiguous needs userConfirmed);"
-    echo "       PreToolUse — engine gate, blocks raw xcodebuild/simctl in"
-    echo "         figma sessions when Engine A (xcode MCP) is available;"
-    echo "       PreToolUse — bundle-id gate, blocks simctl install/launch/"
-    echo "         uninstall/terminate when bundle ID doesn't match the"
-    echo "         preflight-bundle-verify canonical;"
-    echo "       PreToolUse — scaffold gate, blocks vanilla-scaffold.sh when"
-    echo "         mode.json.mode == greenfield-ikame AND userOptOutIkame"
-    echo "         is not true (Ikame fleet → ikxcodegen is mandatory);"
-    echo "       PreToolUse — asset-export gate, blocks Image(.X) / Image(\"X\")"
-    echo "         writes when X is not in Assets.xcassets and not in any"
-    echo "         .figma-cache manifest (forces Phase B before code);"
-    echo "       PreToolUse — asset-symbol-case gate, catches Image(.NameWith"
-    echo "         inner-digit-x) — Xcode 15+ uppercases inner-digit 'x' in"
-    echo "         the auto-generated ImageResource symbol;"
-    echo "       PostToolUse — auto-runs Gate C3-Pass2;"
-    echo "       PostToolUse — C8 coding-conventions gate (folder/naming/"
-    echo "         ViewModel pattern/function-length; conditional IKNavigation"
-    echo "         + IKFont per c1-conventions.json);"
-    echo "       PostToolUse — IKOnboarding pattern gate, blocks wrong"
-    echo "         IKOnboardingFlow registration (IKNavigation.makeView body"
-    echo "         instead of single root View);"
-    echo "       Stop — blocks termination when C5/C6/C7/C8 Done-Gate unsatisfied)"
+    echo "  $(green ✓) Patched $SETTINGS — $TOTAL_GATES gates run automatically next session"
+    echo "      (PreToolUse Write|Edit — figma-to-swiftui-gate.sh: Phase A+B"
+    echo "         coverage gate, blocks .swift writes when assets missing or"
+    echo "         registry coverage incomplete;"
+    echo "       PreToolUse Write|Edit — figma-to-swiftui-banned-pattern-gate.sh:"
+    echo "         blocks Image(systemName:) outside allow-list, status-bar /"
+    echo "         home-indicator redraws, letter-as-logo, screen-bezel radius,"
+    echo "         button-bloat, .frame(width:) on Text;"
+    echo "       PreToolUse Write|Edit — figma-to-swiftui-entry-bypass-gate.sh:"
+    echo "         blocks edits to App.swift / ContentView.swift / RootView.swift"
+    echo "         that set initial route to a non-default screen for C5"
+    echo "         verification bypass;"
+    echo "       PostToolUse Write|Edit — figma-to-swiftui-audit-emit.sh:"
+    echo "         after Write/Edit of *Screen.swift / *View.swift, parses"
+    echo "         the file via SwiftSyntax binary and emits c2-audit.json"
+    echo "         rows (color/font/padding/frame/image/text/stack) feeding"
+    echo "         L2 token trace (c3-token-trace.sh);"
+    echo "       Stop — figma-to-swiftui-stop-gate.sh: blocks termination unless"
+    echo "         every screen-cache with phaseA done has phaseB done +"
+    echo "         C5 gate PASS (or system skip reason) + project-wide C6"
+    echo "         (asset completeness) + C7 (no system chrome) passing)"
   fi
 fi
 

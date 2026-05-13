@@ -151,6 +151,21 @@ files_str    = ARGV[4]
 files = files_str.split(/\s+/).reject(&:empty?).map { |f| File.expand_path(f) }
 abort "FAIL: no files passed" if files.empty?
 
+# Filter out paths INSIDE an .xcassets/ — those are managed by the parent
+# xcassets folder reference (which is a single PBXFileReference). Passing
+# individual imageset Contents.json / PNG paths produces a no-op (routed to
+# "reference only") AND confuses the agent into thinking the imageset is
+# wired when it actually isn't. Pre-flight warn + drop them; user must pass
+# the parent .xcassets dir instead.
+inside_xcassets = files.select { |f| f.include?("/.xcassets/") || f.include?(".xcassets/") }
+files = files - inside_xcassets
+unless inside_xcassets.empty?
+  STDERR.puts "WARN: dropped #{inside_xcassets.size} path(s) inside .xcassets/ — these are managed by the parent xcassets folder reference (add the .xcassets dir directly, NOT files inside it):"
+  inside_xcassets.first(5).each { |f| STDERR.puts "  - #{f}" }
+  STDERR.puts "  ... (and #{inside_xcassets.size - 5} more)" if inside_xcassets.size > 5
+end
+abort "FAIL: no files remaining after .xcassets filter" if files.empty?
+
 project = Xcodeproj::Project.open(project_path)
 target  = project.targets.find { |t| t.name == target_name }
 abort "FAIL: target '#{target_name}' not found in #{project_path}. Available: #{project.targets.map(&:name).join(", ")}" unless target
