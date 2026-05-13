@@ -126,6 +126,36 @@ shopt -s nullglob
 SCREEN_DIRS=( "$CACHE_ROOT"/*/ )
 shopt -u nullglob
 
+# ─── Session-scope filter ───────────────────────────────────────────────────
+# Only validate screen-cache dirs TOUCHED during the current session.
+# Legacy dirs from prior sessions/waves already shipped — re-validating them
+# every Stop turns the gate into noise. Active work (Phase A re-ran, Phase B
+# exported) IS still validated — dir mtime ≥ session_start triggers full check.
+# Force re-validate a legacy dir: `touch <dir>` to bump its mtime.
+TRANSCRIPT_PATH=$(printf '%s' "$PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null)
+SESSION_START=""
+if [ -n "$TRANSCRIPT_PATH" ] && [ -r "$TRANSCRIPT_PATH" ]; then
+  SESSION_START=$(stat -f %B "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+fi
+LEGACY_DIR_COUNT=0
+if [ -n "$SESSION_START" ] && [ "$SESSION_START" != "0" ]; then
+  ALL_SCREEN_COUNT=${#SCREEN_DIRS[@]}
+  FILTERED=()
+  for D in "${SCREEN_DIRS[@]}"; do
+    BASE=$(basename "$D")
+    [ "$BASE" = "_shared" ] && continue
+    DIR_MTIME=$(stat -f %m "$D" 2>/dev/null || echo 0)
+    if [ "$DIR_MTIME" -ge "$SESSION_START" ]; then
+      FILTERED+=("$D")
+    fi
+  done
+  # ${FILTERED[@]+"${FILTERED[@]}"} pattern: expand array only if it has
+  # elements. Required because `set -u` would flag bare `${FILTERED[@]}`
+  # as unbound when the filter removes all dirs.
+  SCREEN_DIRS=( ${FILTERED[@]+"${FILTERED[@]}"} )
+  LEGACY_DIR_COUNT=$((ALL_SCREEN_COUNT - ${#SCREEN_DIRS[@]}))
+fi
+
 [ ${#SCREEN_DIRS[@]} -eq 0 ] && exit 0
 
 VIOLATIONS=""
@@ -369,9 +399,25 @@ fi
   echo "Done-Gate violated (figma-to-swiftui Key Principle #12 + Mandatory Output Checklist)."
   echo ""
   if [ -n "$VIOLATIONS" ]; then
-    echo "Per-screen issues:"
-    printf "%b" "$VIOLATIONS"
-    echo ""
+    # Count screens with violations (one heading per screen = "  $BASE/")
+    VIOL_SCREEN_COUNT=$(printf "%b" "$VIOLATIONS" | grep -cE "^  [^ ]" || echo 0)
+    if [ "$VIOL_SCREEN_COUNT" -gt 5 ]; then
+      REPORT_FILE="/tmp/figma-gate-report-$$.txt"
+      {
+        echo "Done-Gate full report — $(date)"
+        echo ""
+        printf "%b" "$VIOLATIONS"
+      } > "$REPORT_FILE" 2>/dev/null
+      FIRST_5=$(printf "%b" "$VIOLATIONS" | grep -E "^  [^ ]" | head -5 | sed 's/^  /    /')
+      echo "Per-screen issues: $VIOL_SCREEN_COUNT screen(s) fail. First 5:"
+      printf "%s\n" "$FIRST_5"
+      echo "  Full report: $REPORT_FILE"
+      echo ""
+    else
+      echo "Per-screen issues:"
+      printf "%b" "$VIOLATIONS"
+      echo ""
+    fi
   fi
   if [ -n "$PROJECT_PROBLEMS" ]; then
     echo "Project-wide issues:"
@@ -394,6 +440,18 @@ fi
   echo "BANNED — see references/verification-loop.md §\"C5 Verification Integrity\"."
   echo "If the screen is unreachable from launch and no driver is available,"
   echo "set skipped = \"no_entry_path\" and surface that to the user truthfully."
+  echo ""
+  echo "BYPASS (per-file): rename any in-progress .swift path to contain"
+  echo "  '_NoFigma_' (e.g. _NoFigma_PlanningScratch.swift). The probe will"
+  echo "  treat the session as not-a-figma-task and the gate will skip."
+  echo ""
+  echo "BYPASS (per-dir): \`touch <cache-dir>\` to bump mtime, OR remove the"
+  echo "  cache dir if the screen is out of scope."
+  if [ "$LEGACY_DIR_COUNT" -gt 0 ]; then
+    echo ""
+    echo "Note: $LEGACY_DIR_COUNT screen-cache dir(s) from prior session(s)"
+    echo "  were skipped (not touched this session). \`touch\` to force re-validate."
+  fi
   if [ -n "$TIMING_LINE" ]; then
     echo ""
     echo "$TIMING_LINE"
