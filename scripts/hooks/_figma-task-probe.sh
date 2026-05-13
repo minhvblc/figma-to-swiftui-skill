@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # _figma-task-probe.sh — shared helper used by every figma-to-swiftui hook.
 #
-# Detection rule (single, strict):
+# Detection rule (URL + activity, plus explicit bypass):
 #
-#   The user has pasted a real Figma file URL in one of their own chat
-#   messages. That's it. No tool_use signals, no Skill-invocation signals,
-#   no cache-existence signals.
+#   Real figma implementation task = (A) user pasted a real Figma file URL
+#   in their own chat text, AND (B) the assistant actually performed UI
+#   work this session — either invoked a Figma MCP tool, or wrote/edited
+#   a .swift file. If A is missing → not a figma task. If A is present
+#   but B is missing → planning / review / discussion only, bypass to
+#   avoid false-positive blocking on every Stop forever.
 #
-# Why strict — observed failure modes that broader signals caused:
+#   Explicit override: if any transcript block (user text, assistant tool
+#   input, tool_result) references a .swift path containing the literal
+#   marker `_NoFigma_`, the run is treated as not-a-figma-task and gates
+#   are skipped. This matches the bypass docs printed by
+#   figma-to-swiftui-stop-gate.sh.
+#
+# Why this shape — observed failure modes:
 #
 #   1. MCP figma server instructions ARE injected into every session that
 #      has the figma MCP registered globally. Those instructions contain
@@ -17,20 +26,22 @@
 #
 #   2. Tool definitions in the system prompt (`mcp__figma-assets__*`,
 #      `mcp__figma-desktop__*`) appear as plain text in the system
-#      reminder, NOT as actual tool_use blocks. A tool_use-based signal
-#      that scanned raw text would still flag them.
+#      reminder, NOT as actual tool_use blocks. We match tool_use names
+#      directly rather than raw text to avoid false positives from this.
 #
 #   3. Reading skill source files (`cat scripts/hooks/<name>.sh`,
 #      `Read SKILL.md`) puts figma references into tool_result content.
 #      That's documentation flowing through the agent, not user intent.
 #
-# Trade-off accepted by this rule: if the user invokes `/figma-to-swiftui`
-# (slash command / Skill tool) WITHOUT pasting a URL — relying instead on
-# the figma-desktop "current selection" — the hooks will NOT fire. In
-# practice the slash command always carries a URL (the canonical entry
-# pattern in SKILL.md Step A1), so the gap is narrow. Users on the
-# selection-only path can paste the URL alongside ("implement what I have
-# selected, file: https://figma.com/design/abc...") to re-enable hooks.
+#   4. Planning / review sessions where the user pastes a Figma URL as
+#      *reference* (e.g. "review this plan against the design") used to
+#      block every Stop forever because the URL stayed in transcript
+#      history. Adding the activity gate (Figma MCP invocation OR .swift
+#      write) closes that loop — pure markdown / discussion work bypasses.
+#
+# Trade-off: if the user invokes `/figma-to-swiftui` WITHOUT pasting a URL
+# the hooks will NOT fire. In practice the slash command always carries a
+# URL (canonical entry pattern in SKILL.md Step A1), so the gap is narrow.
 #
 # Detection mechanics:
 #   - Scan ONLY user `text` content blocks in the transcript JSONL.
@@ -88,14 +99,41 @@ TRANSCRIPT_PATH = sys.argv[1]
 # match — those only appear in MCP server instructions / docs.
 URL_RE = re.compile(r'figma\.com/(design|file|board|slides|make)/[A-Za-z0-9\-]')
 
-# Strip system-injected blocks before matching:
+# Strip system-injected blocks before matching user text:
 #   - <system-reminder>...</system-reminder>: MCP server instructions, hook
 #     reminders, environment context. Never user-typed.
-#   - <command-name>...</command-name>: the slash-command name only
-#     (e.g. "figma-to-swiftui"). The actual URL the user typed lives in
-#     <command-args>, which we DO NOT strip — that IS user input.
+#   - <command-name>...</command-name>: the slash-command name only.
 SYSTEM_REMINDER_RE = re.compile(r'<system-reminder>.*?</system-reminder>', re.DOTALL)
 COMMAND_NAME_RE    = re.compile(r'<command-name>.*?</command-name>',       re.DOTALL)
+
+# Figma MCP tool names — covers known namespaces:
+#   mcp__figma__*, mcp__plugin_figma_figma__*, mcp__figma-assets__*,
+#   mcp__figma-desktop__*, mcp__Figma__*
+FIGMA_TOOL_RE = re.compile(
+    r'^mcp__(?:[A-Za-z0-9_\-]*[Ff]igma[A-Za-z0-9_\-]*)__'
+    r'(get_design_context|get_screenshot|get_metadata|get_variable_defs|get_figjam|'
+    r'figma_build_registry|figma_extract_tokens|figma_extract_fills|'
+    r'figma_export_assets|figma_export_assets_unified|figma_list_assets|'
+    r'upload_assets|use_figma|generate_figma_design|create_design_system_rules)'
+)
+
+# Explicit bypass marker: a .swift path containing _NoFigma_ anywhere in
+# transcript (matches the bypass docs printed by figma-to-swiftui-stop-gate.sh).
+NOFIGMA_RE = re.compile(r'_NoFigma_[A-Za-z0-9_\-]*\.swift')
+
+# Detect .swift Write/Edit in assistant tool_use inputs — real UI work signal.
+SWIFT_PATH_RE = re.compile(r'\.swift\b')
+
+state = {
+    "url_in_user_text": False,
+    "figma_tool_invoked": False,
+    "swift_file_touched": False,
+    "nofigma_marker": False,
+}
+
+def scan_for_marker(text):
+    if text and NOFIGMA_RE.search(text):
+        state["nofigma_marker"] = True
 
 try:
     with open(TRANSCRIPT_PATH) as f:
@@ -105,8 +143,7 @@ try:
             except Exception:
                 continue
             msg = entry.get("message") or {}
-            if msg.get("role") != "user":
-                continue
+            role = msg.get("role")
             content = msg.get("content")
             if not content:
                 continue
@@ -114,18 +151,58 @@ try:
             for block in blocks:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") != "text":
-                    # Skip tool_result, image, etc. — only user-typed text counts.
-                    continue
-                text = block.get("text", "") or ""
-                text = SYSTEM_REMINDER_RE.sub('', text)
-                text = COMMAND_NAME_RE.sub('', text)
-                if URL_RE.search(text):
-                    print("yes")
-                    sys.exit(0)
+                btype = block.get("type")
+                if btype == "text":
+                    text = block.get("text", "") or ""
+                    scan_for_marker(text)
+                    if role == "user":
+                        stripped = SYSTEM_REMINDER_RE.sub('', text)
+                        stripped = COMMAND_NAME_RE.sub('', stripped)
+                        if URL_RE.search(stripped):
+                            state["url_in_user_text"] = True
+                elif btype == "tool_use":
+                    name = block.get("name", "") or ""
+                    if FIGMA_TOOL_RE.match(name):
+                        state["figma_tool_invoked"] = True
+                    inp = block.get("input")
+                    if isinstance(inp, dict):
+                        inp_str = json.dumps(inp)
+                        scan_for_marker(inp_str)
+                        if name in ("Write", "Edit", "NotebookEdit"):
+                            fp = inp.get("file_path", "")
+                            if isinstance(fp, str) and SWIFT_PATH_RE.search(fp):
+                                state["swift_file_touched"] = True
+                elif btype == "tool_result":
+                    tc = block.get("content")
+                    if isinstance(tc, str):
+                        scan_for_marker(tc)
+                    elif isinstance(tc, list):
+                        for sub in tc:
+                            if isinstance(sub, dict) and sub.get("type") == "text":
+                                scan_for_marker(sub.get("text", "") or "")
 except (FileNotFoundError, PermissionError):
     pass
-print("no")
+
+# Decision tree:
+#   1. Explicit _NoFigma_ marker in any transcript block → bypass (matches
+#      the docs printed by figma-to-swiftui-stop-gate.sh).
+#   2. No real Figma URL in user text → not a figma task at all.
+#   3. URL pasted but ZERO actual UI work happened in this session
+#      (no Figma MCP tool invocation AND no .swift file Write/Edit) →
+#      planning / review / discussion only, bypass to avoid false positives
+#      on every Stop in a session that just references the URL.
+#   4. URL + (MCP call OR .swift write) → real figma implementation task,
+#      enforce Phase A/B/C gates.
+if state["nofigma_marker"]:
+    print("no")
+    sys.exit(0)
+if not state["url_in_user_text"]:
+    print("no")
+    sys.exit(0)
+if not state["figma_tool_invoked"] and not state["swift_file_touched"]:
+    print("no")
+    sys.exit(0)
+print("yes")
 PY
   )
   if [ "$RESULT" = "yes" ]; then
